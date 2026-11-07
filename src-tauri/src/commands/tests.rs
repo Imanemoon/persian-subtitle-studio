@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::media::{get_entry, run_analyze_blocking};
 use super::subtitle::{
@@ -17,7 +18,7 @@ use super::subtitle::{
 };
 use crate::models::{AnalysisStatus, OpsProgress, SubtitleKind, VideoEntry};
 use crate::settings::Settings;
-use crate::state::{AppState, OpsRegistry};
+use crate::state::{acquire_single_op, AppState, OpsRegistry};
 use crate::tools::resolve_tool_path;
 
 #[cfg(windows)]
@@ -75,6 +76,16 @@ fn write_fixtures(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
 /// ساخت MKV مصنوعی با Trackهای متنی دلخواه:
 /// هر عنصر: (language یا "" برای بدون tag، title یا ""، محتوا "fa"|"en")
 fn make_video_meta(dir: &Path, name: &str, subs: &[(&str, &str, &str)]) -> PathBuf {
+    make_video_meta_long(dir, name, subs, 1)
+}
+
+/// همان سازنده با مدت دلخواه (برای تست‌هایی که به پنجرهٔ اجرای ffmpeg نیاز دارند)
+fn make_video_meta_long(
+    dir: &Path,
+    name: &str,
+    subs: &[(&str, &str, &str)],
+    duration_secs: u64,
+) -> PathBuf {
     let (fa_fixture, eng_fixture) = write_fixtures(dir, name);
     let video = dir.join(name);
 
@@ -83,11 +94,11 @@ fn make_video_meta(dir: &Path, name: &str, subs: &[(&str, &str, &str)]) -> PathB
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        "color=c=black:s=320x240:d=1".into(),
+        format!("color=c=black:s=320x240:d={duration_secs}"),
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        "sine=d=1".into(),
+        format!("sine=d={duration_secs}"),
     ];
     let mut maps: Vec<String> = vec!["0:v".into(), "1:a".into()];
     for (i, (_, _, content)) in subs.iter().enumerate() {
@@ -142,15 +153,15 @@ fn make_video(dir: &Path, name: &str, fa_tracks: usize, eng_tracks: usize) -> Pa
     make_video_meta(dir, name, &subs)
 }
 
-fn make_state() -> AppState {
-    AppState {
-        settings: std::sync::Mutex::new(Settings::default()),
-        library: std::sync::Mutex::new(Vec::new()),
-        last_scan: std::sync::Mutex::new(None),
+fn make_state() -> Arc<AppState> {
+    Arc::new(AppState {
+        settings: Mutex::new(Settings::default()),
+        library: Mutex::new(Vec::new()),
+        last_scan: Mutex::new(None),
         scanning: std::sync::atomic::AtomicBool::new(false),
         cancel_scan: std::sync::atomic::AtomicBool::new(false),
-        ops: std::sync::Mutex::new(OpsRegistry::default()),
-    }
+        ops: Arc::new(Mutex::new(OpsRegistry::default())),
+    })
 }
 
 fn push_entry(state: &AppState, video: &Path) -> String {
@@ -179,15 +190,15 @@ fn analyze(state: &AppState, path: &str) -> VideoEntry {
     get_entry(state, path).expect("entry")
 }
 
-/// استخراج تکی با چرخهٔ واقعی اسلات: acquire → run → release
+/// استخراج تکی با چرخهٔ واقعی اسلات: acquire (RAII) → run → release
 fn extract_single(
     state: &AppState,
     path: &str,
     stream_index: u32,
 ) -> Result<crate::models::ExtractionOutcome, String> {
-    let flag = state.ops.lock().unwrap().acquire_single(path)?;
-    let r = run_extract_blocking(state, path, stream_index, &flag);
-    state.ops.lock().unwrap().release_single(path);
+    let guard = acquire_single_op(&state.ops, path)?;
+    let r = run_extract_blocking(state, path, stream_index, &guard.cancel);
+    drop(guard);
     r
 }
 
@@ -197,9 +208,17 @@ fn review_single(
     path: &str,
     stream_index: u32,
 ) -> Result<crate::models::TrackReview, String> {
-    let flag = state.ops.lock().unwrap().acquire_single(path)?;
-    let r = run_review_blocking(state, path, stream_index, &flag);
-    state.ops.lock().unwrap().release_single(path);
+    let guard = acquire_single_op(&state.ops, path)?;
+    let r = run_review_blocking(state, path, stream_index, &guard.cancel);
+    drop(guard);
+    r
+}
+
+/// تحلیل تکی با چرخهٔ واقعی اسلات — همان چیزی که command انجام می‌دهد
+fn analyze_single(state: &AppState, path: &str) -> Result<VideoEntry, String> {
+    let guard = acquire_single_op(&state.ops, path)?;
+    let r = run_analyze_blocking(state, path);
+    drop(guard);
     r
 }
 
@@ -364,11 +383,11 @@ fn stale_cancel_flag_does_not_break_next_single_extraction() {
     analyze(&state, &path);
 
     // عملیات تکی اول: کاربر لغو می‌کند
-    let flag1 = state.ops.lock().unwrap().acquire_single(&path).unwrap();
-    flag1.store(true, Ordering::SeqCst);
-    let err = run_extract_blocking(&state, &path, 2, &flag1).unwrap_err();
+    let guard1 = acquire_single_op(&state.ops, &path).unwrap();
+    guard1.cancel.store(true, Ordering::SeqCst);
+    let err = run_extract_blocking(&state, &path, 2, &guard1.cancel).unwrap_err();
     assert!(err.contains("لغو"), "{err}");
-    state.ops.lock().unwrap().release_single(&path);
+    drop(guard1);
 
     // عملیات تکی بعدی باید پرچم کاملاً تازه بگیرد و موفق شود
     let outcome =
@@ -381,35 +400,127 @@ fn stale_cancel_flag_does_not_break_next_single_extraction() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// جدایی کامل Batch و Single در هر دو جهت — الزامی Audit
 #[test]
 #[ignore]
-fn concurrent_single_ops_and_batch_guard() {
+fn batch_and_single_mutually_exclusive_live() {
     let state = make_state();
-    let dir = unique_dir("concurrency");
+    let dir = unique_dir("batch-vs-single");
     std::fs::create_dir_all(&dir).unwrap();
     let video = make_video_meta(&dir, "Show.S01E05.720p.mkv", &[("fas", "فارسی", "fa")]);
     let path = push_entry(&state, &video);
     analyze(&state, &path);
 
-    // دو عملیات هم‌زمان روی یک ویدیو → دومی رد می‌شود
-    let _flag = state.ops.lock().unwrap().acquire_single(&path).unwrap();
-    let err = state.ops.lock().unwrap().acquire_single(&path).unwrap_err();
-    assert!(err.contains("عملیات دیگری"), "{err}");
-    state.ops.lock().unwrap().release_single(&path);
+    // ۱) Single فعال (گارد واقعی نگه داشته می‌شود)
+    let guard = acquire_single_op(&state.ops, &path).unwrap();
 
-    // حین عملیات گروهی → اسلات تکی رد می‌شود (بک‌اند، نه فقط UI)
-    let _batch = state.ops.lock().unwrap().start_batch().unwrap();
-    let err = state.ops.lock().unwrap().acquire_single(&path).unwrap_err();
+    // ۲) Batch باید رد شود
+    let err = state.ops.lock().unwrap().start_batch().unwrap_err();
+    assert!(err.contains("تکی"), "{err}");
+
+    // ۳) آزادسازی Single
+    drop(guard);
+
+    // ۴) Batch اکنون موفق است
+    let batch = state.ops.lock().unwrap().start_batch().unwrap();
+
+    // ۵) در حالت Batch فعال → Single رد (بک‌اند، نه فقط UI)
+    let err = extract_single(&state, &path, 2).unwrap_err();
     assert!(err.contains("گروهی"), "{err}");
 
-    // لغو همه → پرچم گروهی true می‌شود (حلقه گروهی متوقف می‌شود)
+    // لغو گروهی → پرچم true؛ پایان گروهی → تکی دوباره مجاز و موفق
     assert!(state.ops.lock().unwrap().cancel_all());
-    assert!(_batch.load(Ordering::SeqCst));
+    assert!(batch.load(Ordering::SeqCst));
     state.ops.lock().unwrap().end_batch();
+    let outcome = extract_single(&state, &path, 2).expect("پس از پایان گروهی باید موفق شود");
+    assert!(outcome.persian_confirmed);
 
-    // بعد از پایان گروهی → اسلات تکی دوباره مجاز
-    assert!(state.ops.lock().unwrap().acquire_single(&path).is_ok());
-    state.ops.lock().unwrap().release_single(&path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// انحصار واقعی روی همان ویدیو — Analyze/Review/Promote در برابر یک عملیات
+/// Extractِ «در جریان» باید در بک‌اند رد شوند.
+/// هم‌گام‌سازی قطعی: worker اسلات را واقعاً رزرو می‌کند و روی کانال منتظر
+/// دستور ادامه می‌ماند (شبیه‌سازی ffmpeg طولانی) — بدون sleep و بدون race.
+#[test]
+#[ignore]
+fn active_extract_blocks_analyze_review_and_promote_on_same_video() {
+    let state = make_state();
+    let dir = unique_dir("live-exclusion");
+    std::fs::create_dir_all(&dir).unwrap();
+    let video = make_video_meta(&dir, "Show.S01E12.720p.mkv", &[("fas", "فارسی", "fa")]);
+    let path = push_entry(&state, &video);
+    analyze(&state, &path);
+
+    // استخراج واقعی در Thread پس‌زمینه: رزرو اسلات → انتظار → اجرا
+    let (reserved_tx, reserved_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let t_state = state.clone();
+    let t_path = path.clone();
+    let worker = std::thread::spawn(move || {
+        let guard = acquire_single_op(&t_state.ops, &t_path).unwrap();
+        reserved_tx.send(()).unwrap(); // اسلات رزرو شد
+        release_rx.recv().unwrap(); // «ffmpeg در جریان است» — تا اجازهٔ ادامه
+        let r = run_extract_blocking(t_state.as_ref(), &t_path, 2, &guard.cancel);
+        drop(guard);
+        r
+    });
+
+    // اسلات قطعاً رزرو شده است
+    reserved_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("worker باید اسلات را رزرو کند");
+
+    // Analyze روی همان ویدیو → رد
+    let err = analyze_single(&state, &path).unwrap_err();
+    assert!(err.contains("همین ویدیو"), "{err}");
+    // Review روی همان ویدیو → رد
+    let err = review_single(&state, &path, 2).unwrap_err();
+    assert!(err.contains("همین ویدیو"), "{err}");
+    // Promote روی همان ویدیو → رد (خودش رزرو می‌کند)
+    let err = run_promote_blocking(&state, &path, 2).unwrap_err();
+    assert!(err.contains("همین ویدیو"), "{err}");
+    // Batch هم حین Single رد می‌شود
+    let err = state.ops.lock().unwrap().start_batch().unwrap_err();
+    assert!(err.contains("تکی"), "{err}");
+
+    // اجازهٔ ادامه → استخراج کامل و موفق؛ اسلات آزاد
+    release_tx.send(()).unwrap();
+    let outcome = worker.join().unwrap().expect("استخراج پس‌زمینه موفق");
+    assert!(outcome.persian_confirmed);
+
+    // عملیات بعدی روی همان ویدیو مجاز است
+    assert!(acquire_single_op(&state.ops, &path).is_ok());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// روی ویدیوهای جدا، عملیات هم‌زمان مجاز است (سیاست هم‌زمانی مورد انتظار)
+#[test]
+#[ignore]
+fn separate_videos_allow_concurrent_operations() {
+    let state = make_state();
+    let dir = unique_dir("separate-videos");
+    std::fs::create_dir_all(&dir).unwrap();
+    let v1 = make_video_meta(&dir, "Show.S01E13.720p.mkv", &[("fas", "فارسی", "fa")]);
+    let v2 = make_video_meta(&dir, "Show.S01E14.720p.mkv", &[("fas", "فارسی", "fa")]);
+    let p1 = push_entry(&state, &v1);
+    let p2 = push_entry(&state, &v2);
+    analyze(&state, &p1);
+    analyze(&state, &p2);
+
+    // عملیات روی v1 «فعال» نگه داشته می‌شود
+    let guard = acquire_single_op(&state.ops, &p1).unwrap();
+
+    // عملیات واقعی روی v2 → باید موفق شود
+    let outcome = extract_single(&state, &p2, 2).expect("ویدیوی جدا نباید قفل شود");
+    assert!(outcome.persian_confirmed);
+
+    // و Analyze روی v2 هم بعدش آزاد است
+    assert!(analyze_single(&state, &p2).is_ok());
+
+    drop(guard);
+    assert!(extract_single(&state, &p1, 2).is_ok());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -429,11 +540,11 @@ fn cancelled_extract_only_removes_its_own_temp() {
     std::fs::write(&foreign_temp, b"other-op-temp").unwrap();
 
     // لغو قبل از اجرا → Cancelled و فقط temp خودش پاک می‌شود
-    let flag = state.ops.lock().unwrap().acquire_single(&path).unwrap();
-    flag.store(true, Ordering::SeqCst);
-    let err = run_extract_blocking(&state, &path, 2, &flag).unwrap_err();
+    let guard = acquire_single_op(&state.ops, &path).unwrap();
+    guard.cancel.store(true, Ordering::SeqCst);
+    let err = run_extract_blocking(&state, &path, 2, &guard.cancel).unwrap_err();
     assert!(err.contains("لغو"), "{err}");
-    state.ops.lock().unwrap().release_single(&path);
+    drop(guard);
 
     assert!(foreign_temp.is_file(), "temp عملیات دیگر نباید پاک شود");
     let leftovers: Vec<_> = std::fs::read_dir(&dir)

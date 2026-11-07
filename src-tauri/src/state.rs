@@ -8,41 +8,27 @@ use crate::settings::Settings;
 
 /// وضعیت عملیات جاری — عمر پرچم لغو به ازای هر عملیات مدیریت می‌شود تا
 /// لغوِ یک عملیات هرگز روی عملیات دیگر اثر نگذارد.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct OpsRegistry {
     /// عملیات گروهی در جریان (حداکثر یکی) + پرچم لغو مخصوص همان عملیات.
     pub batch_cancel: Option<Arc<AtomicBool>>,
-    /// ویدیوهایی با عملیات استخراج/بررسی تکی در جریان → پرچم لغو مخصوص همان عملیات.
-    pub single_extracts: HashMap<String, Arc<AtomicBool>>,
+    /// ویدیوهایی با عملیات تکی در جریان (Analyze/Extract/Review/Promote)
+    /// → پرچم لغو مخصوص همان عملیات.
+    pub single_ops: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl OpsRegistry {
-    /// گرفتن اسلات عملیات تکی برای یک ویدیو.
-    /// هم‌زمانی: با عملیات گروهی و با عملیات تکی دیگر روی همان ویدیو تضاد دارد.
-    pub fn acquire_single(&mut self, video_path: &str) -> Result<Arc<AtomicBool>, String> {
-        if self.batch_cancel.is_some() {
-            return Err(
-                "یک عملیات گروهی در حال اجراست؛ صبر کنید یا ابتدا آن را متوقف کنید.".into(),
-            );
-        }
-        if self.single_extracts.contains_key(video_path) {
-            return Err("عملیات دیگری روی همین ویدیو در جریان است.".into());
-        }
-        // پرچم کاملاً تازه — پرچم باقی‌مانده از عملیات قبلی معنا ندارد
-        let flag = Arc::new(AtomicBool::new(false));
-        self.single_extracts
-            .insert(video_path.to_string(), flag.clone());
-        Ok(flag)
-    }
-
-    pub fn release_single(&mut self, video_path: &str) {
-        self.single_extracts.remove(video_path);
-    }
-
-    /// ثبت عملیات گروهی؛ در صورت وجود عملیات گروهی فعال خطا می‌دهد.
+    /// ثبت عملیات گروهی — فقط اگر هیچ عملیات تکی فعالی نباشد.
+    /// بررسی و ثبت زیر یک قفل انجام می‌شود (بدون فاصلهٔ check-then-act).
     pub fn start_batch(&mut self) -> Result<Arc<AtomicBool>, String> {
         if self.batch_cancel.is_some() {
             return Err("یک عملیات گروهی در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
+        }
+        if !self.single_ops.is_empty() {
+            return Err(format!(
+                "{} عملیات تکی در جریان است؛ ابتدا آن‌ها را تمام یا متوقف کنید.",
+                self.single_ops.len()
+            ));
         }
         let flag = Arc::new(AtomicBool::new(false));
         self.batch_cancel = Some(flag.clone());
@@ -60,12 +46,68 @@ impl OpsRegistry {
             b.store(true, std::sync::atomic::Ordering::SeqCst);
             any = true;
         }
-        for f in self.single_extracts.values() {
+        for f in self.single_ops.values() {
             f.store(true, std::sync::atomic::Ordering::SeqCst);
             any = true;
         }
         any
     }
+}
+
+/// دستگیرهٔ عملیات تکی — با Drop، اسلات را از Registry آزاد می‌کند (RAII).
+/// حتی در صورت panic یا خطای Thread، اسلات قفل نمی‌ماند.
+///
+/// پرچم لغو مخصوص همین عملیات است؛ از `.cancel` در طول اجرا استفاده کنید.
+#[derive(Debug)]
+pub struct SingleOpGuard {
+    registry: Arc<Mutex<OpsRegistry>>,
+    video_path: String,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl SingleOpGuard {
+    /// آزادسازی صریح (Drop هم همین کار را می‌کند).
+    pub fn release(self) {
+        // drop(self) رخ می‌دهد و اسلات آزاد می‌شود
+    }
+}
+
+impl Drop for SingleOpGuard {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap()
+            .single_ops
+            .remove(&self.video_path);
+    }
+}
+
+/// رزرو اتمیک اسلات عملیات تکی برای یک ویدیو.
+/// قوانین (تحت یک قفل):
+/// - حین عملیات گروهی → رد
+/// - حین هر عملیات تکی دیگر روی همان ویدیو → رد
+/// - روی ویدیوی دیگر → مجاز
+pub fn acquire_single_op(
+    registry: &Arc<Mutex<OpsRegistry>>,
+    video_path: &str,
+) -> Result<SingleOpGuard, String> {
+    let mut ops = registry.lock().unwrap();
+    if ops.batch_cancel.is_some() {
+        return Err("یک عملیات گروهی در حال اجراست؛ صبر کنید یا ابتدا آن را متوقف کنید.".into());
+    }
+    if ops.single_ops.contains_key(video_path) {
+        return Err("عملیات دیگری روی همین ویدیو در جریان است.".into());
+    }
+    // پرچم کاملاً تازه — پرچم باقی‌مانده از عملیات قبلی معنا ندارد
+    let cancel = Arc::new(AtomicBool::new(false));
+    ops.single_ops
+        .insert(video_path.to_string(), cancel.clone());
+    drop(ops);
+    Ok(SingleOpGuard {
+        registry: registry.clone(),
+        video_path: video_path.to_string(),
+        cancel,
+    })
 }
 
 /// وضعیت سراسری برنامه — از طریق `app.state::<AppState>()` در دسترس است.
@@ -75,7 +117,7 @@ pub struct AppState {
     pub last_scan: Mutex<Option<ScanSummary>>,
     pub scanning: AtomicBool,
     pub cancel_scan: AtomicBool,
-    pub ops: Mutex<OpsRegistry>,
+    pub ops: Arc<Mutex<OpsRegistry>>,
 }
 
 /// مسیرهای دائمی برنامه (تنظیمات و لاگ).
@@ -87,46 +129,72 @@ pub struct AppPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
+    fn registry() -> Arc<Mutex<OpsRegistry>> {
+        Arc::new(Mutex::new(OpsRegistry::default()))
+    }
+
+    /// سناریوی الزامی Audit: Single فعال → Batch رد؛ آزادسازی → Batch موفق؛
+    /// Batch فعال → Single رد.
     #[test]
-    fn acquire_rejects_batch_and_duplicate_single() {
-        let mut ops = OpsRegistry::default();
+    fn batch_and_single_are_mutually_exclusive() {
+        let reg = registry();
 
-        // اسلات تکی تازه — پرچم باید false باشد
-        let f1 = ops.acquire_single("v1").unwrap();
-        assert!(!f1.load(std::sync::atomic::Ordering::SeqCst));
+        // ۱) Single فعال
+        let g1 = acquire_single_op(&reg, "v1").unwrap();
+        assert!(!g1.cancel.load(Ordering::SeqCst));
+        // روی ویدیوی دیگر هم Single دوم مجاز است
+        let g2 = acquire_single_op(&reg, "v2").unwrap();
 
-        // ویدیوی دیگر مشکل ندارد
-        let f2 = ops.acquire_single("v2").unwrap();
-        assert!(!f2.load(std::sync::atomic::Ordering::SeqCst));
+        // ۲) Batch در حالت Single فعال → رد
+        let err = reg.lock().unwrap().start_batch().unwrap_err();
+        assert!(err.contains("تکی"), "{err}");
 
-        // همان ویدیو → رد
-        assert!(ops.acquire_single("v1").is_err());
+        // ۳) آزادسازی Singleها
+        drop(g1);
+        drop(g2);
+        assert!(reg.lock().unwrap().single_ops.is_empty());
 
-        // عملیات گروهی فعال → همهٔ اسلات‌های تکی جدید رد می‌شوند
-        ops.end_batch(); // noop
-        assert!(ops.start_batch().is_ok());
-        assert!(ops.acquire_single("v3").is_err());
+        // ۴) Batch اکنون موفق است
+        let batch = reg.lock().unwrap().start_batch().unwrap();
+        assert!(!batch.load(Ordering::SeqCst));
 
-        // لغو همه: پرچم گروهی و تکی‌ها true می‌شوند
-        assert!(ops.cancel_all());
-        assert!(f1.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(f2.load(std::sync::atomic::Ordering::SeqCst));
+        // ۵) در حالت Batch فعال → Single رد
+        let err = acquire_single_op(&reg, "v3").unwrap_err();
+        assert!(err.contains("گروهی"), "{err}");
 
-        // پایان گروهی → بعد از آزادسازی اسلات‌های لغوشده (کار wrapper پس از
-        // پایان هر عملیات)، اسلات جدید مجاز و پرچمش کاملاً تازه است
-        ops.end_batch();
-        ops.release_single("v1");
-        ops.release_single("v2");
-        let f3 = ops.acquire_single("v1").unwrap();
-        assert!(!f3.load(std::sync::atomic::Ordering::SeqCst));
+        // لغو همه → پرچم گروهی true؛ پایان گروهی → Single با پرچم تازه مجاز
+        assert!(reg.lock().unwrap().cancel_all());
+        assert!(batch.load(Ordering::SeqCst));
+        reg.lock().unwrap().end_batch();
+        let g3 = acquire_single_op(&reg, "v3").unwrap();
+        assert!(!g3.cancel.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn release_frees_slot() {
-        let mut ops = OpsRegistry::default();
-        let _f = ops.acquire_single("v1").unwrap();
-        ops.release_single("v1");
-        assert!(ops.acquire_single("v1").is_ok());
+    fn same_video_single_is_rejected_other_video_is_allowed() {
+        let reg = registry();
+        let _g = acquire_single_op(&reg, "v1").unwrap();
+        let err = acquire_single_op(&reg, "v1").unwrap_err();
+        assert!(err.contains("همین ویدیو"), "{err}");
+        // ویدیوی دیگر → مجاز
+        let _g2 = acquire_single_op(&reg, "v2").unwrap();
+    }
+
+    /// RAII: panic در حین عملیات باید اسلات را آزاد کند.
+    #[test]
+    fn panic_releases_slot() {
+        let reg = registry();
+        let handle = {
+            let reg = reg.clone();
+            std::thread::spawn(move || {
+                let _g = acquire_single_op(&reg, "v").unwrap();
+                panic!("شبیه‌سازی خطای غیرمنتظره در عملیات");
+            })
+        };
+        assert!(handle.join().is_err());
+        // اسلات آزاد شده باشد
+        assert!(acquire_single_op(&reg, "v").is_ok());
     }
 }

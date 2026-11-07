@@ -126,9 +126,14 @@ pub fn run_analyze_blocking(state: &AppState, path: &str) -> Result<VideoEntry, 
 pub async fn analyze_video(app: AppHandle, path: String) -> Result<VideoEntry, String> {
     let app2 = app.clone();
     let path2 = path.clone();
+    // تحلیل تکی هم تحت registry است: با Extract/Review/Promote همان ویدیو
+    // و با عملیات گروهی تضاد دارد (رزرو اتمیک + RAII)
+    let guard = crate::state::acquire_single_op(&app.state::<AppState>().ops, &path)?;
     let updated = tauri::async_runtime::spawn_blocking(move || {
         let st = app2.state::<AppState>();
-        run_analyze_blocking(&st, &path2)
+        let r = run_analyze_blocking(&st, &path2);
+        drop(guard);
+        r
     })
     .await
     .map_err(|e| format!("خطای Thread: {e}"))??;

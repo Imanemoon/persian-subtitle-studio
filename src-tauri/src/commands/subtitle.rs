@@ -15,7 +15,7 @@ use crate::models::{
     AnalysisStatus, ExtractionOutcome, ExtractionPlan, ExtractionPlanItem, OpsProgress,
     SkippedExtraction, SubtitleKind, SubtitleValidation, TrackReview, VideoEntry,
 };
-use crate::state::AppState;
+use crate::state::{acquire_single_op, AppState};
 
 use super::media::{apply_entry, get_entry, now_ms, resolve_tool, set_status_core};
 
@@ -167,18 +167,13 @@ pub async fn extract_track(
 ) -> Result<VideoEntry, String> {
     let app2 = app.clone();
     let path2 = path.clone();
-    // اسلات عملیات تکی با پرچم لغو تازه — قبل از شروع thread
-    let acquired = {
-        let st = app.state::<AppState>();
-        let mut ops = st.ops.lock().unwrap();
-        ops.acquire_single(&path)
-    };
-    let flag = acquired?;
+    // رزرو اتمیک اسلات عملیات تکی با پرچم لغو تازه (RAII — در Drop آزاد می‌شود)
+    let guard = acquire_single_op(&app.state::<AppState>().ops, &path)?;
+    let flag = guard.cancel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let st = app2.state::<AppState>();
         let r = run_extract_blocking(&st, &path2, stream_index, &flag);
-        // اسلات در همهٔ حالت‌ها آزاد شود
-        st.ops.lock().unwrap().release_single(&path2);
+        drop(guard); // آزادسازی در همهٔ مسیرها
         r
     })
     .await
@@ -306,16 +301,12 @@ pub async fn extract_track_for_review(
 ) -> Result<TrackReview, String> {
     let app2 = app.clone();
     let path2 = path.clone();
-    let acquired = {
-        let st = app.state::<AppState>();
-        let mut ops = st.ops.lock().unwrap();
-        ops.acquire_single(&path)
-    };
-    let flag = acquired?;
+    let guard = acquire_single_op(&app.state::<AppState>().ops, &path)?;
+    let flag = guard.cancel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let st = app2.state::<AppState>();
         let r = run_review_blocking(&st, &path2, stream_index, &flag);
-        st.ops.lock().unwrap().release_single(&path2);
+        drop(guard);
         r
     })
     .await
@@ -336,17 +327,8 @@ pub fn run_promote_blocking(
     path: &str,
     stream_index: u32,
 ) -> Result<VideoEntry, String> {
-    {
-        let ops = state.ops.lock().unwrap();
-        if ops.batch_cancel.is_some() {
-            return Err(
-                "یک عملیات گروهی در حال اجراست؛ صبر کنید یا ابتدا آن را متوقف کنید.".into(),
-            );
-        }
-        if ops.single_extracts.contains_key(path) {
-            return Err("عملیات دیگری روی همین ویدیو در جریان است.".into());
-        }
-    }
+    // رزرو اتمیک اسلات از ابتدا تا پایان (RAII — در همهٔ مسیرها آزاد می‌شود)
+    let guard = acquire_single_op(&state.ops, path)?;
 
     let Some(entry) = get_entry(state, path) else {
         return Err("این ویدیو در کتابخانه نیست.".into());
@@ -367,6 +349,22 @@ pub fn run_promote_blocking(
     let review_path = PathBuf::from(&review.review_path);
     if !review_path.is_file() {
         return Err("فایل بررسی روی دیسک پیدا نشد — دوباره استخراج آزمایشی بزنید.".into());
+    }
+
+    // اعتبارسنجی مجدد محتوای فایل بررسی — اگر پس از Review تغییر کرده و
+    // دیگر معتبر/فارسی نیست، Promote رد می‌شود و هیچ فایلی جابه‌جا نمی‌شود
+    let revalidation = crate::subtitle::validation::validate_file(&review_path);
+    if !revalidation.valid {
+        return Err(format!(
+            "فایل بررسی دیگر معتبر نیست ({}: {}) — Promote رد شد.",
+            revalidation.encoding,
+            revalidation.error.as_deref().unwrap_or("نامشخص")
+        ));
+    }
+    if !revalidation.has_persian {
+        return Err(
+            "محتوای فارسی در فایل بررسی پیدا نشد — Promote رد شد و فایل دست‌نخورده ماند.".into(),
+        );
     }
 
     let video = PathBuf::from(&entry.path);
@@ -404,17 +402,18 @@ pub fn run_promote_blocking(
     a.message = Some(format!(
         "استخراج شد: {} ({} cue، فارسی تأیید شد — از بررسی Track {stream_index})",
         target.file_name().unwrap_or_default().to_string_lossy(),
-        review.validation.cue_count
+        revalidation.cue_count
     ));
     a.last_extraction = Some(ExtractionOutcome {
         stream_index,
         target_path: target.to_string_lossy().to_string(),
-        validation: review.validation.clone(),
+        validation: revalidation,
         persian_confirmed: true,
     });
     a.analyzed_at_ms = now_ms();
     refresh_siblings(&mut updated);
     apply_entry(state, updated.clone());
+    drop(guard);
     Ok(updated)
 }
 

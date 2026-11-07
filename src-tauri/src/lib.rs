@@ -11,7 +11,7 @@ pub mod subtitle;
 pub mod tools;
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
@@ -69,7 +69,7 @@ pub fn run() {
                 last_scan: Mutex::new(None),
                 scanning: AtomicBool::new(false),
                 cancel_scan: AtomicBool::new(false),
-                ops: Mutex::new(state::OpsRegistry::default()),
+                ops: Arc::new(Mutex::new(state::OpsRegistry::default())),
             });
             app.manage(AppPaths { config_dir });
 
