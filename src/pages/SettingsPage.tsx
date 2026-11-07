@@ -14,7 +14,7 @@ const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }
 ];
 
 export function SettingsPage() {
-  const { settings, reloadSettings, tools } = useAppData();
+  const { settings, reloadSettings, tools, refreshTools, toolsLoading } = useAppData();
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
@@ -187,8 +187,57 @@ export function SettingsPage() {
         <SectionTitle
           icon={Wrench}
           title="ابزارهای خارجی"
-          extra={<Badge tone="neutral">خالی = تشخیص خودکار</Badge>}
+          extra={
+            <Button
+              onClick={refreshTools}
+              loading={toolsLoading}
+              className="h-8 px-3 text-xs"
+            >
+              بررسی دوباره
+            </Button>
+          }
         />
+        {/* وضعیت زندهٔ ابزارها — از داشبورد قبلی به تنظیمات منتقل شده */}
+        <div className="mb-4 space-y-2">
+          {tools.map((t) => {
+            const tone =
+              t.status === "found" ? "success" : t.status === "missing" ? "warn" : "danger";
+            const label = t.status === "found" ? "آماده" : t.status === "missing" ? "پیدا نشد" : "خراب";
+            return (
+              <div
+                key={t.id}
+                className="flex items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2"
+              >
+                <span
+                  className={`size-2 shrink-0 rounded-full ${
+                    t.status === "found"
+                      ? "bg-emerald-500"
+                      : t.status === "missing"
+                        ? "bg-amber-500"
+                        : "bg-red-500"
+                  }`}
+                />
+                <span className="w-44 shrink-0 text-sm text-ink-1">{t.name}</span>
+                <Badge tone={tone}>{label}</Badge>
+                <span
+                  dir="ltr"
+                  className="min-w-0 flex-1 truncate font-mono text-xs text-ink-3"
+                  title={t.path ?? t.detail ?? undefined}
+                >
+                  {t.path ?? t.detail ?? "—"}
+                </span>
+                {t.version && (
+                  <span
+                    dir="ltr"
+                    className="hidden shrink-0 font-mono text-[11px] text-ink-3 xl:block"
+                  >
+                    {t.version}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
         <div className="space-y-3">
           {TOOL_FIELDS.map(({ key, label, hint }) => {
             const status = toolStatus(key);
@@ -237,7 +286,7 @@ export function SettingsPage() {
             );
           })}
           <p className="text-xs text-ink-3">
-            در شروع اجرا و با دکمه «بررسی دوباره» در داشبورد، سلامت ابزارها آزموده می‌شود (اجرای
+            در شروع اجرا و با دکمهٔ «بررسی دوباره»، سلامت ابزارها آزموده می‌شود (اجرای
             <span dir="ltr" className="mx-1 font-mono">--version/--help</span>).
           </p>
         </div>
