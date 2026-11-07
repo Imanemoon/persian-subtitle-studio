@@ -1,0 +1,51 @@
+# ---- Node / Frontend ----
+node_modules/
+dist/
+*.local
+.vite/
+
+# ---- Rust ----
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Env & secrets (هرگز commit نشود) ----
+.env
+.env.*
+*.pem
+*.key
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Data safety: رسانه واقعی کاربر هرگز نباید وارد ریپو شود ----
+# نکته: پسوند .ts عمداً ignore نشده (تداخل با TypeScript)
+*.mkv
+*.mp4
+*.m4v
+*.mov
+*.avi
+*.m2ts
+*.mts
+*.webm
+*.mpg
+*.mpeg
+*.vob
+*.wmv
+*.flv
+*.rar
+*.7z
+*.srt
+*.ass
+*.ssa
+*.vtt
+*.sub
+*.idx
+
+# Test fixtures generated at runtime
+/tmp-fixtures/
