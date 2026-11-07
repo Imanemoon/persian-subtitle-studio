@@ -12,6 +12,10 @@ pub struct AppState {
     pub last_scan: Mutex<Option<ScanSummary>>,
     pub scanning: AtomicBool,
     pub cancel_scan: AtomicBool,
+    /// آیا عملیات گروهی تحلیل/استخراج در جریان است؟
+    pub ops_running: AtomicBool,
+    /// درخواست لغو عملیات گروهی/استخراج
+    pub cancel_ops: AtomicBool,
 }
 
 /// مسیرهای دائمی برنامه (تنظیمات و لاگ).
