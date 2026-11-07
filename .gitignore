@@ -3,6 +3,7 @@ node_modules/
 dist/
 *.local
 .vite/
+*.tsbuildinfo
 
 # ---- Rust ----
 src-tauri/target/
