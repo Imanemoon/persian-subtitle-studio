@@ -7,6 +7,8 @@ use crate::models::{AnalysisStatus, SubtitleFileInfo, SubtitleKind, SubtitleStre
 use super::encoding::{decode_bytes, has_persian_text};
 
 /// وضعیت تحلیل را از روی Streamهای شناخته‌شده تعیین می‌کند.
+///
+/// Track متنی فارسی = کاندید از روی Tag/عنوان، یا تأییدشده از طریق استخراج آزمایشی.
 pub fn classify_analysis(streams: &[SubtitleStream]) -> (AnalysisStatus, Option<String>) {
     if streams.is_empty() {
         return (
@@ -15,10 +17,10 @@ pub fn classify_analysis(streams: &[SubtitleStream]) -> (AnalysisStatus, Option<
         );
     }
 
-    let fa_text: Vec<&SubtitleStream> = streams
-        .iter()
-        .filter(|s| s.persian_candidate && s.kind == SubtitleKind::Text)
-        .collect();
+    let is_fa_text = |s: &SubtitleStream| {
+        s.kind == SubtitleKind::Text && (s.persian_candidate || s.persian_confirmed)
+    };
+    let fa_text_count = streams.iter().filter(|s| is_fa_text(s)).count();
     let fa_image_count = streams
         .iter()
         .filter(|s| s.persian_candidate && s.kind == SubtitleKind::Image)
@@ -28,15 +30,15 @@ pub fn classify_analysis(streams: &[SubtitleStream]) -> (AnalysisStatus, Option<
         .filter(|s| s.persian_candidate && s.kind == SubtitleKind::Unknown)
         .count();
 
-    if fa_text.len() == 1 {
+    if fa_text_count == 1 {
         return (AnalysisStatus::PersianTextTrackFound, None);
     }
-    if fa_text.len() > 1 {
+    if fa_text_count > 1 {
         return (
             AnalysisStatus::NeedsTrackSelection,
             Some(format!(
                 "چند Track متنی فارسی یافت شد ({}) — از جزئیات ویدیو یکی را انتخاب کنید",
-                fa_text.len()
+                fa_text_count
             )),
         );
     }
@@ -59,7 +61,7 @@ pub fn classify_analysis(streams: &[SubtitleStream]) -> (AnalysisStatus, Option<
     (
         AnalysisStatus::NoPersianTrack,
         Some(format!(
-            "زیرنویس داخلی هست اما Track فارسی در آن نیست ({} Track)",
+            "زیرنویس داخلی هست اما Track فارسی در آن نیست ({} Track) — برای Trackهای متنی می‌توانید «استخراج آزمایشی برای بررسی» بزنید",
             streams.len()
         )),
     )
@@ -150,7 +152,14 @@ mod tests {
             default_disposition: false,
             forced_disposition: false,
             persian_candidate: persian,
+            persian_confirmed: false,
         }
+    }
+
+    fn confirmed(index: u32, codec: &str) -> SubtitleStream {
+        let mut s = stream(index, codec, false);
+        s.persian_confirmed = true;
+        s
     }
 
     #[test]
@@ -183,6 +192,14 @@ mod tests {
         // زیرنویس هست ولی فارسی نیست
         let (status, _) = classify_analysis(&[stream(2, "subrip", false)]);
         assert_eq!(status, AnalysisStatus::NoPersianTrack);
+
+        // Track تأییدشده از جریان بررسی، هم‌ارز کاندید فارسی است
+        let (status, _) = classify_analysis(&[confirmed(2, "subrip")]);
+        assert_eq!(status, AnalysisStatus::PersianTextTrackFound);
+
+        // دو Track تأییدشده → انتخاب کاربر
+        let (status, _) = classify_analysis(&[confirmed(2, "subrip"), confirmed(3, "ass")]);
+        assert_eq!(status, AnalysisStatus::NeedsTrackSelection);
     }
 
     #[test]

@@ -186,6 +186,7 @@ pub fn parse_ffprobe_json(json: &str) -> Result<Vec<SubtitleStream>, String> {
             default_disposition: default,
             forced_disposition: forced,
             persian_candidate,
+            persian_confirmed: false,
         });
     }
     out.sort_by_key(|s| s.stream_index);

@@ -66,6 +66,9 @@ pub struct SubtitleStream {
     pub forced_disposition: bool,
     /// زبان/عنوان نشانه فارسی دارد (محتوا هنوز تأیید نشده)
     pub persian_candidate: bool,
+    /// محتوای این Track با استخراج آزمایشی به‌عنوان فارسی تأیید شده است
+    /// (برای Trackهای بدون Tag معتبر — فقط جریان review این را set می‌کند)
+    pub persian_confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +81,23 @@ pub struct VideoAnalysis {
     pub message: Option<String>,
     /// نتیجه آخرین استخراج این ویدیو
     pub last_extraction: Option<ExtractionOutcome>,
+    /// استخراج‌های آزمایشی (بررسی محتوا) انجام‌شده روی این ویدیو
+    #[serde(default)]
+    pub reviews: Vec<TrackReview>,
+}
+
+/// نتیجه «استخراج آزمایشی برای بررسی» یک Track متنی — مستقل از نام‌گذاری استاندارد.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackReview {
+    pub stream_index: u32,
+    /// مسیر فایل بررسی: `<base>.track-<N>.review.srt`
+    pub review_path: String,
+    pub validation: SubtitleValidation,
+    /// آیا محتوای بررسی‌شده واقعاً فارسی بود؟
+    pub persian_confirmed: bool,
+    /// آیا بعداً به `<base>.fa.srt` استاندارد تبدیل شده؟
+    pub promoted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

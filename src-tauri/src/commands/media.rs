@@ -51,6 +51,7 @@ pub(crate) fn set_status_core(
         streams: Vec::new(),
         message: None,
         last_extraction: None,
+        reviews: Vec::new(),
     });
     analysis.status = status;
     if message.is_some() {
@@ -111,6 +112,7 @@ pub fn run_analyze_blocking(state: &AppState, path: &str) -> Result<VideoEntry, 
         streams: Vec::new(),
         message: None,
         last_extraction: None,
+        reviews: Vec::new(),
     });
     analysis.status = status;
     analysis.message = message;
@@ -138,9 +140,6 @@ pub async fn analyze_video(app: AppHandle, path: String) -> Result<VideoEntry, S
 /// تحلیل گروهی همه ویدیوهای کتابخانه در پس‌زمینه؛ تعداد صف را برمی‌گرداند.
 #[tauri::command]
 pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
-    if state.ops_running.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("یک عملیات گروهی در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
-    }
     let paths: Vec<String> = state
         .library
         .lock()
@@ -152,23 +151,19 @@ pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, St
         return Err("کتابخانه خالی است — ابتدا اسکن کنید.".into());
     }
 
+    // پرچم لغو تازه مخصوص این عملیات گروهی
+    let cancel = state.ops.lock().unwrap().start_batch()?;
     let total = paths.len() as u64;
-    state
-        .ops_running
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    state
-        .cancel_ops
-        .store(false, std::sync::atomic::Ordering::SeqCst);
     crate::logging::info("media", &format!("تحلیل گروهی {total} ویدیو شروع شد"));
 
     let app2 = app.clone();
     std::thread::spawn(move || {
         for (i, path) in paths.into_iter().enumerate() {
-            let st = app2.state::<AppState>();
-            if st.cancel_ops.load(std::sync::atomic::Ordering::SeqCst) {
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 crate::logging::warn("media", "تحلیل گروهی لغو شد");
                 break;
             }
+            let st = app2.state::<AppState>();
             let _ = app2.emit(
                 "ops:progress",
                 &OpsProgress {
@@ -189,8 +184,7 @@ pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, St
             }
         }
         let st = app2.state::<AppState>();
-        st.ops_running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        st.ops.lock().unwrap().end_batch();
         crate::logging::info("media", "تحلیل گروهی پایان یافت");
         let _ = app2.emit(
             "ops:done",

@@ -1,6 +1,9 @@
 //! دستورات استخراج زیرنویس داخلی — همیشه دو مرحله‌ای برای «Extract All»:
 //! اول `plan_extraction_all` (خلاصه برای تأیید کاربر)، بعد `execute_extraction_plan`.
 //!
+//! عمر لغو: هر عملیات (گروهی یا تکی) پرچم لغو مخصوص خودش را در `OpsRegistry`
+//! می‌گیرد؛ لغو یک عملیات هرگز عملیات دیگر را متوقف نمی‌کند.
+//!
 //! هسته منطق مستقل از Tauri است و فقط با `&AppState` کار می‌کند.
 
 use std::path::{Path, PathBuf};
@@ -10,18 +13,20 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::models::{
     AnalysisStatus, ExtractionOutcome, ExtractionPlan, ExtractionPlanItem, OpsProgress,
-    SkippedExtraction, SubtitleKind, SubtitleValidation, VideoEntry,
+    SkippedExtraction, SubtitleKind, SubtitleValidation, TrackReview, VideoEntry,
 };
 use crate::state::AppState;
 
 use super::media::{apply_entry, get_entry, now_ms, resolve_tool, set_status_core};
 
-/// هسته استخراج — برای عملیات تکی و گروهی مشترک.
-/// State را به‌روز می‌کند و نتیجه را برمی‌گرداند؛ مستقل از Tauri.
+/// هسته استخراج استاندارد به `<base>.fa.srt` — برای عملیات تکی و گروهی مشترک.
+/// پرچم لغو از تماس‌گیرنده می‌آید (اسلات عملیات تکی یا پرچم عملیات گروهی).
+/// State را به‌روز می‌کند؛ مستقل از Tauri.
 pub fn run_extract_blocking(
     state: &AppState,
     path: &str,
     stream_index: u32,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<ExtractionOutcome, String> {
     let Some(entry) = get_entry(state, path) else {
         return Err("این ویدیو در کتابخانه نیست — ابتدا اسکن کنید.".into());
@@ -38,8 +43,9 @@ pub fn run_extract_blocking(
             "Track با شماره {stream_index} در تحلیل این ویدیو نیست."
         ));
     };
-    if !stream.persian_candidate || stream.kind != SubtitleKind::Text {
-        return Err("فقط Track متنیِ کاندید فارسی قابل استخراج است.".into());
+    if stream.kind != SubtitleKind::Text || !(stream.persian_candidate || stream.persian_confirmed)
+    {
+        return Err("فقط Track متنیِ فارسی (کاندید یا تأییدشده) قابل استخراج مستقیم است.".into());
     }
 
     let video = PathBuf::from(&entry.path);
@@ -55,73 +61,11 @@ pub fn run_extract_blocking(
     );
 
     let ffmpeg = resolve_tool(state, "ffmpeg")?;
-    let result = crate::subtitle::extraction::extract_fa_srt(
-        &ffmpeg,
-        &video,
-        stream_index,
-        &state.cancel_ops,
-    );
+    let result = crate::subtitle::extraction::extract_fa_srt(&ffmpeg, &video, stream_index, cancel);
 
     match result {
         Ok((target, validation)) => {
-            let persian_confirmed = validation.has_persian;
-            crate::logging::info(
-                "subtitle",
-                &format!(
-                    "استخراج موفق: {} ({} cue، encoding: {}، فارسی: {})",
-                    target.file_name().unwrap_or_default().to_string_lossy(),
-                    validation.cue_count,
-                    validation.encoding,
-                    if persian_confirmed {
-                        "تأیید شد"
-                    } else {
-                        "تأیید نشد!"
-                    }
-                ),
-            );
-            if !persian_confirmed {
-                crate::logging::warn(
-                    "subtitle",
-                    "Track با Tag فارسی استخراج شد اما متن آن فارسی نیست — به‌عنوان فارسیِ تأییدشده ثبت نشد",
-                );
-            }
-
-            let outcome = ExtractionOutcome {
-                stream_index,
-                target_path: target.to_string_lossy().to_string(),
-                validation,
-                persian_confirmed,
-            };
-
-            let mut updated = entry.clone();
-            let a = updated.analysis.as_mut().expect("analysis exists");
-            a.status = AnalysisStatus::Extracted;
-            a.message = Some(if persian_confirmed {
-                format!(
-                    "استخراج شد: {} ({} cue، فارسی تأیید شد)",
-                    target.file_name().unwrap_or_default().to_string_lossy(),
-                    outcome.validation.cue_count
-                )
-            } else {
-                format!(
-                    "استخراج شد: {} — اما محتوای آن فارسی تأیید نشد",
-                    target.file_name().unwrap_or_default().to_string_lossy()
-                )
-            });
-            a.last_extraction = Some(outcome.clone());
-            a.analyzed_at_ms = now_ms();
-
-            // فایل .fa.srt جدید کنار ویدیو است — فهرست زیرنویس‌های کناری تازه شود
-            if let (Some(dir), Some(stem)) = (
-                Some(Path::new(&updated.parent_dir)).filter(|d| d.is_dir()),
-                Path::new(&updated.path).file_stem(),
-            ) {
-                updated.sibling_subtitles =
-                    crate::scanner::scan_sibling_subtitles(dir, &stem.to_string_lossy());
-            }
-
-            apply_entry(state, updated);
-            Ok(outcome)
+            finish_successful_extract(state, &entry, stream_index, target, validation)
         }
         Err(err) => {
             let message = err.message();
@@ -145,6 +89,76 @@ pub fn run_extract_blocking(
     }
 }
 
+fn finish_successful_extract(
+    state: &AppState,
+    entry: &VideoEntry,
+    stream_index: u32,
+    target: PathBuf,
+    validation: SubtitleValidation,
+) -> Result<ExtractionOutcome, String> {
+    let persian_confirmed = validation.has_persian;
+    crate::logging::info(
+        "subtitle",
+        &format!(
+            "استخراج موفق: {} ({} cue، encoding: {}، فارسی: {})",
+            target.file_name().unwrap_or_default().to_string_lossy(),
+            validation.cue_count,
+            validation.encoding,
+            if persian_confirmed {
+                "تأیید شد"
+            } else {
+                "تأیید نشد!"
+            }
+        ),
+    );
+    if !persian_confirmed {
+        crate::logging::warn(
+            "subtitle",
+            "Track با Tag فارسی استخراج شد اما متن آن فارسی نیست — به‌عنوان فارسیِ تأییدشده ثبت نشد",
+        );
+    }
+
+    let outcome = ExtractionOutcome {
+        stream_index,
+        target_path: target.to_string_lossy().to_string(),
+        validation,
+        persian_confirmed,
+    };
+
+    let mut updated = entry.clone();
+    let a = updated.analysis.as_mut().expect("analysis exists");
+    a.status = AnalysisStatus::Extracted;
+    a.message = Some(if persian_confirmed {
+        format!(
+            "استخراج شد: {} ({} cue، فارسی تأیید شد)",
+            target.file_name().unwrap_or_default().to_string_lossy(),
+            outcome.validation.cue_count
+        )
+    } else {
+        format!(
+            "استخراج شد: {} — اما محتوای آن فارسی تأیید نشد",
+            target.file_name().unwrap_or_default().to_string_lossy()
+        )
+    });
+    a.last_extraction = Some(outcome.clone());
+    a.analyzed_at_ms = now_ms();
+
+    // فایل .fa.srt جدید کنار ویدیو است — فهرست زیرنویس‌های کناری تازه شود
+    refresh_siblings(&mut updated);
+    apply_entry(state, updated);
+    Ok(outcome)
+}
+
+fn refresh_siblings(updated: &mut VideoEntry) {
+    if let (Some(dir), Some(stem)) = (
+        Some(Path::new(&updated.parent_dir)).filter(|d| d.is_dir()),
+        Path::new(&updated.path).file_stem(),
+    ) {
+        updated.sibling_subtitles =
+            crate::scanner::scan_sibling_subtitles(dir, &stem.to_string_lossy());
+    }
+}
+
 #[tauri::command(async)]
 pub async fn extract_track(
     app: AppHandle,
@@ -153,19 +167,272 @@ pub async fn extract_track(
 ) -> Result<VideoEntry, String> {
     let app2 = app.clone();
     let path2 = path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    // اسلات عملیات تکی با پرچم لغو تازه — قبل از شروع thread
+    let acquired = {
+        let st = app.state::<AppState>();
+        let mut ops = st.ops.lock().unwrap();
+        ops.acquire_single(&path)
+    };
+    let flag = acquired?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let st = app2.state::<AppState>();
-        run_extract_blocking(&st, &path2, stream_index)
+        let r = run_extract_blocking(&st, &path2, stream_index, &flag);
+        // اسلات در همهٔ حالت‌ها آزاد شود
+        st.ops.lock().unwrap().release_single(&path2);
+        r
     })
     .await
-    .map_err(|e| format!("خطای Thread: {e}"))??;
+    .map_err(|e| format!("خطای Thread: {e}"))?;
 
+    result?;
     let state = app.state::<AppState>();
     let entry = get_entry(&state, &path).ok_or_else(|| "ویدیو در کتابخانه پیدا نشد".to_string())?;
     // وضعیت Extracted/Failed و زیرنویس‌های کناری تازه باید به UI برسد
     let _ = app.emit("library:entry", &entry);
     Ok(entry)
 }
+
+// ---------------------------------------------------------------------------
+// استخراج آزمایشی برای بررسی (Trackهای متنی بدون Tag معتبر)
+// ---------------------------------------------------------------------------
+
+/// هسته استخراج آزمایشی: خروجی به `<base>.track-<N>.review.srt`، بدون بازنویسی.
+/// وضعیت اصلی ویدیو را عوض نمی‌کند؛ فقط نتیجه را ثبت و Track را (در صورت تأیید
+/// محتوا) به‌عنوان فارسیِ تأییدشده علامت می‌زند.
+pub fn run_review_blocking(
+    state: &AppState,
+    path: &str,
+    stream_index: u32,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<TrackReview, String> {
+    let Some(entry) = get_entry(state, path) else {
+        return Err("این ویدیو در کتابخانه نیست — ابتدا اسکن کنید.".into());
+    };
+    let Some(analysis) = entry.analysis.clone() else {
+        return Err("ابتدا ویدیو را تحلیل کنید (Analyze).".into());
+    };
+    let Some(stream) = analysis
+        .streams
+        .iter()
+        .find(|s| s.stream_index == stream_index)
+    else {
+        return Err(format!(
+            "Track با شماره {stream_index} در تحلیل این ویدیو نیست."
+        ));
+    };
+    if stream.kind != SubtitleKind::Text {
+        return Err("استخراج آزمایشی فقط برای Trackهای متنی معنا دارد.".into());
+    }
+
+    let video = PathBuf::from(&entry.path);
+    crate::logging::info(
+        "subtitle",
+        &format!(
+            "استخراج آزمایشی Track {stream_index} ({}) از {} برای بررسی محتوا",
+            stream.codec_name, entry.file_name
+        ),
+    );
+
+    let ffmpeg = resolve_tool(state, "ffmpeg")?;
+    let result =
+        crate::subtitle::extraction::extract_for_review(&ffmpeg, &video, stream_index, cancel);
+
+    match result {
+        Ok((review_path, validation)) => {
+            let persian_confirmed = validation.has_persian;
+            let review = TrackReview {
+                stream_index,
+                review_path: review_path.to_string_lossy().to_string(),
+                validation: validation.clone(),
+                persian_confirmed,
+                promoted: false,
+            };
+            crate::logging::info(
+                "subtitle",
+                &format!(
+                    "فایل بررسی ساخته شد: {} ({} cue، فارسی: {})",
+                    review_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    validation.cue_count,
+                    if persian_confirmed {
+                        "تأیید شد"
+                    } else {
+                        "تأیید نشد"
+                    }
+                ),
+            );
+
+            let mut updated = entry.clone();
+            let a = updated.analysis.as_mut().expect("analysis exists");
+            a.reviews.push(review.clone());
+
+            // تأیید محتوا را روی خود Track ثبت کن و وضعیت را دوباره ارزیابی کن
+            if let Some(s) = a
+                .streams
+                .iter_mut()
+                .find(|s| s.stream_index == stream_index)
+            {
+                s.persian_confirmed = persian_confirmed;
+            }
+            let (new_status, new_message) =
+                crate::subtitle::detection::classify_analysis(&a.streams);
+            a.status = new_status;
+            a.message = new_message;
+            a.analyzed_at_ms = now_ms();
+
+            // فایل بررسی کنار ویدیوست — زیرنویس‌های کناری تازه شوند
+            refresh_siblings(&mut updated);
+            apply_entry(state, updated);
+            Ok(review)
+        }
+        Err(err) => {
+            let message = err.message();
+            crate::logging::error(
+                "subtitle",
+                &format!("استخراج آزمایشی {} ناموفق: {message}", entry.file_name),
+            );
+            Err(message)
+        }
+    }
+}
+
+#[tauri::command(async)]
+pub async fn extract_track_for_review(
+    app: AppHandle,
+    path: String,
+    stream_index: u32,
+) -> Result<TrackReview, String> {
+    let app2 = app.clone();
+    let path2 = path.clone();
+    let acquired = {
+        let st = app.state::<AppState>();
+        let mut ops = st.ops.lock().unwrap();
+        ops.acquire_single(&path)
+    };
+    let flag = acquired?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let st = app2.state::<AppState>();
+        let r = run_review_blocking(&st, &path2, stream_index, &flag);
+        st.ops.lock().unwrap().release_single(&path2);
+        r
+    })
+    .await
+    .map_err(|e| format!("خطای Thread: {e}"))?;
+
+    let review = result?;
+    // وضعیت و Trackهای تأییدشده ممکن است تغییر کرده باشد
+    let state = app.state::<AppState>();
+    if let Some(entry) = get_entry(&state, &path) {
+        let _ = app.emit("library:entry", &entry);
+    }
+    Ok(review)
+}
+
+/// هسته تبدیل فایل بررسی تأییدشده به `<base>.fa.srt` — مستقل از Tauri.
+pub fn run_promote_blocking(
+    state: &AppState,
+    path: &str,
+    stream_index: u32,
+) -> Result<VideoEntry, String> {
+    {
+        let ops = state.ops.lock().unwrap();
+        if ops.batch_cancel.is_some() {
+            return Err(
+                "یک عملیات گروهی در حال اجراست؛ صبر کنید یا ابتدا آن را متوقف کنید.".into(),
+            );
+        }
+        if ops.single_extracts.contains_key(path) {
+            return Err("عملیات دیگری روی همین ویدیو در جریان است.".into());
+        }
+    }
+
+    let Some(entry) = get_entry(state, path) else {
+        return Err("این ویدیو در کتابخانه نیست.".into());
+    };
+    let Some(analysis) = entry.analysis.clone() else {
+        return Err("ابتدا ویدیو را تحلیل کنید.".into());
+    };
+    // آخرین بررسیِ همین Track که تأیید شده و هنوز تبدیل نشده
+    let Some(review) = analysis
+        .reviews
+        .iter()
+        .rev()
+        .find(|r| r.stream_index == stream_index && r.persian_confirmed && !r.promoted)
+    else {
+        return Err("بررسی تأییدشده‌ای برای این Track وجود ندارد (یا قبلاً تبدیل شده است).".into());
+    };
+
+    let review_path = PathBuf::from(&review.review_path);
+    if !review_path.is_file() {
+        return Err("فایل بررسی روی دیسک پیدا نشد — دوباره استخراج آزمایشی بزنید.".into());
+    }
+
+    let video = PathBuf::from(&entry.path);
+    let target =
+        crate::subtitle::detection::check_extraction_target(&video, &entry.sibling_subtitles)?;
+
+    if target.exists() {
+        return Err(format!(
+            "مقصد «{}» موجود است — هیچ فایلی بازنویسی نمی‌شود.",
+            target.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    }
+    std::fs::rename(&review_path, &target)
+        .map_err(|e| format!("انتقال فایل بررسی به مقصد: {e}"))?;
+
+    crate::logging::info(
+        "subtitle",
+        &format!(
+            "فایل بررسی به زیرنویس استاندارد تبدیل شد: {}",
+            target.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    );
+
+    let mut updated = entry.clone();
+    let a = updated.analysis.as_mut().expect("analysis exists");
+    if let Some(r) = a
+        .reviews
+        .iter_mut()
+        .rev()
+        .find(|r| r.stream_index == stream_index && !r.promoted)
+    {
+        r.promoted = true;
+    }
+    a.status = AnalysisStatus::Extracted;
+    a.message = Some(format!(
+        "استخراج شد: {} ({} cue، فارسی تأیید شد — از بررسی Track {stream_index})",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        review.validation.cue_count
+    ));
+    a.last_extraction = Some(ExtractionOutcome {
+        stream_index,
+        target_path: target.to_string_lossy().to_string(),
+        validation: review.validation.clone(),
+        persian_confirmed: true,
+    });
+    a.analyzed_at_ms = now_ms();
+    refresh_siblings(&mut updated);
+    apply_entry(state, updated.clone());
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn promote_review(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    stream_index: u32,
+) -> Result<VideoEntry, String> {
+    let updated = run_promote_blocking(&state, &path, stream_index)?;
+    let _ = app.emit("library:entry", &updated);
+    Ok(updated)
+}
+
+// ---------------------------------------------------------------------------
+// Extract All (پلن + اجرای گروهی)
+// ---------------------------------------------------------------------------
 
 /// هسته ساخت پلن — مستقل از Tauri؛ هم command و هم تست‌ها استفاده می‌کنند.
 pub fn plan_extraction_from_library(library: &[VideoEntry]) -> ExtractionPlan {
@@ -186,11 +453,9 @@ pub fn plan_extraction_from_library(library: &[VideoEntry]) -> ExtractionPlan {
 
         match analysis.status {
             AnalysisStatus::PersianTextTrackFound => {
-                let Some(stream) = analysis
-                    .streams
-                    .iter()
-                    .find(|s| s.persian_candidate && s.kind == SubtitleKind::Text)
-                else {
+                let Some(stream) = analysis.streams.iter().find(|s| {
+                    s.kind == SubtitleKind::Text && (s.persian_candidate || s.persian_confirmed)
+                }) else {
                     skipped.push(skip(
                         "وضعیت و Trackها هم‌خوان نیست — دوباره تحلیل کنید".into(),
                     ));
@@ -218,7 +483,9 @@ pub fn plan_extraction_from_library(library: &[VideoEntry]) -> ExtractionPlan {
                 "فقط Track تصویری دارد — استخراج متن به OCR نیاز دارد".into(),
             )),
             AnalysisStatus::NoEmbeddedSubtitle => skipped.push(skip("زیرنویس داخلی ندارد".into())),
-            AnalysisStatus::NoPersianTrack => skipped.push(skip("Track فارسی ندارد".into())),
+            AnalysisStatus::NoPersianTrack => skipped.push(skip(
+                "Track فارسی ندارد — در صورت شک می‌توانید استخراج آزمایشی بزنید".into(),
+            )),
             AnalysisStatus::Extracted => skipped.push(skip("قبلاً استخراج شده".into())),
             AnalysisStatus::InvalidSubtitle => {
                 skipped.push(skip("زیرنویس موجود نامعتبر است — بررسی دستی لازم".into()))
@@ -258,18 +525,19 @@ fn track_label(s: &crate::models::SubtitleStream) -> String {
 
 /// حلقه اجرای موارد پلن — مشترک بین command گروهی و تست‌ها.
 /// `on_progress` برای هر مورد و `on_updated` بعد از تغییر وضعیت هر ویدیو صدا
-/// زده می‌شود. خروجی: (موفق، ناموفق)
+/// زده می‌شود. پرچم لغو از عملیات گروهی می‌آید. خروجی: (موفق، ناموفق)
 pub fn execute_plan_items(
     state: &AppState,
     total: u64,
     items: &[ExtractionPlanItem],
+    cancel: &std::sync::atomic::AtomicBool,
     mut on_progress: impl FnMut(OpsProgress),
     mut on_updated: impl FnMut(VideoEntry),
 ) -> (u64, u64) {
     let mut success = 0u64;
     let mut failed = 0u64;
     for (i, item) in items.iter().enumerate() {
-        if state.cancel_ops.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::SeqCst) {
             crate::logging::warn("subtitle", "پلن استخراج توسط کاربر لغو شد");
             break;
         }
@@ -280,7 +548,7 @@ pub fn execute_plan_items(
             video_path: item.video_path.clone(),
             message: item.track_label.clone(),
         });
-        match run_extract_blocking(state, &item.video_path, item.stream_index) {
+        match run_extract_blocking(state, &item.video_path, item.stream_index, cancel) {
             Ok(_) => success += 1,
             Err(err) => {
                 failed += 1;
@@ -308,9 +576,6 @@ pub fn execute_extraction_plan(
     if items.is_empty() {
         return Err("پلن استخراج خالی است.".into());
     }
-    if state.ops_running.load(Ordering::SeqCst) {
-        return Err("یک عملیات گروهی در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
-    }
 
     // ایمنی: در لحظه اجرا دوباره مطابقت پلن با کتابخانه بررسی می‌شود
     for item in &items {
@@ -322,9 +587,9 @@ pub fn execute_extraction_plan(
         }
     }
 
+    // پرچم لغو تازه مخصوص این عملیات گروهی
+    let cancel = state.ops.lock().unwrap().start_batch()?;
     let total = items.len() as u64;
-    state.ops_running.store(true, Ordering::SeqCst);
-    state.cancel_ops.store(false, Ordering::SeqCst);
     crate::logging::info(
         "subtitle",
         &format!("اجرای پلن استخراج با {total} مورد شروع شد"),
@@ -337,6 +602,7 @@ pub fn execute_extraction_plan(
             &st,
             total,
             &items,
+            &cancel,
             |p| {
                 let _ = app2.emit("ops:progress", &p);
             },
@@ -344,7 +610,7 @@ pub fn execute_extraction_plan(
                 let _ = app2.emit("library:entry", &updated);
             },
         );
-        st.ops_running.store(false, Ordering::SeqCst);
+        st.ops.lock().unwrap().end_batch();
         crate::logging::info(
             "subtitle",
             &format!("پلن استخراج تمام شد: {success} موفق، {failed} ناموفق"),
@@ -364,14 +630,14 @@ pub fn execute_extraction_plan(
     Ok(total)
 }
 
+/// لغو همهٔ عملیات جاری (گروهی + استخراج‌های تکی). خروجی: آیا چیزی در جریان بود؟
 #[tauri::command]
 pub fn cancel_subtitle_ops(state: State<'_, AppState>) -> bool {
-    let running = state.ops_running.load(Ordering::SeqCst);
-    state.cancel_ops.store(true, Ordering::SeqCst);
-    if running {
+    let any = state.ops.lock().unwrap().cancel_all();
+    if any {
         crate::logging::info("subtitle", "درخواست لغو عملیات ثبت شد");
     }
-    running
+    any
 }
 
 /// اعتبارسنجی یک فایل زیرنویس دلخواه (برای دکمه «بررسی» در UI).

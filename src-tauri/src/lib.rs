@@ -69,8 +69,7 @@ pub fn run() {
                 last_scan: Mutex::new(None),
                 scanning: AtomicBool::new(false),
                 cancel_scan: AtomicBool::new(false),
-                ops_running: AtomicBool::new(false),
-                cancel_ops: AtomicBool::new(false),
+                ops: Mutex::new(state::OpsRegistry::default()),
             });
             app.manage(AppPaths { config_dir });
 
@@ -89,6 +88,8 @@ pub fn run() {
             commands::media::analyze_video,
             commands::media::analyze_all,
             commands::subtitle::extract_track,
+            commands::subtitle::extract_track_for_review,
+            commands::subtitle::promote_review,
             commands::subtitle::plan_extraction_all,
             commands::subtitle::execute_extraction_plan,
             commands::subtitle::cancel_subtitle_ops,

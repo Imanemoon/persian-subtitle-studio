@@ -41,7 +41,7 @@ impl ExtractError {
                 v.error.as_deref().unwrap_or("دلیل نامشخص")
             ),
             Self::TargetExists(p) => format!(
-                "مقصد «{}» در حین عملیات ایجاد شد — برای جلوگیری از بازنویسی انصراف",
+                "مقصد «{}» موجود است — برای جلوگیری از بازنویسی هیچ فایلی دست نخورد",
                 p.display()
             ),
             Self::Io(e) => format!("خطای فایل: {e}"),
@@ -66,9 +66,49 @@ pub fn extract_fa_srt(
         .to_string_lossy()
         .into_owned();
 
+    let target = dir.join(format!("{base}.fa.srt"));
+    extract_and_move(ffmpeg, video, stream_index, &target, cancel)
+}
+
+/// مسیر فایل بررسی برای یک Track: `<base>.track-<N>.review.srt`
+pub fn review_target(video: &Path, stream_index: u32) -> Option<PathBuf> {
+    let base = video.file_stem()?.to_string_lossy().into_owned();
+    let dir = video.parent().filter(|d| !d.as_os_str().is_empty())?;
+    Some(dir.join(format!("{base}.track-{stream_index}.review.srt")))
+}
+
+/// استخراج آزمایشی یک Track به `<base>.track-<N>.review.srt` — بدون بازنویسی.
+pub fn extract_for_review(
+    ffmpeg: &Path,
+    video: &Path,
+    stream_index: u32,
+    cancel: &AtomicBool,
+) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
+    let target = review_target(video, stream_index)
+        .ok_or_else(|| ExtractError::Io("نمی‌توان مسیر فایل بررسی را ساخت".into()))?;
+    extract_and_move(ffmpeg, video, stream_index, &target, cancel)
+}
+
+/// هسته مشترک: temp یکتا → اعتبارسنجی → انتقال اتمیک بدون بازنویسی.
+/// در همهٔ مسیرهای خطا فقط فایل موقتِ همین عملیات پاک می‌شود.
+fn extract_and_move(
+    ffmpeg: &Path,
+    video: &Path,
+    stream_index: u32,
+    target: &Path,
+    cancel: &AtomicBool,
+) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
+    let dir = target
+        .parent()
+        .ok_or_else(|| ExtractError::Io("مقصد پوشه والد ندارد".into()))?;
+    let base = video
+        .file_stem()
+        .ok_or_else(|| ExtractError::Io("نام ویدیو نامعتبر است".into()))?
+        .to_string_lossy()
+        .into_owned();
+
     let token = unique_token();
     let temp = dir.join(format!("{base}.fa.extracting.{token}.srt"));
-    let target = dir.join(format!("{base}.fa.srt"));
 
     let result = extract_to(ffmpeg, video, stream_index, &temp, cancel);
     match result {
@@ -76,13 +116,13 @@ pub fn extract_fa_srt(
             // انتقال اتمیک روی همان درایو — بدون بازنویسی
             if target.exists() {
                 let _ = std::fs::remove_file(&temp);
-                return Err(ExtractError::TargetExists(target));
+                return Err(ExtractError::TargetExists(target.to_path_buf()));
             }
-            std::fs::rename(&temp, &target).map_err(|e| {
+            std::fs::rename(&temp, target).map_err(|e| {
                 let _ = std::fs::remove_file(&temp);
                 ExtractError::Io(format!("انتقال به مقصد: {e}"))
             })?;
-            Ok((target, validation))
+            Ok((target.to_path_buf(), validation))
         }
         Err(e) => {
             // پاک‌سازی فقط فایل موقتِ همین عملیات
