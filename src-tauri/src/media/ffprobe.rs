@@ -133,11 +133,11 @@ pub fn probe_subtitle_streams(
             let _ = child.kill();
             let _ = child.wait();
             // Threadهای خواندن pipe: برای ffprobe واقعی لوله با مرگ فرایند
-            // بسته می‌شود و این joinها بلافاصله برمی‌گردند؛ join مستقیم اینجا
-            // انجام نمی‌شود چون اگر فرایندِ نوه‌ای هندل لوله را به ارث برده
-            // باشد (فقط در فرایندهای جعلی تست رخ می‌دهد)، join تا خروج نوه
-            // مسدود می‌شد. Threadها detached می‌شوند و به‌هرحال با بسته‌شدن
-            // لوله تمام می‌شوند — هیچ Thread یا Process بی‌صاحبی نمی‌ماند.
+            // بسته می‌شود و join بلافاصله برمی‌گردد؛ join مستقیم اینجا انجام
+            // نمی‌شود چون در ویندوز اگر فرایند نوه‌ای هندل لوله را به ارث
+            // برده باشد، join تا خروج نوه مسدود می‌ماند. Threadها detached
+            // می‌شوند و تا بسته‌شدن همهٔ هندل‌های نوشتنِ لوله زنده می‌مانند —
+            // برای ffprobe واقعی یعنی لحظه‌ای؛ «همیشه بلافاصله» ادعا نمی‌کنیم.
             drop(t_out);
             drop(t_err);
             return Err(ProbeError::Cancelled);
@@ -146,6 +146,7 @@ pub fn probe_subtitle_streams(
             Ok(Some(st)) => break Some(st),
             Ok(None) => {
                 if Instant::now() >= deadline {
+                    // جمع‌آوری کامل در مسیر Timeout هم تضمین می‌شود
                     let _ = child.kill();
                     let _ = child.wait();
                     break None;
@@ -153,7 +154,13 @@ pub fn probe_subtitle_streams(
                 std::thread::sleep(Duration::from_millis(40));
             }
             Err(e) => {
+                // جمع‌آوری کامل فرایند (kill + wait) — خطای اصلی حفظ می‌شود
                 let _ = child.kill();
+                let _ = child.wait();
+                // خواننده‌های pipe مثل مسیر لغو detached می‌شوند (ایمن: فقط
+                // خواندن در بافر خودشان) و با بسته‌شدن لوله خاتمه می‌یابند
+                drop(t_out);
+                drop(t_err);
                 return Err(ProbeError::Failed(format!("انتظار برای FFprobe: {e}")));
             }
         }
@@ -237,20 +244,53 @@ pub fn parse_ffprobe_json(json: &str) -> Result<Vec<SubtitleStream>, String> {
     Ok(out)
 }
 
-/// ابزار تست: «ffprobe» جعلی به‌شکل batch — به‌اندازهٔ مشخص صبر می‌کند و
-/// JSON می‌دهد. برای تست لغو بدون وابستگی به سرعت واقعی ffprobe.
+/// ابزار تست: «ffprobe» جعلی به‌شکل batch — برای تست لغو بدون وابستگی به
+/// سرعت واقعی ffprobe و بدون سنجش زمان‌بندی با sleep.
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::{Path, PathBuf};
 
+    fn batch_path(dir: &Path, tag: &str) -> PathBuf {
+        dir.join(format!("fake-probe-{tag}.cmd"))
+    }
+
+    /// ffprobe جعلی که ~sleep_secs صبر می‌کند و سپس JSON می‌دهد.
+    /// خواب با ping است (یک فرایند فرزند کوتاه که قبل از پایان batch خودش
+    /// تمام می‌شود) — فقط برای مسیرهای موفق تست استفاده شود، نه لغو.
     pub fn write_fake_probe(dir: &Path, tag: &str, sleep_secs: u32, json: &str) -> PathBuf {
-        let path = dir.join(format!("fake-probe-{tag}.cmd"));
+        let path = batch_path(dir, tag);
         // ping هر ثانیه یک بار تیک می‌خورد → n = sleep+1 ≈ sleep ثانیه
         std::fs::write(
             &path,
             format!(
                 "@echo off\r\nping -n {} 127.0.0.1 > nul\r\necho {}\r\n",
                 sleep_secs + 1,
+                json
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    /// ffprobe جعلی «در جریان» بدون هیچ فرایند فرزند:
+    /// ۱) بلافاصله فایل marker را می‌نویسد (دست‌دادن شروع با تست)
+    /// ۲) حلقهٔ محاسباتی خالص cmd اجرا می‌کند — kill کردن فرایند، کل حلقه را
+    ///    فوراً می‌کشد و **هیچ نوه‌ای باقی نمی‌گذارد**
+    /// ۳) اگر تا آخر حلقه زنده بماند، در انتها JSON می‌دهد
+    pub fn write_fake_probe_busy_loop(
+        dir: &Path,
+        tag: &str,
+        iterations: u64,
+        json: &str,
+        marker: &Path,
+    ) -> PathBuf {
+        let path = batch_path(dir, tag);
+        std::fs::write(
+            &path,
+            format!(
+                "@echo off\r\necho started > \"{}\"\r\nfor /l %%i in (1,1,{}) do @set /a x=%%i >nul\r\necho {}\r\n",
+                marker.display(),
+                iterations,
                 json
             ),
         )
@@ -266,7 +306,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Instant;
-    use test_support::write_fake_probe;
+    use test_support::{write_fake_probe, write_fake_probe_busy_loop};
 
     /// JSON معتبر با یک Track متنی فارسی — برای ffprobe جعلی
     const FAKE_JSON_ONE_FA: &str = r#"{"streams": [{"index": 2, "codec_name": "subrip", "codec_type": "subtitle", "tags": {"language": "fas", "title": "فارسی"}}]}"#;
@@ -431,7 +471,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// لغو حین پروب: فرایند فرزند kill و جمع‌آوری می‌شود و خطا Cancelled است —
+    /// لغو حین پروب با **دست‌دادن قطعی شروع**: فیک جعلی اول فایل marker را
+    /// می‌نویسد و تست فقط بعد از مشاهدهٔ آن پرچم را می‌گذارد (poll محدود —
+    /// timeout فقط محدودیت ایمنی تست است، نه اثبات شروع). فیک از حلقهٔ محاسباتی
+    /// خالص cmd استفاده می‌کند؛ kill کردن آن هیچ فرایند نوه‌ای باقی نمی‌گذارد.
+    /// فرایند فرزند kill و wait (جمع‌آوری) می‌شود و خطا Cancelled است —
     /// نه Timeout و نه شکست FFprobe. پرچم تازه بعدی باید سالم کار کند.
     #[test]
     #[ignore]
@@ -445,28 +489,44 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        // sleeper ۳۰ ثانیه‌ای — اگر kill نشود، probe تا timeout ۲۰ ثانیه‌ای می‌ماند
-        let fake = write_fake_probe(&dir, "long", 30, FAKE_JSON_ONE_FA);
-        let cancel = Arc::new(AtomicBool::new(false));
 
+        // حلقهٔ بزرگ: اگر kill نشود تا timeout ۲۰ ثانیه‌ای زنده می‌ماند
+        let marker = dir.join("probe-started.marker");
+        let fake = write_fake_probe_busy_loop(&dir, "long", 100_000_000, FAKE_JSON_ONE_FA, &marker);
+        assert!(
+            !marker.is_file(),
+            "قبل از اجرا نباید marker وجود داشته باشد"
+        );
+
+        let cancel = Arc::new(AtomicBool::new(false));
         let t_fake = fake.clone();
+        let t_marker = marker.clone();
         let t_cancel = cancel.clone();
         let worker = std::thread::spawn(move || {
             probe_subtitle_streams(&t_fake, Path::new("ignored.mkv"), &t_cancel)
         });
 
-        // فرصت به فرایند فرزند برای شروع
-        std::thread::sleep(Duration::from_millis(700));
-        let started_kill = Instant::now();
+        // دست‌دادن شروع: انتظار محدود برای نوشته‌شدن marker توسط خود فرایند فرزند
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !t_marker.is_file() {
+            assert!(
+                Instant::now() < deadline,
+                "فرایند جعلی تا ۱۰ ثانیه شروع نشد"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // فرایند واقعاً شروع کرده — حالا لغو
+        let started_cancel = Instant::now();
         cancel.store(true, Ordering::SeqCst);
 
         let result = worker
             .join()
             .unwrap_or_else(|e| std::panic::resume_unwind(e));
         assert!(
-            started_kill.elapsed() < Duration::from_secs(15),
+            started_cancel.elapsed() < Duration::from_secs(15),
             "باید بلافاصله پس از لغو برگردد: {:?}",
-            started_kill.elapsed()
+            started_cancel.elapsed()
         );
         assert_eq!(result, Err(ProbeError::Cancelled));
 
