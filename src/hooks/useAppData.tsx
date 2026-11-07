@@ -44,6 +44,8 @@ interface AppDataState {
   analyzeVideo: (path: string) => Promise<void>;
   analyzeAll: () => Promise<void>;
   extractTrack: (path: string, streamIndex: number) => Promise<void>;
+  extractTrackForReview: (path: string, streamIndex: number) => Promise<void>;
+  promoteReview: (path: string, streamIndex: number) => Promise<void>;
   planExtractionAll: () => Promise<ExtractionPlan | null>;
   executeExtractionPlan: (items: ExtractionPlanItem[]) => Promise<void>;
   cancelOps: () => Promise<void>;
@@ -149,6 +151,24 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       await api.extractTrack(path, streamIndex);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const extractTrackForReview = useCallback(async (path: string, streamIndex: number) => {
+    setError(null);
+    try {
+      await api.extractTrackForReview(path, streamIndex);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const promoteReview = useCallback(async (path: string, streamIndex: number) => {
+    setError(null);
+    try {
+      await api.promoteReview(path, streamIndex);
     } catch (e) {
       setError(String(e));
     }
@@ -288,6 +308,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     analyzeVideo,
     analyzeAll,
     extractTrack,
+    extractTrackForReview,
+    promoteReview,
     planExtractionAll,
     executeExtractionPlan,
     cancelOps,

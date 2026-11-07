@@ -12,6 +12,7 @@ import {
   Square,
   X,
 } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, EmptyState, Modal } from "../components/ui";
 import { faNum, formatBytes, formatTimestamp } from "../lib/format";
@@ -20,6 +21,7 @@ import type {
   ExtractionPlan,
   SubtitleKind,
   SubtitleStream,
+  TrackReview,
   VideoEntry,
 } from "../types";
 
@@ -66,12 +68,15 @@ function StreamRow({
   stream,
   busy,
   onExtract,
+  onReview,
 }: {
   stream: SubtitleStream;
   busy: boolean;
   onExtract: (streamIndex: number) => void;
+  onReview: (streamIndex: number) => void;
 }) {
   const kind = kindBadge(stream.kind);
+  const faLike = stream.persianCandidate || stream.persianConfirmed;
   return (
     <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -88,6 +93,12 @@ function StreamRow({
             کاندید فارسی
           </Badge>
         )}
+        {stream.persianConfirmed && (
+          <Badge tone="success">
+            <Languages className="size-3" />
+            فارسی تأییدشده
+          </Badge>
+        )}
         {stream.defaultDisposition && <Badge tone="info">پیش‌فرض</Badge>}
         {stream.forcedDisposition && <Badge tone="info">Forced</Badge>}
         <span className="ms-auto text-xs text-ink-3">
@@ -99,16 +110,27 @@ function StreamRow({
           {stream.title}
         </div>
       )}
-      {stream.kind === "text" && stream.persianCandidate && (
-        <div className="mt-2">
+      {stream.kind === "text" && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {faLike && (
+            <Button
+              className="h-8 px-3 text-xs"
+              variant="primary"
+              disabled={busy}
+              onClick={() => onExtract(stream.streamIndex)}
+            >
+              <Sparkles className="size-3.5" />
+              استخراج این Track
+            </Button>
+          )}
           <Button
             className="h-8 px-3 text-xs"
-            variant="primary"
             disabled={busy}
-            onClick={() => onExtract(stream.streamIndex)}
+            onClick={() => onReview(stream.streamIndex)}
+            title="خروجی آزمایشی به .track-N.review.srt — با بررسی محتوای واقعی"
           >
-            <Sparkles className="size-3.5" />
-            استخراج این Track
+            <ScanLine className="size-3.5" />
+            استخراج آزمایشی برای بررسی
           </Button>
         </div>
       )}
@@ -121,18 +143,75 @@ function StreamRow({
   );
 }
 
+function ReviewCard({
+  review,
+  busy,
+  onPromote,
+}: {
+  review: TrackReview;
+  busy: boolean;
+  onPromote: (streamIndex: number) => void;
+}) {
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2 text-xs ${
+        review.persianConfirmed
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          : "border-line bg-surface-2 text-ink-2"
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span dir="ltr" className="font-mono">
+          #{review.streamIndex}
+        </span>
+        <span>بررسی:</span>
+        <span dir="ltr" className="min-w-0 truncate font-mono" title={review.reviewPath}>
+          {review.reviewPath.split(/[\\/]/).pop()}
+        </span>
+        {review.persianConfirmed ? (
+          <Badge tone="success">فارسی تأیید شد</Badge>
+        ) : (
+          <Badge tone="warn">فارسی تأیید نشد</Badge>
+        )}
+        {review.promoted && <Badge tone="info">تبدیل شد</Badge>}
+      </div>
+      <div className="mt-1 text-[11px] text-ink-3">
+        {faNum(review.validation.cueCount)} cue — {review.validation.encoding} —{" "}
+        {formatBytes(review.validation.sizeBytes)}
+      </div>
+      {review.persianConfirmed && !review.promoted && (
+        <div className="mt-2">
+          <Button
+            className="h-8 px-3 text-xs"
+            variant="primary"
+            disabled={busy}
+            onClick={() => onPromote(review.streamIndex)}
+          >
+            <Sparkles className="size-3.5" />
+            تبدیل به .fa.srt استاندارد
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DetailsDrawer({
   video,
   busy,
   onClose,
   onAnalyze,
   onExtract,
+  onReview,
+  onPromote,
 }: {
   video: VideoEntry;
   busy: boolean;
   onClose: () => void;
   onAnalyze: (path: string) => void;
   onExtract: (path: string, streamIndex: number) => void;
+  onReview: (path: string, streamIndex: number) => void;
+  onPromote: (path: string, streamIndex: number) => void;
 }) {
   const analysis = video.analysis;
   return (
@@ -222,8 +301,24 @@ function DetailsDrawer({
                     stream={s}
                     busy={busy}
                     onExtract={(idx) => onExtract(video.path, idx)}
+                    onReview={(idx) => onReview(video.path, idx)}
                   />
                 ))}
+                {analysis.reviews.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <div className="text-xs font-semibold text-ink-1">
+                      استخراج‌های آزمایشی ({faNum(analysis.reviews.length)})
+                    </div>
+                    {analysis.reviews.map((r, i) => (
+                      <ReviewCard
+                        key={`${r.streamIndex}-${i}`}
+                        review={r}
+                        busy={busy}
+                        onPromote={(idx) => onPromote(video.path, idx)}
+                      />
+                    ))}
+                  </div>
+                )}
                 {analysis.lastExtraction && (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
                     <div dir="ltr" className="break-all font-mono">
@@ -293,6 +388,8 @@ export function Library() {
     analyzeVideo,
     analyzeAll,
     extractTrack,
+    extractTrackForReview,
+    promoteReview,
     planExtractionAll,
     executeExtractionPlan,
     cancelOps,
@@ -356,6 +453,16 @@ export function Library() {
         return next;
       }),
     );
+  };
+
+  /** استخراج آزمایشی فقط با تأیید صریح کاربر */
+  const confirmAndReview = async (path: string, streamIndex: number) => {
+    const ok = await ask(
+      `استخراج آزمایشی Track #${streamIndex} انجام شود؟\n\nخروجی در فایل جداگانهٔ .track-${streamIndex}.review.srt کنار ویدیو ساخته می‌شود و بعد از بررسی محتوای واقعی، در صورت تأیید فارسی بودن می‌توانید آن را به .fa.srt استاندارد تبدیل کنید.`,
+      { title: "استخراج آزمایشی برای بررسی", kind: "info" },
+    );
+    if (!ok) return;
+    await extractTrackForReview(path, streamIndex);
   };
 
   const openPlan = async () => {
@@ -580,6 +687,8 @@ export function Library() {
           onClose={() => setSelectedId(null)}
           onAnalyze={(path) => withBusy(path, () => analyzeVideo(path))}
           onExtract={(path, idx) => withBusy(path, () => extractTrack(path, idx))}
+          onReview={(path, idx) => withBusy(path, () => confirmAndReview(path, idx))}
+          onPromote={(path, idx) => withBusy(path, () => promoteReview(path, idx))}
         />
       )}
 

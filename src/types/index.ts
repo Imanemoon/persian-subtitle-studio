@@ -34,6 +34,8 @@ export interface SubtitleStream {
   defaultDisposition: boolean;
   forcedDisposition: boolean;
   persianCandidate: boolean;
+  /** محتوا با استخراج آزمایشی به‌عنوان فارسی تأیید شده؟ */
+  persianConfirmed: boolean;
 }
 
 export type AnalysisStatus =
@@ -73,6 +75,16 @@ export interface VideoAnalysis {
   streams: SubtitleStream[];
   message: string | null;
   lastExtraction: ExtractionOutcome | null;
+  reviews: TrackReview[];
+}
+
+/** نتیجه «استخراج آزمایشی برای بررسی» یک Track متنی */
+export interface TrackReview {
+  streamIndex: number;
+  reviewPath: string;
+  validation: SubtitleValidation;
+  persianConfirmed: boolean;
+  promoted: boolean;
 }
 
 export interface ExtractionPlanItem {
