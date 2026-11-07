@@ -72,7 +72,13 @@ pub fn resolve_tool(state: &AppState, id: &str) -> Result<PathBuf, String> {
 
 /// هسته تحلیل یک ویدیو: State را به‌روز می‌کند و entry جدید را برمی‌گرداند.
 /// مستقل از Tauri — فراخوانی command رخداد `library:entry` را منتشر می‌کند.
-pub fn run_analyze_blocking(state: &AppState, path: &str) -> Result<VideoEntry, String> {
+/// `cancel` (پرچم عملیات تکی یا گروهی) تا FFprobe منتقل می‌شود؛ در صورت لغو
+/// وضعیت به Failed اشتباه تبدیل نمی‌شود و به وضعیت قبلی برمی‌گردد.
+pub fn run_analyze_blocking(
+    state: &AppState,
+    path: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<VideoEntry, String> {
     let Some(entry) = get_entry(state, path) else {
         return Err("این ویدیو در کتابخانه نیست — ابتدا پوشه را اسکن کنید.".into());
     };
@@ -82,14 +88,36 @@ pub fn run_analyze_blocking(state: &AppState, path: &str) -> Result<VideoEntry, 
 
     let ffprobe = resolve_tool(state, "ffprobe")?;
     let video = PathBuf::from(path);
-    let result = crate::media::ffprobe::probe_subtitle_streams(&ffprobe, &video);
+    let result = crate::media::ffprobe::probe_subtitle_streams(&ffprobe, &video, cancel);
+    let cancelled = matches!(result, Err(crate::media::ffprobe::ProbeError::Cancelled));
 
     let (status, message, streams) = match result {
         Ok(streams) => {
             let (s, m) = crate::subtitle::detection::classify_analysis(&streams);
             (s, m, streams)
         }
-        Err(err) => (AnalysisStatus::Failed, Some(err.clone()), Vec::new()),
+        Err(crate::media::ffprobe::ProbeError::Cancelled) => {
+            crate::logging::warn("media", &format!("تحلیل {} لغو شد", entry.file_name));
+            // لغو ≠ خطا: اگر تحلیل قبلی معتبر بوده به آن برگرد، وگرنه تحلیل‌نشده
+            match &entry.analysis {
+                Some(prev) if !prev.streams.is_empty() => {
+                    let (s, m) = crate::subtitle::detection::classify_analysis(&prev.streams);
+                    (
+                        s,
+                        Some(m.unwrap_or_else(|| "تحلیل لغو شد".into())),
+                        prev.streams.clone(),
+                    )
+                }
+                _ => (
+                    AnalysisStatus::NotAnalyzed,
+                    Some("تحلیل لغو شد".into()),
+                    Vec::new(),
+                ),
+            }
+        }
+        Err(crate::media::ffprobe::ProbeError::Failed(err)) => {
+            (AnalysisStatus::Failed, Some(err.clone()), Vec::new())
+        }
     };
 
     crate::logging::info(
@@ -119,6 +147,11 @@ pub fn run_analyze_blocking(state: &AppState, path: &str) -> Result<VideoEntry, 
     analysis.streams = streams;
     analysis.analyzed_at_ms = now_ms();
     apply_entry(state, updated.clone());
+
+    // لغو از شکست FFprobe تفکیک می‌شود: وضعیت بازیابی شد ولی نتیجه Err است
+    if cancelled {
+        return Err(crate::media::ffprobe::ProbeError::Cancelled.message());
+    }
     Ok(updated)
 }
 
@@ -129,14 +162,26 @@ pub async fn analyze_video(app: AppHandle, path: String) -> Result<VideoEntry, S
     // تحلیل تکی هم تحت registry است: با Extract/Review/Promote همان ویدیو
     // و با عملیات گروهی تضاد دارد (رزرو اتمیک + RAII)
     let guard = crate::state::acquire_single_op(&app.state::<AppState>().ops, &path)?;
-    let updated = tauri::async_runtime::spawn_blocking(move || {
+    let core = tauri::async_runtime::spawn_blocking(move || {
         let st = app2.state::<AppState>();
-        let r = run_analyze_blocking(&st, &path2);
+        let r = run_analyze_blocking(&st, &path2, &guard.cancel);
         drop(guard);
         r
     })
     .await
-    .map_err(|e| format!("خطای Thread: {e}"))??;
+    .map_err(|e| format!("خطای Thread: {e}"))?;
+
+    // در مسیر خطا هم (مثلاً لغو) وضعیت جدید به UI برسد
+    let updated = match core {
+        Ok(updated) => updated,
+        Err(err) => {
+            let state = app.state::<AppState>();
+            if let Some(entry) = get_entry(&state, &path) {
+                let _ = app.emit("library:entry", &entry);
+            }
+            return Err(err);
+        }
+    };
 
     let _ = app.emit("library:entry", &updated);
     Ok(updated)
@@ -179,12 +224,16 @@ pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, St
                     message: String::new(),
                 },
             );
-            match run_analyze_blocking(&st, &path) {
+            match run_analyze_blocking(&st, &path, &cancel) {
                 Ok(updated) => {
                     let _ = app2.emit("library:entry", &updated);
                 }
                 Err(err) => {
                     crate::logging::error("media", &format!("تحلیل {path} ناموفق: {err}"));
+                    // وضعیت تغییر کرده (لغو/خطا) — به UI منتشر شود
+                    if let Some(updated) = get_entry(&st, &path) {
+                        let _ = app2.emit("library:entry", &updated);
+                    }
                 }
             }
         }

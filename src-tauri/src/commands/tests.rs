@@ -186,7 +186,8 @@ fn push_entry(state: &AppState, video: &Path) -> String {
 }
 
 fn analyze(state: &AppState, path: &str) -> VideoEntry {
-    run_analyze_blocking(state, path).expect("تحلیل موفق");
+    let no_cancel = std::sync::atomic::AtomicBool::new(false);
+    run_analyze_blocking(state, path, &no_cancel).expect("تحلیل موفق");
     get_entry(state, path).expect("entry")
 }
 
@@ -217,7 +218,7 @@ fn review_single(
 /// تحلیل تکی با چرخهٔ واقعی اسلات — همان چیزی که command انجام می‌دهد
 fn analyze_single(state: &AppState, path: &str) -> Result<VideoEntry, String> {
     let guard = acquire_single_op(&state.ops, path)?;
-    let r = run_analyze_blocking(state, path);
+    let r = run_analyze_blocking(state, path, &guard.cancel);
     drop(guard);
     r
 }
@@ -716,6 +717,144 @@ fn review_extract_never_overwrites_existing_review_file() {
         std::fs::read(&existing).unwrap(),
         b"PRE-EXISTING REVIEW FILE"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// لغو تحلیل — توکن تا FFprobe منتقل می‌شود (با ffprobe جعلی کنترل‌شده)
+// ---------------------------------------------------------------------------
+
+/// انتظار تا وضعیت یک ویدیو به مقدار موردنظر برسد
+fn wait_for_status(state: &AppState, path: &str, want: AnalysisStatus, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Some(e) = get_entry(state, path) {
+            if e.analysis.as_ref().map(|a| a.status) == Some(want) {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// لغو Analyze تکی حین اجرای FFprobe (جعلی ۳۰ ثانیه‌ای):
+/// خطا «لغو» است نه خطای FFprobe؛ وضعیت به NotAnalyzed برمی‌گردد (نه Failed)؛
+/// اسلات آزاد می‌شود و تحلیل بعدی با پرچم تازه موفق است.
+#[test]
+#[ignore]
+fn cancelled_single_analyze_releases_slot_and_recovers() {
+    let state = make_state();
+    let dir = unique_dir("analyze-cancel");
+    std::fs::create_dir_all(&dir).unwrap();
+    let video = make_video_meta(&dir, "Show.S01E15.720p.mkv", &[("fas", "فارسی", "fa")]);
+    let path = push_entry(&state, &video);
+
+    // ffprobe جعلی ۳۰ ثانیه‌ای از طریق Override تنظیمات
+    let fake = crate::media::ffprobe::test_support::write_fake_probe(
+        &dir,
+        "long",
+        30,
+        "{\"streams\": []}",
+    );
+    state.settings.lock().unwrap().tool_paths.ffprobe = Some(fake.to_string_lossy().to_string());
+
+    let guard = acquire_single_op(&state.ops, &path).unwrap();
+    let cancel = guard.cancel.clone();
+    let t_cancel = cancel.clone();
+    let t_state = state.clone();
+    let t_path = path.clone();
+    let worker = std::thread::spawn(move || {
+        let r = run_analyze_blocking(t_state.as_ref(), &t_path, &t_cancel);
+        drop(guard);
+        r
+    });
+
+    // تا ورود به فاز Analyzing صبر کن (ffprobe در جریان است)
+    assert!(wait_for_status(
+        &state,
+        &path,
+        AnalysisStatus::Analyzing,
+        Duration::from_secs(10)
+    ));
+
+    // لغو حین اجرا
+    cancel.store(true, Ordering::SeqCst);
+    let res = worker.join().unwrap();
+    let err = res.unwrap_err();
+    assert!(err.contains("لغو"), "{err}");
+
+    // وضعیت به Failed اشتباه تبدیل نشده — NotAnalyzed است
+    let entry = get_entry(&state, &path).unwrap();
+    let a = entry.analysis.as_ref().unwrap();
+    assert_eq!(a.status, AnalysisStatus::NotAnalyzed);
+    assert!(a.message.as_deref().unwrap().contains("لغو"));
+
+    // اسلات آزاد شده — عملیات تکی بعدی مجاز است
+    assert!(acquire_single_op(&state.ops, &path).is_ok());
+
+    // تحلیل جدید با پرچم تازه و ffprobe واقعی → موفق
+    state.settings.lock().unwrap().tool_paths.ffprobe = None;
+    let recovered = analyze_single(&state, &path).expect("تحلیل بعد از لغو باید موفق شود");
+    assert_eq!(
+        recovered.analysis.as_ref().unwrap().status,
+        AnalysisStatus::PersianTextTrackFound
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// لغو Analyze گروهی حین پردازش یک ویدیو — پرچم Batch تا FFprobe همان
+/// فایل هم می‌رود و پردازش فایل جاری بلافاصله متوقف می‌شود.
+#[test]
+#[ignore]
+fn batch_cancel_aborts_current_file_analysis() {
+    let state = make_state();
+    let dir = unique_dir("analyze-batch-cancel");
+    std::fs::create_dir_all(&dir).unwrap();
+    let video = make_video_meta(&dir, "Show.S01E16.720p.mkv", &[("fas", "فارسی", "fa")]);
+    let path = push_entry(&state, &video);
+
+    let fake = crate::media::ffprobe::test_support::write_fake_probe(
+        &dir,
+        "long",
+        30,
+        "{\"streams\": []}",
+    );
+    state.settings.lock().unwrap().tool_paths.ffprobe = Some(fake.to_string_lossy().to_string());
+
+    // عملیات گروهی ثبت می‌شود (همان کاری که analyze_all انجام می‌دهد)
+    let batch = state.ops.lock().unwrap().start_batch().unwrap();
+    let t_batch = batch.clone();
+    let t_state = state.clone();
+    let t_path = path.clone();
+    let worker =
+        std::thread::spawn(move || run_analyze_blocking(t_state.as_ref(), &t_path, &t_batch));
+
+    assert!(wait_for_status(
+        &state,
+        &path,
+        AnalysisStatus::Analyzing,
+        Duration::from_secs(10)
+    ));
+
+    // لغو گروهی → فایل جاری هم متوقف می‌شود
+    batch.store(true, Ordering::SeqCst);
+    let res = worker.join().unwrap();
+    let err = res.unwrap_err();
+    assert!(err.contains("لغو"), "{err}");
+
+    let entry = get_entry(&state, &path).unwrap();
+    assert_eq!(
+        entry.analysis.as_ref().unwrap().status,
+        AnalysisStatus::NotAnalyzed
+    );
+
+    // پایان گروهی → اسلات تکی مجاز و پرچمش تازه
+    state.ops.lock().unwrap().end_batch();
+    let guard = acquire_single_op(&state.ops, &path).unwrap();
+    assert!(!guard.cancel.load(Ordering::SeqCst));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

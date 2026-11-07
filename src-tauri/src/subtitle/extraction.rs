@@ -315,7 +315,9 @@ mod tests {
         );
 
         // ۱) پروب — Global index حفظ شود
-        let streams = crate::media::ffprobe::probe_subtitle_streams(&ffprobe, &video).unwrap();
+        let no_cancel = std::sync::atomic::AtomicBool::new(false);
+        let streams = crate::media::ffprobe::probe_subtitle_streams(&ffprobe, &video, &no_cancel)
+            .expect("پروب موفق");
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].stream_index, 2);
         assert_eq!(streams[0].kind, SubtitleKind::Text);

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -58,8 +59,33 @@ struct FfprobeTags {
 
 // ---------- اجرا و تبدیل ----------
 
+/// خطای پروب — لغو از شکست واقعی FFprobe تفکیک می‌شود.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeError {
+    /// کاربر عملیات را لغو کرد؛ فرایند kill و wait شده است
+    Cancelled,
+    Failed(String),
+}
+
+impl ProbeError {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Cancelled => "عملیات تحلیل توسط کاربر لغو شد".into(),
+            Self::Failed(m) => m.clone(),
+        }
+    }
+}
+
 /// مشخصات همهٔ Subtitle Streamهای ویدیو را برمی‌گرداند.
-pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<SubtitleStream>, String> {
+///
+/// `cancel` در طول انتظار برای FFprobe بررسی می‌شود؛ در صورت لغو، فرایند
+/// kill و wait شده و Threadهای خواندن pipe هم Join می‌شوند. فایل ویدیو فقط
+/// خوانده می‌شود (Read-only).
+pub fn probe_subtitle_streams(
+    ffprobe: &Path,
+    video: &Path,
+    cancel: &AtomicBool,
+) -> Result<Vec<SubtitleStream>, ProbeError> {
     let mut cmd = Command::new(ffprobe);
     cmd.args([
         "-v",
@@ -81,7 +107,9 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("اجرای FFprobe: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ProbeError::Failed(format!("اجرای FFprobe: {e}")))?;
 
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr piped");
@@ -100,6 +128,20 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
 
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let status = loop {
+        // لغو در طول انتظار: فرایند فرزند kill و wait می‌شود (جمع‌آوری کامل)
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            // Threadهای خواندن pipe: برای ffprobe واقعی لوله با مرگ فرایند
+            // بسته می‌شود و این joinها بلافاصله برمی‌گردند؛ join مستقیم اینجا
+            // انجام نمی‌شود چون اگر فرایندِ نوه‌ای هندل لوله را به ارث برده
+            // باشد (فقط در فرایندهای جعلی تست رخ می‌دهد)، join تا خروج نوه
+            // مسدود می‌شد. Threadها detached می‌شوند و به‌هرحال با بسته‌شدن
+            // لوله تمام می‌شوند — هیچ Thread یا Process بی‌صاحبی نمی‌ماند.
+            drop(t_out);
+            drop(t_err);
+            return Err(ProbeError::Cancelled);
+        }
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
             Ok(None) => {
@@ -112,7 +154,7 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
             }
             Err(e) => {
                 let _ = child.kill();
-                return Err(format!("انتظار برای FFprobe: {e}"));
+                return Err(ProbeError::Failed(format!("انتظار برای FFprobe: {e}")));
             }
         }
     };
@@ -121,7 +163,9 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
     let stderr = t_err.join().unwrap_or_default();
 
     let Some(st) = status else {
-        return Err("FFprobe در زمان مشخص پاسخ نداد (Timeout)".into());
+        return Err(ProbeError::Failed(
+            "FFprobe در زمان مشخص پاسخ نداد (Timeout)".into(),
+        ));
     };
     if !st.success() {
         let detail = stderr
@@ -129,7 +173,7 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
             .map(str::trim)
             .find(|l| !l.is_empty())
             .unwrap_or("");
-        return Err(format!(
+        return Err(ProbeError::Failed(format!(
             "FFprobe با کد خروج {} شکست خورد{}",
             st.code().unwrap_or(-1),
             if detail.is_empty() {
@@ -137,10 +181,10 @@ pub fn probe_subtitle_streams(ffprobe: &Path, video: &Path) -> Result<Vec<Subtit
             } else {
                 format!(": {detail}")
             }
-        ));
+        )));
     }
 
-    parse_ffprobe_json(&stdout)
+    parse_ffprobe_json(&stdout).map_err(ProbeError::Failed)
 }
 
 /// تبدیل JSON خام FFprobe به مدل برنامه — مستقل از فرایند، قابل تست.
@@ -193,10 +237,39 @@ pub fn parse_ffprobe_json(json: &str) -> Result<Vec<SubtitleStream>, String> {
     Ok(out)
 }
 
+/// ابزار تست: «ffprobe» جعلی به‌شکل batch — به‌اندازهٔ مشخص صبر می‌کند و
+/// JSON می‌دهد. برای تست لغو بدون وابستگی به سرعت واقعی ffprobe.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
+
+    pub fn write_fake_probe(dir: &Path, tag: &str, sleep_secs: u32, json: &str) -> PathBuf {
+        let path = dir.join(format!("fake-probe-{tag}.cmd"));
+        // ping هر ثانیه یک بار تیک می‌خورد → n = sleep+1 ≈ sleep ثانیه
+        std::fs::write(
+            &path,
+            format!(
+                "@echo off\r\nping -n {} 127.0.0.1 > nul\r\necho {}\r\n",
+                sleep_secs + 1,
+                json
+            ),
+        )
+        .unwrap();
+        path
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::SubtitleKind;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use test_support::write_fake_probe;
+
+    /// JSON معتبر با یک Track متنی فارسی — برای ffprobe جعلی
+    const FAKE_JSON_ONE_FA: &str = r#"{"streams": [{"index": 2, "codec_name": "subrip", "codec_type": "subtitle", "tags": {"language": "fas", "title": "فارسی"}}]}"#;
 
     const SAMPLE: &str = r#"{
         "streams": [
@@ -323,5 +396,87 @@ mod tests {
             let streams = parse_ffprobe_json(&json).unwrap();
             assert!(!streams[0].persian_candidate, "tag={tag}");
         }
+    }
+
+    /// ffprobe جعلی کوتاه — چرخهٔ عادی پروب با فرایند کنترل‌شده
+    #[test]
+    #[ignore]
+    fn fake_probe_completes_and_parses() {
+        let dir = std::env::temp_dir().join(format!(
+            "subsync-fakeprobe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = write_fake_probe(&dir, "short", 1, FAKE_JSON_ONE_FA);
+        let no_cancel = AtomicBool::new(false);
+
+        let started = Instant::now();
+        let streams =
+            probe_subtitle_streams(&fake, Path::new("ignored.mkv"), &no_cancel).expect("پروب موفق");
+        let elapsed = started.elapsed();
+
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].stream_index, 2);
+        assert_eq!(streams[0].kind, SubtitleKind::Text);
+        assert!(streams[0].persian_candidate);
+        // واقعاً به فرایند فرزند منتظر مانده (حداقل ~۱ ثانیه)
+        assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
+        // و خیلی قبل از timeout برگشته
+        assert!(elapsed < PROBE_TIMEOUT);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// لغو حین پروب: فرایند فرزند kill و جمع‌آوری می‌شود و خطا Cancelled است —
+    /// نه Timeout و نه شکست FFprobe. پرچم تازه بعدی باید سالم کار کند.
+    #[test]
+    #[ignore]
+    fn cancel_kills_probe_child_and_returns_cancelled() {
+        let dir = std::env::temp_dir().join(format!(
+            "subsync-fakeprobe-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // sleeper ۳۰ ثانیه‌ای — اگر kill نشود، probe تا timeout ۲۰ ثانیه‌ای می‌ماند
+        let fake = write_fake_probe(&dir, "long", 30, FAKE_JSON_ONE_FA);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let t_fake = fake.clone();
+        let t_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            probe_subtitle_streams(&t_fake, Path::new("ignored.mkv"), &t_cancel)
+        });
+
+        // فرصت به فرایند فرزند برای شروع
+        std::thread::sleep(Duration::from_millis(700));
+        let started_kill = Instant::now();
+        cancel.store(true, Ordering::SeqCst);
+
+        let result = worker
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e));
+        assert!(
+            started_kill.elapsed() < Duration::from_secs(15),
+            "باید بلافاصله پس از لغو برگردد: {:?}",
+            started_kill.elapsed()
+        );
+        assert_eq!(result, Err(ProbeError::Cancelled));
+
+        // پرچم تازه → پروب بعدی سالم کار می‌کند
+        let fresh = AtomicBool::new(false);
+        let fake_short = write_fake_probe(&dir, "short-after-cancel", 1, FAKE_JSON_ONE_FA);
+        let streams = probe_subtitle_streams(&fake_short, Path::new("ignored.mkv"), &fresh)
+            .expect("پروب بعدی با پرچم تازه باید موفق شود");
+        assert_eq!(streams.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
