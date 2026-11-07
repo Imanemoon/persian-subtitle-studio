@@ -88,7 +88,6 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setFileSelection,
     clearSelection,
     syncRun,
-    startScan,
   } = useAppData();
   const [syncHintShown, setSyncHintShown] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -110,6 +109,7 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const picked = await api.pickFolder();
     if (!picked) return; // لغو دیالوگ — انتخاب فعلی می‌ماند
     setFolderSelection(picked);
+    setSyncHintShown(false); // اشارهٔ سینک مربوط به انتخاب قبلی است
   };
 
   const chooseFiles = async () => {
@@ -123,6 +123,7 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     const skipped = picked.length - supported.length;
     setFileSelection(supported);
+    setSyncHintShown(false); // اشارهٔ سینک مربوط به انتخاب قبلی است
     if (skipped > 0) {
       setNotice(`${faNum(skipped)} فایل غیر ویدیویی نادیده گرفته شد.`);
     }
@@ -231,18 +232,6 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 </button>
               </div>
             </div>
-            {/* امکان اسکن واقعی فقط در بخش پیشرفته — از جریان عادی حذف شده */}
-            {folderSelected !== null && (
-              <button
-                onClick={() => {
-                  setNotice(null);
-                  startScan(folderSelected).catch(() => undefined);
-                }}
-                className="mt-2 text-[11px] text-ink-3 transition-colors hover:text-accent-strong"
-              >
-                اسکن این پوشه در کتابخانه (پیشرفته)
-              </button>
-            )}
           </div>
         )}
 
