@@ -146,6 +146,11 @@ pub fn name_suggests_fa(file_name: &str) -> bool {
     FA_NAME_TOKEN_RE.is_match(file_name)
 }
 
+/// آیا یک متن آزاد (Language Tag یا عنوان Track) نشانه فارسی دارد؟
+pub fn text_suggests_fa(text: &str) -> bool {
+    FA_NAME_TOKEN_RE.is_match(text)
+}
+
 /// آیا نام زیرنویس کناری متعلق به همین ویدیو است؟
 ///
 /// گارد مهم: `Show.S01E010.srt` نباید برای ویدیوی `Show.S01E01.mkv`
@@ -265,6 +270,21 @@ mod tests {
         // «fast» و «supernatural» نباید fa حساب شوند
         assert!(!name_suggests_fa("Movie.fastsub.srt"));
         assert!(!name_suggests_fa("Supernatural.S01E01.srt"));
+        // متن آزاد (Language Tag / عنوان Track)
+        assert!(text_suggests_fa("fa"));
+        assert!(text_suggests_fa("fas"));
+        assert!(text_suggests_fa("per"));
+        assert!(text_suggests_fa("farsi"));
+        assert!(text_suggests_fa("Persian Subtitle"));
+        assert!(text_suggests_fa("فارسی"));
+        assert!(text_suggests_fa("زبان: فارسی"));
+        assert!(!text_suggests_fa("english"));
+        assert!(!text_suggests_fa("ara"));
+        assert!(!text_suggests_fa("Forced"));
+        assert!(!text_suggests_fa("Supernatural"));
+        assert!(!text_suggests_fa("SDH"));
+        // عنوان ترکیبی: نشانه فارسی وسط عنوان
+        assert!(text_suggests_fa("Subs: Persian / English"));
     }
 
     #[test]

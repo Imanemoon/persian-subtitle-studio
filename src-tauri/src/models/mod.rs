@@ -16,6 +16,130 @@ pub struct VideoEntry {
     pub episode: Option<u32>,
     /// زیرنویس‌های کنار ویدیو (همان پوشه) که بر اساس نام فایل تطبیق داده شده‌اند.
     pub sibling_subtitles: Vec<SubtitleFileInfo>,
+    /// نتیجه تحلیل زیرنویس‌های داخلی (فاز ۲) — `None` یعنی هنوز تحلیل نشده.
+    pub analysis: Option<VideoAnalysis>,
+}
+
+/// نوع کدک زیرنویس.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleKind {
+    Text,
+    Image,
+    Unknown,
+}
+
+/// وضعیت تحلیل/استخراج زیرنویس داخلی هر ویدیو.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AnalysisStatus {
+    NotAnalyzed,
+    Analyzing,
+    /// دقیقاً یک Track متنی فارسی — استخراج بدون ابهام
+    PersianTextTrackFound,
+    /// فقط Track تصویری فارسی (PGS/VobSub/DVB) — استخراج متن به OCR نیاز دارد
+    ImageSubtitleFound,
+    /// هیچ Stream زیرنویسی داخل فایل نیست
+    NoEmbeddedSubtitle,
+    /// زیرنویس داخلی هست اما Track فارسی در آن نیست
+    NoPersianTrack,
+    Extracting,
+    Extracted,
+    /// زیرنویس موجود/خروجی خالی یا فاقد ساختار معتبر SRT
+    InvalidSubtitle,
+    /// بیش از یک Track فارسی — انتخاب کاربر لازم است
+    NeedsTrackSelection,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleStream {
+    /// Global stream index در فایل — برای `-map 0:<index>`
+    pub stream_index: u32,
+    pub codec_name: String,
+    pub kind: SubtitleKind,
+    pub language: Option<String>,
+    pub language_ietf: Option<String>,
+    pub title: Option<String>,
+    pub default_disposition: bool,
+    pub forced_disposition: bool,
+    /// زبان/عنوان نشانه فارسی دارد (محتوا هنوز تأیید نشده)
+    pub persian_candidate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoAnalysis {
+    pub status: AnalysisStatus,
+    pub analyzed_at_ms: u64,
+    pub streams: Vec<SubtitleStream>,
+    /// توضیح/خطا برای نمایش در UI و لاگ
+    pub message: Option<String>,
+    /// نتیجه آخرین استخراج این ویدیو
+    pub last_extraction: Option<ExtractionOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionOutcome {
+    pub stream_index: u32,
+    pub target_path: String,
+    pub validation: SubtitleValidation,
+    /// آیا محتوای خروجی واقعاً فارسی بود؟ (Tag فارسی به‌تنهایی کافی نیست)
+    pub persian_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleValidation {
+    pub valid: bool,
+    pub size_bytes: u64,
+    pub encoding: String,
+    pub line_count: usize,
+    /// تعداد خطوط تایم‌کد معتبر (`00:00:01,000 --> ...`)
+    pub cue_count: usize,
+    pub has_persian: bool,
+    pub persian_char_count: usize,
+    pub error: Option<String>,
+}
+
+/// یک عملیات استخراج تأییدشده توسط کاربر (Extract All).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPlanItem {
+    pub video_path: String,
+    pub video_file_name: String,
+    pub stream_index: u32,
+    pub track_label: String,
+    pub target_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedExtraction {
+    pub video_path: String,
+    pub video_file_name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPlan {
+    pub items: Vec<ExtractionPlanItem>,
+    pub skipped: Vec<SkippedExtraction>,
+}
+
+/// پیشرفت عملیات گروهی (Analyze All / Extract Plan).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpsProgress {
+    /// "analyze" | "extract"
+    pub kind: String,
+    pub current: u64,
+    pub total: u64,
+    pub video_path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
