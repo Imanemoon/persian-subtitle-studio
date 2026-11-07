@@ -19,6 +19,87 @@ export interface VideoEntry {
   season: number | null;
   episode: number | null;
   siblingSubtitles: SubtitleFileInfo[];
+  analysis: VideoAnalysis | null;
+}
+
+export type SubtitleKind = "text" | "image" | "unknown";
+
+export interface SubtitleStream {
+  streamIndex: number;
+  codecName: string;
+  kind: SubtitleKind;
+  language: string | null;
+  languageIetf: string | null;
+  title: string | null;
+  defaultDisposition: boolean;
+  forcedDisposition: boolean;
+  persianCandidate: boolean;
+}
+
+export type AnalysisStatus =
+  | "notAnalyzed"
+  | "analyzing"
+  | "persianTextTrackFound"
+  | "imageSubtitleFound"
+  | "noEmbeddedSubtitle"
+  | "noPersianTrack"
+  | "extracting"
+  | "extracted"
+  | "invalidSubtitle"
+  | "needsTrackSelection"
+  | "failed";
+
+export interface SubtitleValidation {
+  valid: boolean;
+  sizeBytes: number;
+  encoding: string;
+  lineCount: number;
+  cueCount: number;
+  hasPersian: boolean;
+  persianCharCount: number;
+  error: string | null;
+}
+
+export interface ExtractionOutcome {
+  streamIndex: number;
+  targetPath: string;
+  validation: SubtitleValidation;
+  persianConfirmed: boolean;
+}
+
+export interface VideoAnalysis {
+  status: AnalysisStatus;
+  analyzedAtMs: number;
+  streams: SubtitleStream[];
+  message: string | null;
+  lastExtraction: ExtractionOutcome | null;
+}
+
+export interface ExtractionPlanItem {
+  videoPath: string;
+  videoFileName: string;
+  streamIndex: number;
+  trackLabel: string;
+  targetPath: string;
+}
+
+export interface SkippedExtraction {
+  videoPath: string;
+  videoFileName: string;
+  reason: string;
+}
+
+export interface ExtractionPlan {
+  items: ExtractionPlanItem[];
+  skipped: SkippedExtraction[];
+}
+
+export interface OpsProgress {
+  kind: string;
+  current: number;
+  total: number;
+  videoPath: string;
+  message: string;
 }
 
 export interface ScanProgress {

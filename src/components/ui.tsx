@@ -199,3 +199,43 @@ export function SectionTitle({
     </div>
   );
 }
+
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  wide = false,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+  wide?: boolean;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
+      <div
+        dir="rtl"
+        className={`flex max-h-[85vh] w-full flex-col rounded-xl border border-line bg-surface-1 shadow-2xl ${
+          wide ? "max-w-3xl" : "max-w-xl"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h3 className="text-sm font-bold text-ink-1">{title}</h3>
+          <button onClick={onClose} className="rounded-md p-1 text-ink-3 hover:bg-surface-2 hover:text-ink-1">
+            ✕
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer && (
+          <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">{footer}</div>
+        )}
+      </div>
+    </div>
+  );
+}

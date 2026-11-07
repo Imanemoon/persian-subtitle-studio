@@ -9,7 +9,10 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
 import type {
+  ExtractionPlan,
+  ExtractionPlanItem,
   LogEntry,
+  OpsProgress,
   ScanProgress,
   ScanSummary,
   Settings,
@@ -27,13 +30,23 @@ interface AppDataState {
   settings: Settings | null;
   logs: LogEntry[];
   error: string | null;
+  opsRunning: boolean;
+  opsProgress: OpsProgress | null;
+  opsSummary: string | null;
   setError: (message: string | null) => void;
+  applyEntry: (entry: VideoEntry) => void;
   refreshLibrary: () => Promise<void>;
   refreshTools: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   reloadSettings: () => Promise<void>;
   startScan: (root: string) => Promise<void>;
   stopScan: () => Promise<void>;
+  analyzeVideo: (path: string) => Promise<void>;
+  analyzeAll: () => Promise<void>;
+  extractTrack: (path: string, streamIndex: number) => Promise<void>;
+  planExtractionAll: () => Promise<ExtractionPlan | null>;
+  executeExtractionPlan: (items: ExtractionPlanItem[]) => Promise<void>;
+  cancelOps: () => Promise<void>;
 }
 
 const AppDataContext = createContext<AppDataState | null>(null);
@@ -50,6 +63,19 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [opsRunning, setOpsRunning] = useState(false);
+  const [opsProgress, setOpsProgress] = useState<OpsProgress | null>(null);
+  const [opsSummary, setOpsSummary] = useState<string | null>(null);
+
+  const applyEntry = useCallback((entry: VideoEntry) => {
+    setLibrary((prev) => {
+      const index = prev.findIndex((e) => e.id === entry.id);
+      if (index === -1) return prev;
+      const next = [...prev];
+      next[index] = entry;
+      return next;
+    });
+  }, []);
 
   const refreshLibrary = useCallback(async () => {
     setLibrary(await api.getLibrary());
@@ -88,6 +114,72 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const stopScan = useCallback(async () => {
     try {
       await api.stopScan();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const analyzeVideo = useCallback(
+    async (path: string) => {
+      setError(null);
+      try {
+        const entry = await api.analyzeVideo(path);
+        applyEntry(entry);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [applyEntry],
+  );
+
+  const analyzeAll = useCallback(async () => {
+    setError(null);
+    setOpsSummary(null);
+    setOpsRunning(true);
+    setOpsProgress(null);
+    try {
+      await api.analyzeAll();
+    } catch (e) {
+      setOpsRunning(false);
+      setError(String(e));
+    }
+  }, []);
+
+  const extractTrack = useCallback(async (path: string, streamIndex: number) => {
+    setError(null);
+    try {
+      await api.extractTrack(path, streamIndex);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const planExtractionAll = useCallback(async (): Promise<ExtractionPlan | null> => {
+    setError(null);
+    try {
+      return await api.planExtractionAll();
+    } catch (e) {
+      setError(String(e));
+      return null;
+    }
+  }, []);
+
+  const executeExtractionPlan = useCallback(async (items: ExtractionPlanItem[]) => {
+    setError(null);
+    setOpsSummary(null);
+    setOpsRunning(true);
+    setOpsProgress(null);
+    try {
+      await api.executeExtractionPlan(items);
+    } catch (e) {
+      setOpsRunning(false);
+      setError(String(e));
+    }
+  }, []);
+
+  const cancelOps = useCallback(async () => {
+    try {
+      await api.cancelSubtitleOps();
     } catch (e) {
       setError(String(e));
     }
@@ -139,6 +231,23 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         }),
       );
       unlisteners.push(
+        await listen<VideoEntry>("library:entry", (event) => {
+          applyEntry(event.payload);
+        }),
+      );
+      unlisteners.push(
+        await listen<OpsProgress>("ops:progress", (event) => {
+          setOpsProgress(event.payload);
+        }),
+      );
+      unlisteners.push(
+        await listen<OpsProgress>("ops:done", (event) => {
+          setOpsRunning(false);
+          setOpsProgress(null);
+          setOpsSummary(event.payload.message || null);
+        }),
+      );
+      unlisteners.push(
         await listen<LogEntry>("log:new", (event) => {
           setLogs((prev) => {
             const next = [...prev, event.payload];
@@ -153,7 +262,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       disposed = true;
       unlisteners.forEach((u) => u());
     };
-  }, []);
+  }, [applyEntry]);
 
   const value: AppDataState = {
     library,
@@ -165,13 +274,23 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     settings,
     logs,
     error,
+    opsRunning,
+    opsProgress,
+    opsSummary,
     setError,
+    applyEntry,
     refreshLibrary,
     refreshTools,
     refreshLogs,
     reloadSettings,
     startScan,
     stopScan,
+    analyzeVideo,
+    analyzeAll,
+    extractTrack,
+    planExtractionAll,
+    executeExtractionPlan,
+    cancelOps,
   };
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
