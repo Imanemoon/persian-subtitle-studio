@@ -1,13 +1,17 @@
-mod commands;
-mod logging;
-mod models;
-mod scanner;
-mod settings;
-mod state;
-mod tools;
+// ماژول‌ها public هستند تا تست‌های یکپارچه (tests/) بتوانند مستقیماً
+// لایه command را با mock-runtime تست کنند.
+pub mod commands;
+pub mod logging;
+pub mod media;
+pub mod models;
+pub mod scanner;
+pub mod settings;
+pub mod state;
+pub mod subtitle;
+pub mod tools;
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
@@ -65,6 +69,7 @@ pub fn run() {
                 last_scan: Mutex::new(None),
                 scanning: AtomicBool::new(false),
                 cancel_scan: AtomicBool::new(false),
+                ops: Arc::new(Mutex::new(state::OpsRegistry::default())),
             });
             app.manage(AppPaths { config_dir });
 
@@ -80,6 +85,15 @@ pub fn run() {
             commands::settings::save_settings,
             commands::tools::detect_tools,
             commands::logs::get_logs,
+            commands::media::analyze_video,
+            commands::media::analyze_all,
+            commands::subtitle::extract_track,
+            commands::subtitle::extract_track_for_review,
+            commands::subtitle::promote_review,
+            commands::subtitle::plan_extraction_all,
+            commands::subtitle::execute_extraction_plan,
+            commands::subtitle::cancel_subtitle_ops,
+            commands::subtitle::validate_subtitle_file,
         ])
         .run(tauri::generate_context!())
         .expect("خطا در اجرای SubSync Studio");

@@ -158,6 +158,7 @@ pub fn scan_folder<F: FnMut(ScanProgress)>(
             season,
             episode,
             sibling_subtitles,
+            analysis: None,
         });
 
         on_progress(ScanProgress {
@@ -289,6 +290,12 @@ fn sibling_subtitles(
         })
         .cloned()
         .collect()
+}
+
+/// اسکن مجدد زیرنویس‌های کناری یک ویدیو (پس از استخراج، برای به‌روزرسانی UI).
+pub fn scan_sibling_subtitles(dir: &Path, video_stem: &str) -> Vec<SubtitleFileInfo> {
+    let mut cache = HashMap::new();
+    sibling_subtitles(dir, video_stem, &mut cache)
 }
 
 #[cfg(test)]

@@ -88,6 +88,28 @@ fn path_var() -> Option<std::ffi::OsString> {
     std::env::var_os("PATH")
 }
 
+/// مسیر قابل استفادهٔ یک ابزار: اولویت با Override تنظیمات، سپس مسیرهای پیش‌فرض/PATH.
+/// (بدون پروب — پروب سلامت فقط در detect_all انجام می‌شود)
+pub fn resolve_tool_path(id: &str, overrides: &ToolPathOverrides) -> Option<PathBuf> {
+    let override_path = match id {
+        "ffmpeg" => overrides.ffmpeg.as_deref(),
+        "ffprobe" => overrides.ffprobe.as_deref(),
+        "subsource" => overrides.subsource.as_deref(),
+        "sevenZip" => overrides.seven_zip.as_deref(),
+        "ffsubsync" => overrides.ffsubsync.as_deref(),
+        _ => None,
+    };
+    if let Some(p) = override_path.map(str::trim).filter(|p| !p.is_empty()) {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    candidate_paths(id, path_var().as_deref())
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
 /// تشخیص همه ابزارها؛ ابتدا مسیر Override تنظیمات، سپس مسیرهای پیش‌فرض.
 pub fn detect_all(overrides: &ToolPathOverrides) -> Vec<ToolInfo> {
     let pv = path_var();

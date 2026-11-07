@@ -13,12 +13,12 @@ PowerShell + FFmpeg + SubSource CLI + 7-Zip + FFsubsync.
 | فاز | شرح | وضعیت |
 | --- | --- | --- |
 | ۱ | Foundation — اسکن واقعی پوشه‌ها، تشخیص S/E، داشبورد، تشخیص ابزارها، تنظیمات | ✅ تکمیل |
-| ۲ | Subtitle Engine — FFprobe، استخراج زیرنویس داخلی، تشخیص محتوای فارسی | 🔜 بعدی |
-| ۳ | Download & Archive — SubSource، Staging با Hard Link، ZIP/RAR با 7-Zip | ⏳ |
+| ۲ | Subtitle Engine — FFprobe، استخراج زیرنویس داخلی، تشخیص محتوای فارسی | ✅ تکمیل |
+| ۳ | Download & Archive — SubSource، Staging با Hard Link، ZIP/RAR با 7-Zip | 🔜 بعدی |
 | ۴ | Sync Engine — FFsubsync، Workerها، Stop/Retry | ⏳ |
 | ۵ | Packaging — Installer ویندوز، مستندات نهایی | ⏳ |
 
-## امکانات فعلی (فاز ۱)
+## امکانات فعلی (فاز ۲)
 
 - **اسکن بازگشتی واقعی** پوشه ریشه با ۱۴ پسوند ویدیویی، مستثناکردن پوشه‌های تعریف‌شده
   (پیش‌فرض: `Ted Lasso` و `Better Call Saul` — قابل تغییر در تنظیمات)، پوشه‌های مخفی و
@@ -31,6 +31,21 @@ PowerShell + FFmpeg + SubSource CLI + 7-Zip + FFsubsync.
   SubSource CLI، FFsubsync — با امکان تعیین مسیر دستی
 - **تنظیمات ماندگار** (JSON در پوشه config) با ذخیره امن (نوشتن موقت + rename)
 - لغو اسکن در هر لحظه بدون خراب کردن هیچ فایلی
+
+### موتور زیرنویس داخلی (فاز ۲)
+
+- **تحلیل با FFprobe**: مشخصات کامل هر Subtitle Stream (Global Index، کدک، زبان،
+  عنوان، Disposition پیش‌فرض/Forced) با پارس JSON و گارد خطا
+- **دسته‌بندی کدک‌ها**: متنی (subrip/ass/ssa/webvtt/mov_text)، تصویری
+  (PGS/VobSub/Xsub/DVB — با پیام صریح نیاز به OCR)، ناشناخته
+- **تشخیص فارسی دو لایه**: اول Language Tag/عنوان Track (fa/fas/per/farsi/persian/فارسی)،
+  بعد **تأیید محتوا** با رنج‌های یونیکد فارسی — Tag فارسی با متن لاتین «فارسی تأییدشده» حساب نمی‌شود
+- **استخراج امن با FFmpeg**: خروجی اول فایل موقت → اعتبارسنجی (غیرخالی + ساختار cue معتبر +
+  شمارش فارسی) → انتقال اتمیک به `<base>.fa.srt` **بدون هیچ بازنویسی**
+- **پیش‌به‌جویی فایل‌های موجود**: `.fa.srt`، `.fa.synced.srt` و `.srt` فارسیِ موجود → Skip با دلیل
+- **Extract All دو مرحله‌ای**: پلن خلاصه (آماده‌ها + ردشده‌ها با دلیل) → تأیید صریح کاربر → اجرا
+- چند Track فارسی = `NeedsTrackSelection`؛ انتخاب دستی از UI — انتخاب تصادفی ممنوع
+- لغو عملیات فرایند FFmpeg را می‌کشد و فایل موقت همان عملیات را پاک می‌کند
 
 ## پیش‌نیازها
 
@@ -53,7 +68,7 @@ cd src-tauri
 cargo fmt
 cargo check
 cargo test --lib          # تست‌های واحد
-cargo test --lib -- --ignored   # تست زندهٔ تشخیص ابزارها روی همین سیستم
+cargo test --lib -- --ignored   # تست‌های زنده: تشخیص ابزارها + چرخه کامل ffmpeg روی فایل مصنوعی
 cargo clippy --all-targets -- -D warnings
 ```
 

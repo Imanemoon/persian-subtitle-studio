@@ -1,6 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { LogEntry, ScanSummary, Settings, ToolInfo, VideoEntry } from "../types";
+import type {
+  ExtractionPlan,
+  ExtractionPlanItem,
+  LogEntry,
+  ScanSummary,
+  Settings,
+  SubtitleValidation,
+  ToolInfo,
+  TrackReview,
+  VideoEntry,
+} from "../types";
 
 export const api = {
   getLibrary: () => invoke<VideoEntry[]>("get_library"),
@@ -15,6 +25,22 @@ export const api = {
 
   detectTools: () => invoke<ToolInfo[]>("detect_tools"),
   getLogs: (limit = 300) => invoke<LogEntry[]>("get_logs", { limit }),
+
+  // ---- فاز ۲: تحلیل و استخراج زیرنویس داخلی ----
+  analyzeVideo: (path: string) => invoke<VideoEntry>("analyze_video", { path }),
+  analyzeAll: () => invoke<number>("analyze_all"),
+  extractTrack: (path: string, streamIndex: number) =>
+    invoke<VideoEntry>("extract_track", { path, streamIndex }),
+  extractTrackForReview: (path: string, streamIndex: number) =>
+    invoke<TrackReview>("extract_track_for_review", { path, streamIndex }),
+  promoteReview: (path: string, streamIndex: number) =>
+    invoke<VideoEntry>("promote_review", { path, streamIndex }),
+  planExtractionAll: () => invoke<ExtractionPlan>("plan_extraction_all"),
+  executeExtractionPlan: (items: ExtractionPlanItem[]) =>
+    invoke<number>("execute_extraction_plan", { items }),
+  cancelSubtitleOps: () => invoke<boolean>("cancel_subtitle_ops"),
+  validateSubtitleFile: (path: string) =>
+    invoke<SubtitleValidation>("validate_subtitle_file", { path }),
 
   pickFolder: async (): Promise<string | null> => {
     const picked = await open({ directory: true, multiple: false });
