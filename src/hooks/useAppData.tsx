@@ -8,9 +8,11 @@ import {
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
+import type { SyncRunState } from "../lib/pipeline";
 import type {
   ExtractionPlan,
   ExtractionPlanItem,
+  HomeSelection,
   LogEntry,
   OpsProgress,
   ScanProgress,
@@ -33,6 +35,16 @@ interface AppDataState {
   opsRunning: boolean;
   opsProgress: OpsProgress | null;
   opsSummary: string | null;
+  /** انتخاب صفحهٔ خانه — پوشه یا چند فایل (دو هم‌زمان نه) */
+  selection: HomeSelection | null;
+  setFolderSelection: (path: string) => void;
+  setFileSelection: (paths: string[]) => void;
+  clearSelection: () => void;
+  /**
+   * وضعیت اجرای سینک — فقط موتور واقعی pipeline آن را پر می‌کند.
+   * تا آن زمان همیشه null است تا هیچ پیشرفت جعلی‌ای نمایش داده نشود.
+   */
+  syncRun: SyncRunState | null;
   setError: (message: string | null) => void;
   applyEntry: (entry: VideoEntry) => void;
   refreshLibrary: () => Promise<void>;
@@ -68,6 +80,20 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [opsRunning, setOpsRunning] = useState(false);
   const [opsProgress, setOpsProgress] = useState<OpsProgress | null>(null);
   const [opsSummary, setOpsSummary] = useState<string | null>(null);
+  const [selection, setSelection] = useState<HomeSelection | null>(null);
+  // تا اتصال orchestrator واقعی همیشه null می‌ماند (بدون پیشرفت جعلی)
+  const [syncRun] = useState<SyncRunState | null>(null);
+
+  // انتخاب پوشه و فایل با هم جمع‌ناپذیرند — هر setter انتخاب قبلی را جایگزین می‌کند
+  const setFolderSelection = useCallback((path: string) => {
+    setSelection({ kind: "folder", path });
+  }, []);
+
+  const setFileSelection = useCallback((paths: string[]) => {
+    setSelection({ kind: "files", paths });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelection(null), []);
 
   const applyEntry = useCallback((entry: VideoEntry) => {
     setLibrary((prev) => {
@@ -297,6 +323,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     opsRunning,
     opsProgress,
     opsSummary,
+    selection,
+    setFolderSelection,
+    setFileSelection,
+    clearSelection,
+    syncRun,
     setError,
     applyEntry,
     refreshLibrary,
