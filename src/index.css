@@ -1,0 +1,67 @@
+@import "tailwindcss";
+@import "vazirmatn/Vazirmatn-Variable-font-face.css";
+
+@theme {
+  --font-sans: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+
+  --color-surface-0: #0a0a0c;
+  --color-surface-1: #111114;
+  --color-surface-2: #19191d;
+  --color-line: #26262c;
+  --color-ink-1: #f4f4f5;
+  --color-ink-2: #a1a1aa;
+  --color-ink-3: #71717a;
+
+  --color-accent: #10b981;
+  --color-accent-strong: #34d399;
+  --color-accent-dim: rgba(16, 185, 129, 0.1);
+
+  --animate-progress: progress 1.4s ease-in-out infinite;
+}
+
+@keyframes progress {
+  0% {
+    transform: translateX(120%);
+  }
+  100% {
+    transform: translateX(-360%);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface-0);
+  color: var(--color-ink-1);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c2c32;
+  border-radius: 8px;
+  border: 2px solid var(--color-surface-0);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::selection {
+  background: rgba(16, 185, 129, 0.35);
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
