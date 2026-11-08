@@ -1,12 +1,44 @@
 //! SubSource CLI execution adapter — safe process management with testability.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::logging;
 use crate::subsource::error::{SubSourceError, SubSourceResult};
 use crate::subsource::types::{BatchOptions, BatchResult};
+
+/// Token برای لغو عملیات در حال اجرا
+#[derive(Clone)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// لغو عملیات
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// بررسی اینکه آیا لغو شده است
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -49,7 +81,7 @@ impl SubSourceCli {
         Ok(Self { exe_path: path })
     }
 
-    /// اجرای batch download
+    /// اجرای batch download (بدون cancellation)
     ///
     /// # Arguments
     /// * `options` - تنظیمات اجرا (directory, API key, etc.)
@@ -62,6 +94,23 @@ impl SubSourceCli {
     /// - `ProcessError` اگر spawn ناموفق باشد
     /// - `CliExitCode` اگر CLI با کد غیر صفر خارج شود
     pub fn run_batch(&self, options: &BatchOptions) -> SubSourceResult<BatchResult> {
+        let token = CancellationToken::new();
+        self.run_batch_with_cancellation(options, &token)
+    }
+
+    /// اجرای batch download با قابلیت cancellation
+    ///
+    /// # Arguments
+    /// * `options` - تنظیمات اجرا
+    /// * `cancel_token` - token برای لغو عملیات
+    ///
+    /// # Returns
+    /// نتیجه اجرا یا خطای `ProcessTerminated` در صورت لغو
+    pub fn run_batch_with_cancellation(
+        &self,
+        options: &BatchOptions,
+        cancel_token: &CancellationToken,
+    ) -> SubSourceResult<BatchResult> {
         // اعتبارسنجی
         options.validate().map_err(SubSourceError::Other)?;
 
@@ -113,6 +162,15 @@ impl SubSourceCli {
             .spawn()
             .map_err(|e| SubSourceError::ProcessError(format!("spawn: {e}")))?;
 
+        // بررسی cancellation قبل از شروع wait
+        if cancel_token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SubSourceError::ProcessTerminated(
+                "عملیات قبل از شروع لغو شد".into(),
+            ));
+        }
+
         // خواندن stdout و stderr در threadهای جدا
         let mut stdout_pipe = child.stdout.take().expect("stdout piped");
         let mut stderr_pipe = child.stderr.take().expect("stderr piped");
@@ -131,14 +189,26 @@ impl SubSourceCli {
             s
         });
 
-        // انتظار برای اتمام
-        let status = child
-            .wait()
-            .map_err(|e| SubSourceError::ProcessError(format!("wait: {e}")))?;
+        // انتظار برای اتمام با پشتیبانی از cancellation
+        let status = Self::wait_with_cancellation(&mut child, cancel_token)?;
 
-        let stdout = stdout_thread.join().unwrap_or_default();
-        let stderr = stderr_thread.join().unwrap_or_default();
+        let stdout_raw = stdout_thread.join().unwrap_or_default();
+        let stderr_raw = stderr_thread.join().unwrap_or_default();
         let duration = start.elapsed().as_secs_f64();
+
+        // Redact credentials از stdout/stderr
+        let stdout = Self::redact_output(
+            &stdout_raw,
+            &options.api_key,
+            &options.proxy,
+            &options.worker,
+        );
+        let stderr = Self::redact_output(
+            &stderr_raw,
+            &options.api_key,
+            &options.proxy,
+            &options.worker,
+        );
 
         // تحلیل نتیجه
         let exit_code = status.code().unwrap_or(-1);
@@ -150,7 +220,7 @@ impl SubSourceCli {
             );
             Ok(BatchResult::success(stdout, stderr, duration))
         } else {
-            let result = BatchResult::failure(exit_code, stdout, stderr, duration);
+            let result = BatchResult::failure(exit_code, stdout.clone(), stderr.clone(), duration);
 
             // تشخیص نوع خطا
             if result.is_auth_error() {
@@ -174,8 +244,41 @@ impl SubSourceCli {
 
             Err(SubSourceError::CliExitCode {
                 code: exit_code,
-                stderr: result.stderr.clone(),
+                stderr,
             })
+        }
+    }
+
+    /// انتظار برای اتمام process با پشتیبانی از cancellation
+    fn wait_with_cancellation(
+        child: &mut Child,
+        cancel_token: &CancellationToken,
+    ) -> SubSourceResult<std::process::ExitStatus> {
+        use std::time::Duration;
+
+        loop {
+            // بررسی cancellation
+            if cancel_token.is_cancelled() {
+                // kill process
+                if let Err(e) = child.kill() {
+                    logging::warn("subsource", &format!("خطا در kill process: {e}"));
+                }
+                // wait برای اطمینان از آزادسازی منابع
+                let _ = child.wait();
+                return Err(SubSourceError::ProcessTerminated("عملیات لغو شد".into()));
+            }
+
+            // تلاش برای بررسی وضعیت process (non-blocking)
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => {
+                    // هنوز در حال اجراست، کمی صبر کن
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    return Err(SubSourceError::ProcessError(format!("wait error: {e}")));
+                }
+            }
         }
     }
 
@@ -197,6 +300,40 @@ impl SubSourceCli {
         }
 
         redacted
+    }
+
+    /// Redact کردن credentialها از متن خروجی (stdout/stderr)
+    fn redact_output(
+        text: &str,
+        api_key: &str,
+        proxy: &Option<String>,
+        worker: &Option<String>,
+    ) -> String {
+        let mut result = text.to_string();
+
+        // API key
+        if !api_key.is_empty() {
+            result = result.replace(api_key, "<REDACTED_API_KEY>");
+        }
+
+        // Proxy URL با username:password
+        if let Some(proxy_url) = proxy {
+            result = result.replace(proxy_url, "<REDACTED_PROXY>");
+            // Redact username:password@ pattern در URLs
+            if let Some(at_pos) = proxy_url.find('@') {
+                if let Some(scheme_end) = proxy_url.find("://") {
+                    let credentials = &proxy_url[scheme_end + 3..at_pos];
+                    result = result.replace(credentials, "<REDACTED_CREDENTIALS>");
+                }
+            }
+        }
+
+        // Worker URL
+        if let Some(worker_url) = worker {
+            result = result.replace(worker_url, "<REDACTED_WORKER>");
+        }
+
+        result
     }
 
     /// دریافت مسیر executable
