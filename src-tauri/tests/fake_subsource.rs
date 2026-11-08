@@ -58,17 +58,32 @@ fn main() {
         process::exit(1);
     }
 
-    // شبیه‌سازی credential leakage (برای تست redaction)
+    // شبیه‌سازی credential leakage در stdout و stderr (برای تست redaction)
     if let Some(pos) = args.iter().position(|a| a == "--api-key") {
         if let Some(key) = args.get(pos + 1) {
             if args.contains(&"--leak-credentials".to_string()) {
                 println!("API Key used: {}", key);
+                eprintln!("API Key echoed on stderr: {}", key);
                 if let Some(proxy_pos) = args.iter().position(|a| a == "--proxy") {
                     if let Some(proxy) = args.get(proxy_pos + 1) {
                         println!("Proxy URL: {}", proxy);
+                        eprintln!("Proxy URL: {}", proxy);
                     }
                 }
                 process::exit(0);
+            }
+
+            // leakage در مسیر خطا (برای تست redaction در Error)
+            if args.contains(&"--leak-credentials-error".to_string()) {
+                println!("Leaked credential: {}", key);
+                eprintln!("Credential leak on stderr: {}", key);
+                if let Some(proxy_pos) = args.iter().position(|a| a == "--proxy") {
+                    if let Some(proxy) = args.get(proxy_pos + 1) {
+                        println!("Proxy: {}", proxy);
+                        eprintln!("Proxy: {}", proxy);
+                    }
+                }
+                process::exit(1);
             }
         }
     }

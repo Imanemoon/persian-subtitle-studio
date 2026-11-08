@@ -1,7 +1,6 @@
 //! تست‌های یکپارچه برای SubSource CLI adapter با fake executable
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -193,14 +192,52 @@ fn test_credential_redaction() {
 
     let result = cli.run_batch(&opts).expect("Should succeed");
 
-    // خروجی نباید حاوی credentialهای واقعی باشد
+    // خروجی stdout و stderr نباید حاوی credentialهای واقعی باشد
     assert!(!result.stdout.contains("secret-key-12345"));
+    assert!(!result.stderr.contains("secret-key-12345"));
     assert!(!result.stdout.contains("user:pass"));
-    assert!(
-        result.stdout.contains("<REDACTED")
-            || result.stdout.is_empty()
-            || !result.stdout.contains("API Key used")
-    );
+    assert!(!result.stderr.contains("user:pass"));
+
+    // هر دو مسیر باید redaction واقعی داشته باشند، نه فقط خالی بودن
+    assert!(result.stdout.contains("<REDACTED_API_KEY>"));
+    assert!(result.stderr.contains("<REDACTED_API_KEY>"));
+    assert!(result.stdout.contains("<REDACTED_PROXY>"));
+    assert!(result.stderr.contains("<REDACTED_PROXY>"));
+}
+
+#[test]
+fn test_credential_redaction_in_error() {
+    let exe = get_fake_exe();
+    let cli = SubSourceCli::new(exe.to_str().unwrap()).expect("CLI creation failed");
+
+    let temp_dir = std::env::temp_dir();
+    let mut opts = BatchOptions {
+        directory: temp_dir.to_str().unwrap().to_string(),
+        api_key: "secret-key-67890".into(),
+        top: 1,
+        connection_mode: ConnectionMode::Manual,
+        proxy: Some("http://user:pass@proxy.example.com:8080".into()),
+        ..Default::default()
+    };
+
+    opts.worker = Some("--leak-credentials-error".into());
+
+    let err = cli.run_batch(&opts).expect_err("Should fail");
+
+    // Display خطا هم نباید credential را leak کند
+    let display = err.to_string();
+    assert!(!display.contains("secret-key-67890"));
+    assert!(!display.contains("user:pass"));
+
+    match err {
+        SubSourceError::CliExitCode { stderr, .. } => {
+            assert!(!stderr.contains("secret-key-67890"));
+            assert!(!stderr.contains("user:pass"));
+            assert!(stderr.contains("<REDACTED_API_KEY>"));
+            assert!(stderr.contains("<REDACTED_PROXY>"));
+        }
+        other => panic!("Unexpected error type: {other:?}"),
+    }
 }
 
 #[test]

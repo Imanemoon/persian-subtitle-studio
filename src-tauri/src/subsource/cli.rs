@@ -164,16 +164,32 @@ impl SubSourceCli {
 
         // بررسی cancellation قبل از شروع wait
         if cancel_token.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
+            Self::terminate_child(&mut child);
             return Err(SubSourceError::ProcessTerminated(
                 "عملیات قبل از شروع لغو شد".into(),
             ));
         }
 
         // خواندن stdout و stderr در threadهای جدا
-        let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+        let mut stdout_pipe = match child.stdout.take() {
+            Some(pipe) => pipe,
+            None => {
+                Self::terminate_child(&mut child);
+                return Err(SubSourceError::ProcessError(
+                    "stdout pipe در دسترس نیست".into(),
+                ));
+            }
+        };
+
+        let mut stderr_pipe = match child.stderr.take() {
+            Some(pipe) => pipe,
+            None => {
+                Self::terminate_child(&mut child);
+                return Err(SubSourceError::ProcessError(
+                    "stderr pipe در دسترس نیست".into(),
+                ));
+            }
+        };
 
         let stdout_thread = std::thread::spawn(move || {
             use std::io::Read;
@@ -189,11 +205,13 @@ impl SubSourceCli {
             s
         });
 
-        // انتظار برای اتمام با پشتیبانی از cancellation
-        let status = Self::wait_with_cancellation(&mut child, cancel_token)?;
-
+        // انتظار برای اتمام با پشتیبانی از cancellation.
+        // در خطا، wait_with_cancellation خودش Child را kill/wait می‌کند؛
+        // بنابراین reader threadها همیشه به EOF می‌رسند و join بدون deadlock انجام می‌شود.
+        let status_result = Self::wait_with_cancellation(&mut child, cancel_token);
         let stdout_raw = stdout_thread.join().unwrap_or_default();
         let stderr_raw = stderr_thread.join().unwrap_or_default();
+        let status = status_result?;
         let duration = start.elapsed().as_secs_f64();
 
         // Redact credentials از stdout/stderr
@@ -259,12 +277,7 @@ impl SubSourceCli {
         loop {
             // بررسی cancellation
             if cancel_token.is_cancelled() {
-                // kill process
-                if let Err(e) = child.kill() {
-                    logging::warn("subsource", &format!("خطا در kill process: {e}"));
-                }
-                // wait برای اطمینان از آزادسازی منابع
-                let _ = child.wait();
+                Self::terminate_child(child);
                 return Err(SubSourceError::ProcessTerminated("عملیات لغو شد".into()));
             }
 
@@ -276,9 +289,25 @@ impl SubSourceCli {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 Err(e) => {
+                    // حتی در خطای try_wait نباید Child رها شود.
+                    Self::terminate_child(child);
                     return Err(SubSourceError::ProcessError(format!("wait error: {e}")));
                 }
             }
+        }
+    }
+
+    /// خاتمهٔ امن Child: ابتدا kill و سپس wait تا process و منابعش آزاد شوند.
+    fn terminate_child(child: &mut Child) {
+        match child.kill() {
+            Ok(()) => {}
+            // اگر process بین try_wait و kill خودش تمام شده باشد، wait زیر آن را reap می‌کند.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(e) => logging::warn("subsource", &format!("خطا در kill process: {e}")),
+        }
+
+        if let Err(e) = child.wait() {
+            logging::warn("subsource", &format!("خطا در wait پس از kill: {e}"));
         }
     }
 

@@ -26,12 +26,12 @@ pub struct ProcessingSettings {
 }
 
 /// تنظیمات SubSource API و دانلود
+///
+/// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
+/// ذخیره می‌شود تا هرگز داخل settings.json نوشته نشود.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubSourceSettings {
-    /// API key برای SubSource (حساس — هرگز لاگ نمی‌شود)
-    pub api_key: Option<String>,
-
     /// حالت اتصال: direct, system, manual, cloudflare
     pub connection_mode: String,
 
@@ -51,7 +51,6 @@ pub struct SubSourceSettings {
 impl Default for SubSourceSettings {
     fn default() -> Self {
         Self {
-            api_key: None,
             connection_mode: "direct".to_string(),
             proxy: None,
             worker: None,
@@ -144,40 +143,125 @@ pub fn config_file_path(config_dir: &Path) -> PathBuf {
 }
 
 /// بارگذاری تنظیمات؛ در صورت خرابی فایل، از آن پشتیبان گرفته و پیش‌فرض برمی‌گردد.
+///
+/// اگر فایل قدیمی حاوی `subsource.apiKey` باشد، ابتدا کلید به Credential Manager
+/// منتقل می‌شود و تنها پس از ذخیرهٔ موفق، فیلد plaintext از JSON حذف می‌گردد.
+/// در صورت شکست مهاجرت، فایل تنظیمات دست‌نخورده می‌ماند تا داده‌ای از دست نرود.
 pub fn load(config_dir: &Path) -> Settings {
+    load_with_store(config_dir, crate::subsource::store_api_key)
+}
+
+fn load_with_store(
+    config_dir: &Path,
+    store_api_key: impl FnOnce(&str) -> Result<(), String>,
+) -> Settings {
     let path = config_file_path(config_dir);
-    match std::fs::read(&path) {
-        Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-            Ok(s) => s.sanitized(),
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Settings::default(),
+    };
+
+    let mut raw: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(err) => {
+            backup_corrupt(config_dir, &path, &err.to_string());
+            return Settings::default();
+        }
+    };
+
+    let settings = match serde_json::from_value::<Settings>(raw.clone()) {
+        Ok(s) => s.sanitized(),
+        Err(err) => {
+            backup_corrupt(config_dir, &path, &err.to_string());
+            return Settings::default();
+        }
+    };
+
+    if let Some(legacy_value) = take_legacy_api_key(&mut raw) {
+        let legacy_key = legacy_value
+            .as_str()
+            .map(str::trim)
+            .filter(|key| !key.is_empty());
+
+        let migration = match legacy_key {
+            Some(key) => store_api_key(key),
+            None => Ok(()),
+        };
+
+        match migration {
+            Ok(()) => {
+                if let Err(err) = save_raw(config_dir, &raw) {
+                    crate::logging::error(
+                        "settings",
+                        &format!(
+                            "حذف apiKey قدیمی از settings.json ناموفق بود؛ مقدار plaintext حفظ شد: {err}"
+                        ),
+                    );
+                } else {
+                    crate::logging::info(
+                        "settings",
+                        "API key قدیمی به Credential Manager منتقل و از settings.json حذف شد",
+                    );
+                }
+            }
             Err(err) => {
-                let backup = config_dir.join(format!(
-                    "settings.corrupt-{}.json",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ));
-                let _ = std::fs::copy(&path, &backup);
-                crate::logging::warn(
+                crate::logging::error(
                     "settings",
                     &format!(
-                        "فایل تنظیمات قابل خواندن نبود ({err})؛ پشتیبان: {} — تنظیمات پیش‌فرض بارگذاری شد",
-                        backup.display()
+                        "مهاجرت API key به Credential Manager ناموفق بود؛ تنظیمات موجود حفظ شد: {err}"
                     ),
                 );
-                Settings::default()
             }
-        },
-        Err(_) => Settings::default(),
+        }
     }
+
+    settings
+}
+
+fn backup_corrupt(config_dir: &Path, path: &Path, err: &str) {
+    let backup = config_dir.join(format!(
+        "settings.corrupt-{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    let _ = std::fs::copy(path, &backup);
+    crate::logging::warn(
+        "settings",
+        &format!(
+            "فایل تنظیمات قابل خواندن نبود ({err})؛ پشتیبان: {} — تنظیمات پیش‌فرض بارگذاری شد",
+            backup.display()
+        ),
+    );
+}
+
+/// حذف فیلد قدیمی API key از JSON (هم camelCase و هم snake_case).
+fn take_legacy_api_key(value: &mut serde_json::Value) -> Option<serde_json::Value> {
+    let subsource = value.get_mut("subsource")?.as_object_mut()?;
+    let camel_case = subsource.remove("apiKey");
+    let snake_case = subsource.remove("api_key");
+    camel_case.or(snake_case)
 }
 
 /// ذخیره امن تنظیمات: اول در فایل موقت، سپس جایگزینی.
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), String> {
     let clean = settings.clone().sanitized();
+    let data = serde_json::to_vec_pretty(&clean).map_err(|e| format!("سریال‌سازی تنظیمات: {e}"))?;
+    write_atomic(config_dir, &data)
+}
+
+fn save_raw(config_dir: &Path, value: &serde_json::Value) -> Result<(), String> {
+    let data = serde_json::to_vec_pretty(value)
+        .map_err(|e| format!("سریال‌سازی تنظیمات برای مهاجرت: {e}"))?;
+    write_atomic(config_dir, &data)
+}
+
+fn write_atomic(config_dir: &Path, data: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(config_dir).map_err(|e| format!("عدم امکان ساخت پوشه تنظیمات: {e}"))?;
     let tmp = config_dir.join("settings.json.tmp");
-    let data = serde_json::to_vec_pretty(&clean).map_err(|e| format!("سریال‌سازی تنظیمات: {e}"))?;
     std::fs::write(&tmp, data).map_err(|e| format!("نوشتن تنظیمات ناموفق بود: {e}"))?;
-    std::fs::rename(&tmp, config_file_path(config_dir))
-        .map_err(|e| format!("جایگزینی فایل تنظیمات ناموفق بود: {e}"))?;
+    if let Err(err) = std::fs::rename(&tmp, config_file_path(config_dir)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("جایگزینی فایل تنظیمات ناموفق بود: {err}"));
+    }
     Ok(())
 }
 
@@ -271,5 +355,125 @@ mod tests {
         assert_eq!(s.processing.sync_workers, 16);
         assert_eq!(s.processing.segment_count, 1);
         assert!(s.excluded_folders.is_empty());
+    }
+
+    #[test]
+    fn legacy_api_key_migrates_and_is_removed_from_json() {
+        let dir = unique_temp_dir("migrate-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = serde_json::json!({
+            "rootFolder": "D:\\Series",
+            "subsource": {
+                "apiKey": "legacy-secret-key",
+                "connectionMode": "manual",
+                "proxy": "http://user:pass@proxy.example.com:8080",
+                "cleanAds": false,
+                "skipExisting": false
+            },
+            "futureField": { "keep": true }
+        });
+        std::fs::write(
+            config_file_path(&dir),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let stored = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = stored.clone();
+        let loaded = load_with_store(&dir, move |key| {
+            *captured.lock().unwrap() = Some(key.to_string());
+            Ok(())
+        });
+
+        assert_eq!(
+            *stored.lock().unwrap(),
+            Some("legacy-secret-key".to_string())
+        );
+        assert_eq!(loaded.root_folder.as_deref(), Some("D:\\Series"));
+        assert_eq!(loaded.subsource.connection_mode, "manual");
+        assert_eq!(
+            loaded.subsource.proxy.as_deref(),
+            Some("http://user:pass@proxy.example.com:8080")
+        );
+        assert!(!loaded.subsource.clean_ads);
+
+        let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(!text.contains("legacy-secret-key"));
+        assert!(!text.contains("apiKey"));
+        assert!(!text.contains("api_key"));
+
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["rootFolder"].as_str(), Some("D:\\Series"));
+        assert_eq!(json["futureField"]["keep"].as_bool(), Some(true));
+        assert!(!dir.join("settings.json.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_legacy_api_key_migration_keeps_settings_file_intact() {
+        let dir = unique_temp_dir("migrate-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = serde_json::json!({
+            "rootFolder": "D:\\Keep",
+            "excludedFolders": ["Keep Me"],
+            "subsource": {
+                "apiKey": "still-plaintext",
+                "connectionMode": "direct"
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&original).unwrap();
+        std::fs::write(config_file_path(&dir), &original_text).unwrap();
+
+        let loaded = load_with_store(&dir, |_| Err("credential manager unavailable".into()));
+
+        assert_eq!(loaded.root_folder.as_deref(), Some("D:\\Keep"));
+        assert_eq!(loaded.excluded_folders, vec!["Keep Me".to_string()]);
+
+        let after = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert_eq!(after, original_text);
+        assert!(after.contains("still-plaintext"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_null_api_key_is_removed_without_credential_write() {
+        let dir = unique_temp_dir("migrate-null");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = serde_json::json!({
+            "subsource": { "apiKey": null, "connectionMode": "direct" }
+        });
+        std::fs::write(
+            config_file_path(&dir),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_with_store(&dir, |_| panic!("نباید برای apiKey خالی فراخوانی شود"));
+
+        assert_eq!(loaded.subsource.connection_mode, "direct");
+        let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(!text.contains("apiKey"));
+        assert!(!text.contains("api_key"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_settings_never_contain_api_key() {
+        let dir = unique_temp_dir("no-api-key");
+        let s = Settings {
+            root_folder: Some("D:\\Series".to_string()),
+            ..Default::default()
+        };
+
+        save(&dir, &s).expect("save");
+        let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(!text.contains("apiKey"));
+        assert!(!text.contains("api_key"));
+        assert!(!text.contains("api-key"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
