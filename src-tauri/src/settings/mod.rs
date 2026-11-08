@@ -25,6 +25,42 @@ pub struct ProcessingSettings {
     pub skip_sync_on_low_quality: bool,
 }
 
+/// تنظیمات SubSource API و دانلود
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SubSourceSettings {
+    /// API key برای SubSource (حساس — هرگز لاگ نمی‌شود)
+    pub api_key: Option<String>,
+
+    /// حالت اتصال: direct, system, manual, cloudflare
+    pub connection_mode: String,
+
+    /// آدرس پروکسی (فقط با manual mode)
+    pub proxy: Option<String>,
+
+    /// آدرس Cloudflare Worker (فقط با cloudflare mode)
+    pub worker: Option<String>,
+
+    /// حذف تبلیغات از زیرنویس‌های فارسی
+    pub clean_ads: bool,
+
+    /// رد کردن فایل‌هایی که زیرنویس دارند
+    pub skip_existing: bool,
+}
+
+impl Default for SubSourceSettings {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            connection_mode: "direct".to_string(),
+            proxy: None,
+            worker: None,
+            clean_ads: true,
+            skip_existing: true,
+        }
+    }
+}
+
 impl Default for ProcessingSettings {
     fn default() -> Self {
         Self {
@@ -52,6 +88,7 @@ pub struct Settings {
     pub excluded_folders: Vec<String>,
     pub tool_paths: ToolPathOverrides,
     pub processing: ProcessingSettings,
+    pub subsource: SubSourceSettings,
     pub existing_file_behavior: ExistingFileBehavior,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
     pub logs_dir: Option<String>,
@@ -64,6 +101,7 @@ impl Default for Settings {
             excluded_folders: vec!["Ted Lasso".to_string(), "Better Call Saul".to_string()],
             tool_paths: ToolPathOverrides::default(),
             processing: ProcessingSettings::default(),
+            subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             logs_dir: None,
         }

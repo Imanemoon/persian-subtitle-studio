@@ -7,6 +7,7 @@ pub mod models;
 pub mod scanner;
 pub mod settings;
 pub mod state;
+pub mod subsource;
 pub mod subtitle;
 pub mod tools;
 
