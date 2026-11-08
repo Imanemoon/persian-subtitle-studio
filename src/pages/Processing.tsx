@@ -1,6 +1,8 @@
-import { AlertTriangle, Cpu, Play, RefreshCw, Square } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Cpu, FolderOpen, Play, RefreshCw, Square } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, ProgressBar, SectionTitle, StatCard } from "../components/ui";
+import { api } from "../lib/api";
 import { faNum, formatDuration } from "../lib/format";
 import type { VideoEntry } from "../types";
 
@@ -14,12 +16,24 @@ function futureStatus(v: VideoEntry) {
 }
 
 export function Processing() {
-  const { scanning, progress, lastScan, library, stopScan } = useAppData();
+  const { scanning, progress, lastScan, library, stopScan, startScan } = useAppData();
+  const [scanRoot, setScanRoot] = useState<string | null>(null);
 
   const needsDownload = library.filter((v) => v.siblingSubtitles.length === 0).length;
   const readyForSync = library.filter((v) =>
     v.siblingSubtitles.some((s) => s.nameSuggestsFa),
   ).length;
+
+  const pickAndScan = async () => {
+    if (scanRoot) {
+      await startScan(scanRoot).catch(() => undefined);
+      return;
+    }
+    const picked = await api.pickFolder();
+    if (!picked) return;
+    setScanRoot(picked);
+    await startScan(picked).catch(() => undefined);
+  };
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
@@ -34,12 +48,39 @@ export function Processing() {
         </Button>
       </div>
 
+      {/* اسکن کتابخانه — قابلیت پیشرفته (از داشبورد قبلی به اینجا منتقل شده) */}
+      <Card className="flex flex-wrap items-center gap-3 p-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-ink-1">اسکن کتابخانه</div>
+          <div
+            dir="ltr"
+            className="truncate text-start font-mono text-[11px] text-ink-3"
+            title={scanRoot ?? undefined}
+          >
+            {scanRoot ?? "پوشه‌ای انتخاب نشده — با دکمهٔ روبه‌رو انتخاب کنید"}
+          </div>
+        </div>
+        <Button onClick={() => setScanRoot(null)} disabled={scanning} title="پاک‌کردن پوشهٔ انتخابی">
+          <RefreshCw className="size-4" />
+          تغییر پوشه
+        </Button>
+        <Button
+          variant="primary"
+          onClick={pickAndScan}
+          disabled={scanning}
+          loading={scanning}
+        >
+          <FolderOpen className="size-4" />
+          انتخاب پوشه و اسکن
+        </Button>
+      </Card>
+
       <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <span>
-          در این نسخه (فاز ۱) اسکن و شناسایی فعال است. دانلود از SubSource (فاز ۳) و
-          همگام‌سازی با FFsubsync (فاز ۴) پس از پیاده‌سازی، از همین صفحه کنترل می‌شوند.
-          هیچ پردازش یا دانلودی به‌صورت خودکار شروع نمی‌شود.
+          در این نسخه اسکن، تحلیل و استخراج زیرنویس داخلی فعال است. دانلود از
+          SubSource و همگام‌سازی با FFsubsync در فازهای بعدی از همین صفحه کنترل
+          می‌شوند. هیچ پردازشی به‌صورت خودکار شروع نمی‌شود.
         </span>
       </div>
 
@@ -86,7 +127,7 @@ export function Processing() {
         <SectionTitle title="صف پردازش" />
         {library.length === 0 ? (
           <Card className="px-4 py-10 text-center text-sm text-ink-3">
-            صف خالی است — ابتدا از داشبورد اسکن بگیرید.
+            صف خالی است — با «انتخاب پوشه و اسکن» در همین صفحه کتابخانه را بسازید.
           </Card>
         ) : (
           <div className="max-h-[480px] overflow-y-auto rounded-xl border border-line bg-surface-1">

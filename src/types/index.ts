@@ -182,4 +182,9 @@ export interface Settings {
   logsDir: string | null;
 }
 
-export type PageId = "dashboard" | "library" | "processing" | "logs" | "settings";
+export type PageId = "home" | "library" | "processing" | "logs" | "settings";
+
+/** انتخاب کاربر در صفحهٔ خانه — پوشه یا چند فایل، هر دو با هم نه */
+export type HomeSelection =
+  | { kind: "folder"; path: string }
+  | { kind: "files"; paths: string[] };

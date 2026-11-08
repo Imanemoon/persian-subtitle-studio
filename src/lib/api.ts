@@ -47,6 +47,24 @@ export const api = {
     return typeof picked === "string" ? picked : null;
   },
 
+  /** انتخاب چند فایل ویدیویی با دیالوگ بومی ویندوز — فیلترها مطابق Scanner */
+  pickVideos: async (): Promise<string[] | null> => {
+    const picked = await open({
+      multiple: true,
+      filters: [
+        {
+          name: "Video",
+          extensions: [
+            "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mts",
+            "webm", "mpg", "mpeg", "vob", "wmv", "flv",
+          ],
+        },
+      ],
+    });
+    if (!picked) return null; // لغو دیالوگ — انتخاب فعلی دست‌نخورده می‌ماند
+    return Array.isArray(picked) ? picked : [picked];
+  },
+
   pickExecutable: async (): Promise<string | null> => {
     const picked = await open({
       multiple: false,
