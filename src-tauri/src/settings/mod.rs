@@ -282,9 +282,10 @@ pub(crate) fn take_legacy_api_key(
                 subsource.remove("api_key");
                 Ok(LegacyKeyAction::Migrate(c))
             } else {
-                Err(format!(
-                    "تضاد در کلیدهای API قدیمی: apiKey ('{c}') و api_key ('{s}') دارای مقادیر متفاوتی هستند"
-                ))
+                Err(
+                    "تضاد در کلیدهای API قدیمی: دو مقدار apiKey و api_key با یکدیگر متفاوت هستند"
+                        .to_string(),
+                )
             }
         }
         (Some(c), None) => {
@@ -833,6 +834,19 @@ mod tests {
         });
         let result = take_legacy_api_key(&mut json);
         assert!(result.is_err(), "different keys must cause conflict error");
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("key-alpha"),
+            "error string must not leak apiKey"
+        );
+        assert!(
+            !err.contains("key-beta"),
+            "error string must not leak api_key"
+        );
+        assert!(
+            err.contains("متفاوت هستند"),
+            "must return generic conflict message"
+        );
         let sub = json["subsource"].as_object().unwrap();
         assert_eq!(sub.get("apiKey").unwrap().as_str(), Some("key-alpha"));
         assert_eq!(sub.get("api_key").unwrap().as_str(), Some("key-beta"));
@@ -898,6 +912,11 @@ mod tests {
         assert!(save_result.is_err());
         let err_msg = save_result.unwrap_err();
         assert!(err_msg.contains("تضاد در کلیدهای API قدیمی"));
+        assert!(!err_msg.contains("key-apple"), "error must not leak apiKey");
+        assert!(
+            !err_msg.contains("key-orange"),
+            "error must not leak api_key"
+        );
 
         // فایل روی دیسک نباید به هیچ وجه دست خورده باشد
         let text_after = std::fs::read_to_string(config_file_path(&dir)).unwrap();
@@ -905,6 +924,63 @@ mod tests {
         assert!(text_after.contains("key-apple"));
         assert!(text_after.contains("key-orange"));
         assert!(!text_after.contains("OverwrittenAttempt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflict_error_and_file_preservation_never_leak_secret_keys() {
+        let secret_a = "SUPER_SECRET_KEY_ALPHA_9999";
+        let secret_b = "SUPER_SECRET_KEY_BETA_8888";
+
+        // 1. بررسی take_legacy_api_key: مقادیر کلید نباید در متن خطا نشت کنند
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": secret_a,
+                "api_key": secret_b
+            }
+        });
+        let err = take_legacy_api_key(&mut json).expect_err("must fail with conflict");
+        assert!(
+            !err.contains(secret_a),
+            "take_legacy_api_key error message leaked secret_a"
+        );
+        assert!(
+            !err.contains(secret_b),
+            "take_legacy_api_key error message leaked secret_b"
+        );
+        assert!(
+            err.contains("متفاوت هستند"),
+            "must return generic conflict message"
+        );
+
+        // 2. بررسی save_with_store: متن خطای ذخیره نباید کلیدها را افشا کند
+        let dir = unique_temp_dir("conflict-leak-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_content = serde_json::to_string_pretty(&json).unwrap();
+        std::fs::write(config_file_path(&dir), &file_content).unwrap();
+
+        let s = Settings::default();
+        let save_err = save_with_store(&dir, &s, |_| panic!("store should not be called"))
+            .expect_err("save must fail on conflict");
+        assert!(
+            !save_err.contains(secret_a),
+            "save error string leaked secret_a"
+        );
+        assert!(
+            !save_err.contains(secret_b),
+            "save error string leaked secret_b"
+        );
+
+        // 3. بررسی load_with_store: در زمان conflict نباید کرش کند یا migration ناقص انجام دهد
+        let loaded = load_with_store(&dir, |_| panic!("store should not be called"));
+        assert_eq!(loaded.subsource, SubSourceSettings::default());
+
+        // 4. تأیید دست‌نخورده ماندن دقیق فایل کانفیگ روی دیسک
+        let after_file = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert_eq!(after_file, file_content);
+        assert!(after_file.contains(secret_a));
+        assert!(after_file.contains(secret_b));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
