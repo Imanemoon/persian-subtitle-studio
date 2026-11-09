@@ -23,6 +23,12 @@ impl CancellationToken {
         }
     }
 
+    /// ساخت token روی یک پرچم موجود — برای اتصال به همان `AtomicBool`
+    /// که در `OpsRegistry` ثبت شده (بدون سیستم لغو دوم).
+    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
+        Self { cancelled: flag }
+    }
+
     /// لغو عملیات
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
