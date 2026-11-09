@@ -168,26 +168,16 @@ fn load_with_store(
         }
     };
 
-    if let Some(legacy_value) = take_legacy_api_key(&mut raw) {
-        let legacy_key = legacy_value
-            .as_str()
-            .map(str::trim)
-            .filter(|key| !key.is_empty());
-
-        let migration = match legacy_key {
-            Some(key) => store_api_key(key),
-            None => Ok(()),
-        };
-
-        match migration {
+    match take_legacy_api_key(&mut raw) {
+        Ok(LegacyKeyAction::Migrate(key)) => match store_api_key(&key) {
             Ok(()) => {
                 if let Err(err) = save_raw(config_dir, &raw) {
                     crate::logging::error(
-                        "settings",
-                        &format!(
-                            "حذف apiKey قدیمی از settings.json ناموفق بود؛ مقدار plaintext حفظ شد: {err}"
-                        ),
-                    );
+                            "settings",
+                            &format!(
+                                "حذف apiKey قدیمی از settings.json ناموفق بود؛ مقدار plaintext حفظ شد: {err}"
+                            ),
+                        );
                 } else {
                     crate::logging::info(
                         "settings",
@@ -197,12 +187,29 @@ fn load_with_store(
             }
             Err(err) => {
                 crate::logging::error(
+                        "settings",
+                        &format!(
+                            "مهاجرت API key به Credential Manager ناموفق بود؛ تنظیمات موجود حفظ شد: {err}"
+                        ),
+                    );
+            }
+        },
+        Ok(LegacyKeyAction::RemoveOnly) => {
+            if let Err(err) = save_raw(config_dir, &raw) {
+                crate::logging::warn(
                     "settings",
-                    &format!(
-                        "مهاجرت API key به Credential Manager ناموفق بود؛ تنظیمات موجود حفظ شد: {err}"
-                    ),
+                    &format!("حذف فیلد خالی apiKey قدیمی ناموفق بود: {err}"),
                 );
             }
+        }
+        Ok(LegacyKeyAction::None) => {}
+        Err(conflict_err) => {
+            crate::logging::error(
+                "settings",
+                &format!(
+                    "مهاجرت API key به دلیل تضاد در مقادیر متوقف شد؛ فایل اصلی دست‌نخورده باقی ماند: {conflict_err}"
+                ),
+            );
         }
     }
 
@@ -224,12 +231,78 @@ fn backup_corrupt(config_dir: &Path, path: &Path, err: &str) {
     );
 }
 
-/// حذف فیلد قدیمی API key از JSON (هم camelCase و هم snake_case).
-fn take_legacy_api_key(value: &mut serde_json::Value) -> Option<serde_json::Value> {
-    let subsource = value.get_mut("subsource")?.as_object_mut()?;
-    let camel_case = subsource.remove("apiKey");
-    let snake_case = subsource.remove("api_key");
-    camel_case.or(snake_case)
+/// نتیجه استخراج و اعتبارسنجی کلید API قدیمی از JSON
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LegacyKeyAction {
+    /// هیچ کلید قدیمی وجود ندارد
+    None,
+    /// کلید معتبر یافت شد که باید در Credential Manager ذخیره و از JSON حذف شود
+    Migrate(String),
+    /// فیلد(های) قدیمی وجود داشت اما خالی یا null بود؛ فقط از JSON حذف می‌شود
+    RemoveOnly,
+}
+
+fn extract_clean_key(val: Option<&serde_json::Value>) -> Option<String> {
+    val.and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// استخراج امن API key قدیمی از JSON (پشتیبانی از هر دو حالت camelCase و snake_case).
+///
+/// رفتار:
+/// - اگر فیلدی وجود نداشت: `Ok(LegacyKeyAction::None)`
+/// - اگر فقط یکی وجود داشت و معتبر بود: `Ok(LegacyKeyAction::Migrate(key))` و حذف از JSON
+/// - اگر هر دو وجود داشتند و مقدار یکسان داشتند: `Ok(LegacyKeyAction::Migrate(key))` و حذف هر دو
+/// - اگر یکی خالی/null و دیگری معتبر بود: کلید معتبر حفظ و هر دو از JSON حذف می‌شوند
+/// - اگر هر دو خالی/null بودند: `Ok(LegacyKeyAction::RemoveOnly)` و هر دو از JSON حذف می‌شوند
+/// - اگر هر دو دارای مقادیر معتبر ولی متفاوت بودند: خطای تضاد بازگردانده شده و JSON کاملاً دست‌نخورده می‌ماند
+pub(crate) fn take_legacy_api_key(
+    value: &mut serde_json::Value,
+) -> Result<LegacyKeyAction, String> {
+    let Some(subsource) = value.get_mut("subsource").and_then(|v| v.as_object_mut()) else {
+        return Ok(LegacyKeyAction::None);
+    };
+
+    let has_camel = subsource.contains_key("apiKey");
+    let has_snake = subsource.contains_key("api_key");
+
+    if !has_camel && !has_snake {
+        return Ok(LegacyKeyAction::None);
+    }
+
+    let camel_clean = extract_clean_key(subsource.get("apiKey"));
+    let snake_clean = extract_clean_key(subsource.get("api_key"));
+
+    match (camel_clean, snake_clean) {
+        (Some(c), Some(s)) => {
+            if c == s {
+                subsource.remove("apiKey");
+                subsource.remove("api_key");
+                Ok(LegacyKeyAction::Migrate(c))
+            } else {
+                Err(format!(
+                    "تضاد در کلیدهای API قدیمی: apiKey ('{c}') و api_key ('{s}') دارای مقادیر متفاوتی هستند"
+                ))
+            }
+        }
+        (Some(c), None) => {
+            subsource.remove("apiKey");
+            subsource.remove("api_key");
+            Ok(LegacyKeyAction::Migrate(c))
+        }
+        (None, Some(s)) => {
+            subsource.remove("apiKey");
+            subsource.remove("api_key");
+            Ok(LegacyKeyAction::Migrate(s))
+        }
+        (None, None) => {
+            subsource.remove("apiKey");
+            subsource.remove("api_key");
+            Ok(LegacyKeyAction::RemoveOnly)
+        }
+    }
 }
 
 /// ذخیره امن تنظیمات با بررسی و مهاجرت API key قدیمی.
@@ -251,21 +324,22 @@ fn save_with_store(
     // بررسی وجود API key قدیمی در فایل موجود
     if let Ok(bytes) = std::fs::read(&path) {
         if let Ok(mut raw) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let Some(legacy_value) = take_legacy_api_key(&mut raw) {
-                // کلید قدیمی یافت شد — ابتدا مهاجرت
-                let legacy_key = legacy_value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|k| !k.is_empty());
-
-                if let Some(key) = legacy_key {
-                    store_api_key(key).map_err(|e| {
+            match take_legacy_api_key(&mut raw) {
+                Ok(LegacyKeyAction::Migrate(key)) => {
+                    store_api_key(&key).map_err(|e| {
                         format!(
                             "مهاجرت API key به Credential Manager ناموفق بود؛ ذخیره لغو شد: {e}"
                         )
                     })?;
                 }
-                // مهاجرت موفق بود (یا کلید خالی بود) — ادامه ذخیره‌سازی معمول
+                Ok(LegacyKeyAction::RemoveOnly) | Ok(LegacyKeyAction::None) => {
+                    // بدون نیاز به ذخیره در Credential Manager
+                }
+                Err(conflict_err) => {
+                    return Err(format!(
+                        "تضاد در کلیدهای API قدیمی؛ ذخیره لغو شد تا فایل دست‌نخورده بماند: {conflict_err}"
+                    ));
+                }
             }
         }
     }
@@ -637,6 +711,200 @@ mod tests {
             Some("D:\\NewFolder"),
             "rootFolder جدید باید ذخیره شده باشد"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn take_legacy_api_key_only_camel_case() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": "camel-only-key",
+                "cleanAds": true
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(
+            action,
+            LegacyKeyAction::Migrate("camel-only-key".to_string())
+        );
+        assert!(!json["subsource"]
+            .as_object()
+            .unwrap()
+            .contains_key("apiKey"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_only_snake_case() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "api_key": "snake-only-key",
+                "cleanAds": true
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(
+            action,
+            LegacyKeyAction::Migrate("snake-only-key".to_string())
+        );
+        assert!(!json["subsource"]
+            .as_object()
+            .unwrap()
+            .contains_key("api_key"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_both_identical() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": "identical-key",
+                "api_key": "identical-key"
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(
+            action,
+            LegacyKeyAction::Migrate("identical-key".to_string())
+        );
+        let sub = json["subsource"].as_object().unwrap();
+        assert!(!sub.contains_key("apiKey"));
+        assert!(!sub.contains_key("api_key"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_one_empty_one_valid_camel() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": "valid-camel-key",
+                "api_key": ""
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(
+            action,
+            LegacyKeyAction::Migrate("valid-camel-key".to_string())
+        );
+        let sub = json["subsource"].as_object().unwrap();
+        assert!(!sub.contains_key("apiKey"));
+        assert!(!sub.contains_key("api_key"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_one_empty_one_valid_snake() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": null,
+                "api_key": "valid-snake-key"
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(
+            action,
+            LegacyKeyAction::Migrate("valid-snake-key".to_string())
+        );
+        let sub = json["subsource"].as_object().unwrap();
+        assert!(!sub.contains_key("apiKey"));
+        assert!(!sub.contains_key("api_key"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_both_empty_or_null() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": null,
+                "api_key": "   "
+            }
+        });
+        let action = take_legacy_api_key(&mut json).expect("should succeed");
+        assert_eq!(action, LegacyKeyAction::RemoveOnly);
+        let sub = json["subsource"].as_object().unwrap();
+        assert!(!sub.contains_key("apiKey"));
+        assert!(!sub.contains_key("api_key"));
+    }
+
+    #[test]
+    fn take_legacy_api_key_conflict_aborts_and_keeps_json_intact() {
+        let mut json = serde_json::json!({
+            "subsource": {
+                "apiKey": "key-alpha",
+                "api_key": "key-beta",
+                "cleanAds": true
+            }
+        });
+        let result = take_legacy_api_key(&mut json);
+        assert!(result.is_err(), "different keys must cause conflict error");
+        let sub = json["subsource"].as_object().unwrap();
+        assert_eq!(sub.get("apiKey").unwrap().as_str(), Some("key-alpha"));
+        assert_eq!(sub.get("api_key").unwrap().as_str(), Some("key-beta"));
+    }
+
+    #[test]
+    fn load_aborts_migration_on_conflicting_legacy_keys_and_leaves_file_untouched() {
+        let dir = unique_temp_dir("load-conflict");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let original = serde_json::json!({
+            "rootFolder": "D:\\OriginalFolder",
+            "subsource": {
+                "apiKey": "key-first",
+                "api_key": "key-second"
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&original).unwrap();
+        std::fs::write(config_file_path(&dir), &original_text).unwrap();
+
+        // بارگذاری با store_api_key که نباید هرگز صدا زده شود
+        let loaded = load_with_store(&dir, |_| {
+            panic!("در صورت تضاد کلیدها، مهاجرت نباید اجرا شود");
+        });
+
+        assert_eq!(loaded.root_folder.as_deref(), Some("D:\\OriginalFolder"));
+
+        // فایل روی دیسک کاملاً دست‌نخورده باقی مانده است
+        let text_after = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert_eq!(text_after, original_text);
+        assert!(text_after.contains("key-first"));
+        assert!(text_after.contains("key-second"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_aborts_on_conflicting_legacy_keys_and_leaves_file_untouched() {
+        let dir = unique_temp_dir("save-conflict");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let original = serde_json::json!({
+            "rootFolder": "D:\\KeepMe",
+            "subsource": {
+                "apiKey": "key-apple",
+                "api_key": "key-orange"
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&original).unwrap();
+        std::fs::write(config_file_path(&dir), &original_text).unwrap();
+
+        let new_settings = Settings {
+            root_folder: Some("D:\\OverwrittenAttempt".to_string()),
+            ..Default::default()
+        };
+
+        // تلاش برای ذخیره با mock store که نباید صدا زده شود
+        let save_result = save_with_store(&dir, &new_settings, |_| {
+            panic!("در صورت تضاد کلیدها، مهاجرت نباید اجرا شود");
+        });
+
+        // ذخیره باید با خطا متوقف شود
+        assert!(save_result.is_err());
+        let err_msg = save_result.unwrap_err();
+        assert!(err_msg.contains("تضاد در کلیدهای API قدیمی"));
+
+        // فایل روی دیسک نباید به هیچ وجه دست خورده باشد
+        let text_after = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert_eq!(text_after, original_text);
+        assert!(text_after.contains("key-apple"));
+        assert!(text_after.contains("key-orange"));
+        assert!(!text_after.contains("OverwrittenAttempt"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

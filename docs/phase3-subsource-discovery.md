@@ -51,8 +51,9 @@ sub-rs.exe [OPTIONS]
 
 ### Authentication
 - Requires `--api-key` for SubSource API access
-- Key is stored in the **Windows Credential Manager** (never in `settings.json`)
-- Retrieved at runtime and passed to the CLI via `--api-key`
+- Secure storage via Windows Credential Manager is implemented in `subsource::secrets` (`store_api_key`, `retrieve_api_key`, `delete_api_key`)
+- In the current CLI adapter layer, `BatchOptions.api_key` accepts the key directly as an input parameter
+- Connecting `retrieve_api_key()` to Tauri commands and orchestrating automatic credential retrieval for CLI execution is deferred to subsequent integration phases
 
 ## Archive Format Handling
 
@@ -197,13 +198,13 @@ the Windows network connection directly.
 }
 ```
 
-> **Note**: The API Key is **not** stored in `settings.json`. It lives exclusively in the
-> **Windows Credential Manager** (service `PersianSubtitleStudio`, account `SubSourceApiKey`).
-> The backend reads it at runtime via `retrieve_api_key()` and passes it to the CLI via `--api-key`.
+> **Note**: The API Key is **not** stored in `settings.json`. It is managed via the
+> **Windows Credential Manager** (service `PersianSubtitleStudio`, account `SubSourceApiKey`)
+> through helper functions in `subsource::secrets`.
 >
-> **UI integration of the API Key is planned for a future phase.** The current CLI adapter
-> retrieves the key from the Credential Manager; the Settings UI does not yet include an
-> API Key input field.
+> In the current codebase, `BatchOptions.api_key` accepts the key directly as a field.
+> Connecting `retrieve_api_key()` to Tauri commands and wiring it into the active CLI execution
+> flow — along with UI support in the Settings page — is planned for future phases.
 
 ### Workflow Stages
 
