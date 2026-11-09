@@ -140,11 +140,20 @@ Create temporary directory tree with hard links to original videos:
 
 ## Security Considerations
 
-1. **API Key Storage**: Must use Settings system, never hardcoded
-2. **Path Traversal**: Validate archive contents before extraction
-3. **Staging Isolation**: Staging directory must be inside project root or user-approved location
-4. **Credential Leakage**: Redact API key from all logs and error messages
-5. **Archive Validation**: Check extracted files are subtitle formats only
+1. **API Key Storage**: The API Key is stored exclusively in the **Windows Credential Manager**
+   (`PersianSubtitleStudio` / `SubSourceApiKey`). It is **never** written to `settings.json` or
+   any config file on disk.
+
+2. **Command-Line Exposure**: The SubSource CLI (`sub-rs.exe`) accepts the API key only via the
+   `--api-key` argument — there is no alternative mechanism (e.g., environment variable or config
+   file). This means the credential **is passed on the command line** during process execution and
+   **may be visible** to process inspectors (e.g., Task Manager, Process Explorer, `ps` equivalents)
+   with sufficient system privileges. Redaction applies only to our own logs, stdout, stderr, and
+   handled error messages; it does **not** mitigate this command-line visibility limitation.
+
+3. **Path Traversal**: Validate archive contents before extraction.
+4. **Staging Isolation**: Staging directory must be inside project root or user-approved location.
+5. **Archive Validation**: Check extracted files are subtitle formats only.
 
 ## Implementation Requirements from Discovery
 
@@ -169,13 +178,25 @@ src-tauri/src/commands/subsource.rs
 ```
 
 ### Settings Integration
-```toml
-[subsource]
-api_key = "<redacted>"          # Required
-cli_path = "<auto-detect>"      # Override if needed
-connect_mode = "direct"         # direct|system|cloudflare
-proxy = ""                      # Optional
+
+The `SubSourceSettings` struct (serialized under the `subsource` key in `settings.json`) contains
+only non-sensitive fields:
+
+```json
+{
+  "subsource": {
+    "connectionMode": "direct",
+    "proxy": null,
+    "worker": null,
+    "cleanAds": true,
+    "skipExisting": true
+  }
+}
 ```
+
+> **Note**: The API Key is **not** stored in `settings.json`. It lives exclusively in the
+> **Windows Credential Manager** (service `PersianSubtitleStudio`, account `SubSourceApiKey`).
+> The UI reads it at runtime via `retrieve_api_key()` and passes it to the CLI via `--api-key`.
 
 ### Workflow Stages
 

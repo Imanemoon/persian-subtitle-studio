@@ -52,12 +52,45 @@ pub fn delete_api_key() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[cfg(test)]
+    const TEST_SERVICE_NAME: &str = "PersianSubtitleStudio_Test";
+    #[cfg(test)]
+    const TEST_API_KEY_ACCOUNT: &str = "SubSourceApiKey_Test";
+
+    fn test_store(key: &str) -> Result<(), String> {
+        let entry = Entry::new(TEST_SERVICE_NAME, TEST_API_KEY_ACCOUNT)
+            .map_err(|e| format!("ایجاد test credential entry: {e}"))?;
+        entry
+            .set_password(key)
+            .map_err(|e| format!("ذخیره test API key: {e}"))
+    }
+
+    fn test_retrieve() -> Result<Option<String>, String> {
+        let entry = Entry::new(TEST_SERVICE_NAME, TEST_API_KEY_ACCOUNT)
+            .map_err(|e| format!("ایجاد test credential entry: {e}"))?;
+        match entry.get_password() {
+            Ok(key) => Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("بازیابی test API key: {e}")),
+        }
+    }
+
+    fn test_delete() -> Result<(), String> {
+        let entry = Entry::new(TEST_SERVICE_NAME, TEST_API_KEY_ACCOUNT)
+            .map_err(|e| format!("ایجاد test credential entry: {e}"))?;
+        match entry.delete_credential() {
+            Ok(_) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()), // already deleted
+            Err(e) => Err(format!("حذف test API key: {e}")),
+        }
+    }
+
     #[test]
     fn retrieve_nonexistent_key_returns_none() {
-        // اطمینان از حذف قبل از تست
-        let _ = delete_api_key();
+        // اطمینان از حذف قبل از تست (فقط در فضای test namespace)
+        let _ = test_delete();
 
-        let result = retrieve_api_key().expect("retrieve should not error on missing key");
+        let result = test_retrieve().expect("retrieve should not error on missing key");
         assert_eq!(result, None);
     }
 
@@ -66,28 +99,28 @@ mod tests {
     fn store_and_retrieve_roundtrip() {
         let test_key = "test-key-12345-abc";
 
-        // ذخیره
-        store_api_key(test_key).expect("store failed");
+        // ذخیره در test namespace
+        test_store(test_key).expect("store failed");
 
         // بازیابی
-        let retrieved = retrieve_api_key()
+        let retrieved = test_retrieve()
             .expect("retrieve failed")
             .expect("key should exist");
 
         assert_eq!(retrieved, test_key);
 
         // پاک‌سازی
-        delete_api_key().expect("delete failed");
+        test_delete().expect("delete failed");
 
         // تأیید حذف
-        let after_delete = retrieve_api_key().expect("retrieve after delete failed");
+        let after_delete = test_retrieve().expect("retrieve after delete failed");
         assert_eq!(after_delete, None);
     }
 
     #[test]
     fn delete_nonexistent_key_succeeds() {
-        let _ = delete_api_key();
-        let result = delete_api_key();
+        let _ = test_delete();
+        let result = test_delete();
         assert!(result.is_ok());
     }
 }

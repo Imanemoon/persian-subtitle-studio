@@ -241,8 +241,44 @@ fn take_legacy_api_key(value: &mut serde_json::Value) -> Option<serde_json::Valu
     camel_case.or(snake_case)
 }
 
-/// ذخیره امن تنظیمات: اول در فایل موقت، سپس جایگزینی.
+/// ذخیره امن تنظیمات با بررسی و مهاجرت API key قدیمی.
+///
+/// اگر فایل فعلی settings.json حاوی `subsource.apiKey` یا `subsource.api_key` باشد،
+/// ابتدا کلید به Credential Manager منتقل می‌شود. اگر مهاجرت ناموفق باشد، ذخیره‌سازی
+/// لغو می‌شود تا داده‌ای از دست نرود.
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), String> {
+    save_with_store(config_dir, settings, crate::subsource::store_api_key)
+}
+
+fn save_with_store(
+    config_dir: &Path,
+    settings: &Settings,
+    store_api_key: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let path = config_file_path(config_dir);
+
+    // بررسی وجود API key قدیمی در فایل موجود
+    if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(mut raw) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(legacy_value) = take_legacy_api_key(&mut raw) {
+                // کلید قدیمی یافت شد — ابتدا مهاجرت
+                let legacy_key = legacy_value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty());
+
+                if let Some(key) = legacy_key {
+                    store_api_key(key).map_err(|e| {
+                        format!(
+                            "مهاجرت API key به Credential Manager ناموفق بود؛ ذخیره لغو شد: {e}"
+                        )
+                    })?;
+                }
+                // مهاجرت موفق بود (یا کلید خالی بود) — ادامه ذخیره‌سازی معمول
+            }
+        }
+    }
+
     let clean = settings.clone().sanitized();
     let data = serde_json::to_vec_pretty(&clean).map_err(|e| format!("سریال‌سازی تنظیمات: {e}"))?;
     write_atomic(config_dir, &data)
@@ -473,6 +509,108 @@ mod tests {
         assert!(!text.contains("apiKey"));
         assert!(!text.contains("api_key"));
         assert!(!text.contains("api-key"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_aborts_if_legacy_key_present_and_migration_fails() {
+        let dir = unique_temp_dir("save-abort");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ایجاد settings.json با apiKey قدیمی و تنظیمات دیگر
+        let original = serde_json::json!({
+            "rootFolder": "D:\\Existing",
+            "subsource": {
+                "apiKey": "old-secret-key",
+                "connectionMode": "direct"
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&original).unwrap();
+        std::fs::write(config_file_path(&dir), &original_text).unwrap();
+
+        // ذخیره با mock store که ناموفق است
+        let new_settings = Settings {
+            root_folder: Some("D:\\NewFolder".to_string()),
+            ..Default::default()
+        };
+        let result = save_with_store(&dir, &new_settings, |_| {
+            Err("credential manager unavailable".into())
+        });
+
+        // ذخیره باید ناموفق باشد
+        assert!(result.is_err());
+
+        // فایل باید دست‌نخورده باشد
+        let after = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert_eq!(after, original_text);
+        assert!(
+            after.contains("old-secret-key"),
+            "apiKey باید در فایل بماند"
+        );
+        assert!(
+            after.contains("D:\\\\Existing"),
+            "rootFolder قدیمی باید حفظ شود"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_migrates_legacy_key_then_saves_successfully() {
+        let dir = unique_temp_dir("save-migrate-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ایجاد settings.json با apiKey قدیمی
+        let original = serde_json::json!({
+            "rootFolder": "D:\\OldFolder",
+            "subsource": {
+                "apiKey": "migrate-me-key",
+                "connectionMode": "manual"
+            }
+        });
+        std::fs::write(
+            config_file_path(&dir),
+            serde_json::to_vec_pretty(&original).unwrap(),
+        )
+        .unwrap();
+
+        let stored = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let captured = stored.clone();
+
+        // ذخیره با mock store که موفق است
+        let new_settings = Settings {
+            root_folder: Some("D:\\NewFolder".to_string()),
+            ..Default::default()
+        };
+        let result = save_with_store(&dir, &new_settings, move |key| {
+            *captured.lock().unwrap() = Some(key.to_string());
+            Ok(())
+        });
+
+        // ذخیره باید موفق باشد
+        assert!(result.is_ok());
+        assert_eq!(
+            *stored.lock().unwrap(),
+            Some("migrate-me-key".to_string()),
+            "کلید قدیمی باید به store منتقل شده باشد"
+        );
+
+        // فایل جدید نباید apiKey داشته باشد
+        let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(!text.contains("apiKey"), "apiKey نباید در فایل ذخیره شود");
+        assert!(
+            !text.contains("migrate-me-key"),
+            "مقدار کلید نباید در فایل باشد"
+        );
+
+        // تنظیمات جدید باید ذخیره شده باشند
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            saved["rootFolder"].as_str(),
+            Some("D:\\NewFolder"),
+            "rootFolder جدید باید ذخیره شده باشد"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
