@@ -215,18 +215,8 @@ impl SubSourceCli {
         let duration = start.elapsed().as_secs_f64();
 
         // Redact credentials از stdout/stderr
-        let stdout = Self::redact_output(
-            &stdout_raw,
-            &options.api_key,
-            &options.proxy,
-            &options.worker,
-        );
-        let stderr = Self::redact_output(
-            &stderr_raw,
-            &options.api_key,
-            &options.proxy,
-            &options.worker,
-        );
+        let stdout = Self::redact_output(&stdout_raw, &options.api_key);
+        let stderr = Self::redact_output(&stderr_raw, &options.api_key);
 
         // تحلیل نتیجه
         let exit_code = status.code().unwrap_or(-1);
@@ -311,7 +301,7 @@ impl SubSourceCli {
         }
     }
 
-    /// Redact کردن API key و credentialهای حساس از آرگومان‌ها
+    /// Redact کردن API key از آرگومان‌ها
     fn redact_sensitive_args(args: &[String]) -> Vec<String> {
         let mut redacted = Vec::with_capacity(args.len());
         let mut redact_next = false;
@@ -320,7 +310,7 @@ impl SubSourceCli {
             if redact_next {
                 redacted.push("<REDACTED>".to_string());
                 redact_next = false;
-            } else if arg == "--api-key" || arg == "--proxy" || arg == "--worker" {
+            } else if arg == "--api-key" {
                 redacted.push(arg.clone());
                 redact_next = true;
             } else {
@@ -331,35 +321,13 @@ impl SubSourceCli {
         redacted
     }
 
-    /// Redact کردن credentialها از متن خروجی (stdout/stderr)
-    fn redact_output(
-        text: &str,
-        api_key: &str,
-        proxy: &Option<String>,
-        worker: &Option<String>,
-    ) -> String {
+    /// Redact کردن API key از متن خروجی (stdout/stderr)
+    fn redact_output(text: &str, api_key: &str) -> String {
         let mut result = text.to_string();
 
         // API key
         if !api_key.is_empty() {
             result = result.replace(api_key, "<REDACTED_API_KEY>");
-        }
-
-        // Proxy URL با username:password
-        if let Some(proxy_url) = proxy {
-            result = result.replace(proxy_url, "<REDACTED_PROXY>");
-            // Redact username:password@ pattern در URLs
-            if let Some(at_pos) = proxy_url.find('@') {
-                if let Some(scheme_end) = proxy_url.find("://") {
-                    let credentials = &proxy_url[scheme_end + 3..at_pos];
-                    result = result.replace(credentials, "<REDACTED_CREDENTIALS>");
-                }
-            }
-        }
-
-        // Worker URL
-        if let Some(worker_url) = worker {
-            result = result.replace(worker_url, "<REDACTED_WORKER>");
         }
 
         result
@@ -390,8 +358,6 @@ mod tests {
             "secret-key-12345".to_string(),
             "--top".to_string(),
             "5".to_string(),
-            "--proxy".to_string(),
-            "http://proxy:8080".to_string(),
         ];
 
         let redacted = SubSourceCli::redact_sensitive_args(&args);
@@ -401,13 +367,10 @@ mod tests {
         assert_eq!(redacted[3], "<REDACTED>");
         assert_eq!(redacted[4], "--top");
         assert_eq!(redacted[5], "5");
-        assert_eq!(redacted[6], "--proxy");
-        assert_eq!(redacted[7], "<REDACTED>");
 
         // تأیید اینکه secret واقعی در خروجی نیست
         let combined = redacted.join(" ");
         assert!(!combined.contains("secret-key-12345"));
-        assert!(!combined.contains("proxy:8080"));
     }
 
     #[test]

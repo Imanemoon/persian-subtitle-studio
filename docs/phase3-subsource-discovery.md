@@ -24,11 +24,12 @@ sub-rs.exe [OPTIONS]
     --clean-ads                Remove ad cues from Farsi subtitles
     --dry-run                  Simulate without downloading
     --no-recursive             Don't scan subdirectories
-    --proxy <PROXY>            HTTP proxy
-    --connect <CONNECT>        Connection method [direct|system|manual|cloudflare]
-    --worker <WORKER>          Cloudflare Worker URL (with --connect cloudflare)
     --gui                      GUI mode (not relevant for CLI integration)
 ```
+
+> **Note**: `--proxy`, `--connect`, and `--worker` exist in the CLI but are **not used** by this
+> integration. SubSource uses the Windows network connection directly. Users can enable a VPN
+> externally if they need to route traffic through a different network path.
 
 ### Operational Mode
 
@@ -50,8 +51,8 @@ sub-rs.exe [OPTIONS]
 
 ### Authentication
 - Requires `--api-key` for SubSource API access
-- Must be stored securely (not in git, not in logs)
-- Key should come from user settings
+- Key is stored in the **Windows Credential Manager** (never in `settings.json`)
+- Retrieved at runtime and passed to the CLI via `--api-key`
 
 ## Archive Format Handling
 
@@ -151,9 +152,13 @@ Create temporary directory tree with hard links to original videos:
    with sufficient system privileges. Redaction applies only to our own logs, stdout, stderr, and
    handled error messages; it does **not** mitigate this command-line visibility limitation.
 
-3. **Path Traversal**: Validate archive contents before extraction.
-4. **Staging Isolation**: Staging directory must be inside project root or user-approved location.
-5. **Archive Validation**: Check extracted files are subtitle formats only.
+3. **No Proxy Support**: Proxy configuration has been removed from this integration. SubSource
+   uses the Windows network connection directly. Users who need to route traffic through a proxy
+   or VPN should configure that at the OS or VPN client level before running the application.
+
+4. **Path Traversal**: Validate archive contents before extraction.
+5. **Staging Isolation**: Staging directory must be inside project root or user-approved location.
+6. **Archive Validation**: Check extracted files are subtitle formats only.
 
 ## Implementation Requirements from Discovery
 
@@ -180,14 +185,12 @@ src-tauri/src/commands/subsource.rs
 ### Settings Integration
 
 The `SubSourceSettings` struct (serialized under the `subsource` key in `settings.json`) contains
-only non-sensitive fields:
+only non-sensitive fields. Proxy and connection-mode settings have been removed — SubSource uses
+the Windows network connection directly.
 
 ```json
 {
   "subsource": {
-    "connectionMode": "direct",
-    "proxy": null,
-    "worker": null,
     "cleanAds": true,
     "skipExisting": true
   }
@@ -196,7 +199,11 @@ only non-sensitive fields:
 
 > **Note**: The API Key is **not** stored in `settings.json`. It lives exclusively in the
 > **Windows Credential Manager** (service `PersianSubtitleStudio`, account `SubSourceApiKey`).
-> The UI reads it at runtime via `retrieve_api_key()` and passes it to the CLI via `--api-key`.
+> The backend reads it at runtime via `retrieve_api_key()` and passes it to the CLI via `--api-key`.
+>
+> **UI integration of the API Key is planned for a future phase.** The current CLI adapter
+> retrieves the key from the Credential Manager; the Settings UI does not yet include an
+> API Key input field.
 
 ### Workflow Stages
 
@@ -225,22 +232,19 @@ only non-sensitive fields:
 
 ## Open Questions for User
 
-1. **API Key Source**: How should users configure SubSource API key?
-   - Settings UI field?
-   - Environment variable?
-   - Config file?
+1. **API Key UI**: The API Key is currently stored in the Windows Credential Manager. A Settings
+   UI field for entering/updating it is planned for a future phase. Until then, the key must be
+   stored via an external tool or the system Credential Manager UI.
 
-2. **Connection Mode**: Default to "direct" or detect proxy from system?
-
-3. **Download Location**: Stage in project temp dir or system temp?
+2. **Download Location**: Stage in project temp dir or system temp?
    - Project temp: predictable, easy cleanup
    - System temp: respects user's temp drive preference
 
-4. **Conflict Resolution**: When archive has multiple matching subtitles?
+3. **Conflict Resolution**: When archive has multiple matching subtitles?
    - Take highest quality automatically?
    - Prompt user to choose?
 
-5. **Archive Retention**: Keep or delete downloaded ZIPs after extraction?
+4. **Archive Retention**: Keep or delete downloaded ZIPs after extraction?
    - Keep in `_SubSource_ZIP_Failures` for multi-episode recovery (per PowerShell pattern)
    - Delete to save space
    - User preference

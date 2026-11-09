@@ -1,34 +1,9 @@
 //! Types for SubSource operations — inputs, outputs, and configuration.
 
-use serde::{Deserialize, Serialize};
-
-/// حالت اتصال به SubSource API
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ConnectionMode {
-    /// اتصال مستقیم (پیش‌فرض)
-    #[default]
-    Direct,
-    /// استفاده از تنظیمات پروکسی سیستم
-    System,
-    /// پروکسی دستی (نیاز به proxy URL)
-    Manual,
-    /// از طریق Cloudflare Worker (نیاز به worker URL)
-    Cloudflare,
-}
-
-impl ConnectionMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::System => "system",
-            Self::Manual => "manual",
-            Self::Cloudflare => "cloudflare",
-        }
-    }
-}
-
 /// تنظیمات اجرای batch download
+///
+/// SubSource از تنظیمات شبکه‌ای سیستم‌عامل استفاده می‌کند.
+/// کاربران می‌توانند از VPN خارجی برای تغییر مسیر شبکه استفاده کنند.
 #[derive(Debug, Clone)]
 pub struct BatchOptions {
     /// مسیر directory حاوی فایل‌های ویدیویی
@@ -51,15 +26,6 @@ pub struct BatchOptions {
 
     /// حذف تبلیغات از زیرنویس‌های فارسی
     pub clean_ads: bool,
-
-    /// حالت اتصال
-    pub connection_mode: ConnectionMode,
-
-    /// آدرس پروکسی (فقط با Manual mode)
-    pub proxy: Option<String>,
-
-    /// آدرس Cloudflare Worker (فقط با Cloudflare mode)
-    pub worker: Option<String>,
 }
 
 impl Default for BatchOptions {
@@ -72,9 +38,6 @@ impl Default for BatchOptions {
             no_recursive: false,
             dry_run: false,
             clean_ads: true,
-            connection_mode: ConnectionMode::default(),
-            proxy: None,
-            worker: None,
         }
     }
 }
@@ -92,14 +55,6 @@ impl BatchOptions {
 
         if self.top == 0 || self.top > 10 {
             return Err("top باید بین 1 تا 10 باشد".into());
-        }
-
-        if self.connection_mode == ConnectionMode::Manual && self.proxy.is_none() {
-            return Err("proxy URL برای حالت Manual لازم است".into());
-        }
-
-        if self.connection_mode == ConnectionMode::Cloudflare && self.worker.is_none() {
-            return Err("worker URL برای حالت Cloudflare لازم است".into());
         }
 
         Ok(())
@@ -132,19 +87,6 @@ impl BatchOptions {
 
         if self.clean_ads {
             args.push("--clean-ads".to_string());
-        }
-
-        args.push("--connect".to_string());
-        args.push(self.connection_mode.as_str().to_string());
-
-        if let Some(ref proxy) = self.proxy {
-            args.push("--proxy".to_string());
-            args.push(proxy.clone());
-        }
-
-        if let Some(ref worker) = self.worker {
-            args.push("--worker".to_string());
-            args.push(worker.clone());
         }
 
         args
@@ -217,14 +159,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connection_mode_as_str() {
-        assert_eq!(ConnectionMode::Direct.as_str(), "direct");
-        assert_eq!(ConnectionMode::System.as_str(), "system");
-        assert_eq!(ConnectionMode::Manual.as_str(), "manual");
-        assert_eq!(ConnectionMode::Cloudflare.as_str(), "cloudflare");
-    }
-
-    #[test]
     fn batch_options_validation() {
         let mut opts = BatchOptions::default();
         assert!(opts.validate().is_err()); // directory خالی
@@ -243,12 +177,6 @@ mod tests {
 
         opts.top = 5;
         assert!(opts.validate().is_ok());
-
-        opts.connection_mode = ConnectionMode::Manual;
-        assert!(opts.validate().is_err()); // proxy لازم
-
-        opts.proxy = Some("http://proxy:8080".into());
-        assert!(opts.validate().is_ok());
     }
 
     #[test]
@@ -261,9 +189,6 @@ mod tests {
             no_recursive: true,
             dry_run: true,
             clean_ads: false,
-            connection_mode: ConnectionMode::System,
-            proxy: None,
-            worker: None,
         };
 
         let args = opts.to_cli_args();
@@ -277,8 +202,10 @@ mod tests {
         assert!(args.contains(&"--no-recursive".to_string()));
         assert!(args.contains(&"--dry-run".to_string()));
         assert!(!args.contains(&"--clean-ads".to_string()));
-        assert!(args.contains(&"--connect".to_string()));
-        assert!(args.contains(&"system".to_string()));
+        // بدون --connect، --proxy، --worker
+        assert!(!args.contains(&"--connect".to_string()));
+        assert!(!args.contains(&"--proxy".to_string()));
+        assert!(!args.contains(&"--worker".to_string()));
     }
 
     #[test]

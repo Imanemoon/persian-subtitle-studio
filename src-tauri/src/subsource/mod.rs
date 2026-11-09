@@ -34,4 +34,4 @@ pub mod types;
 pub use cli::{CancellationToken, SubSourceCli};
 pub use error::{SubSourceError, SubSourceResult};
 pub use secrets::{delete_api_key, retrieve_api_key, store_api_key};
-pub use types::{BatchOptions, BatchResult, ConnectionMode};
+pub use types::{BatchOptions, BatchResult};

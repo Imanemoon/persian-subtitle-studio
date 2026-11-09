@@ -29,18 +29,12 @@ pub struct ProcessingSettings {
 ///
 /// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
 /// ذخیره می‌شود تا هرگز داخل settings.json نوشته نشود.
+///
+/// تنظیمات پروکسی برداشته شده‌اند؛ SubSource از اتصال شبکه‌ای سیستم‌عامل
+/// استفاده می‌کند. کاربران می‌توانند از VPN خارجی برای تغییر مسیر شبکه استفاده کنند.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubSourceSettings {
-    /// حالت اتصال: direct, system, manual, cloudflare
-    pub connection_mode: String,
-
-    /// آدرس پروکسی (فقط با manual mode)
-    pub proxy: Option<String>,
-
-    /// آدرس Cloudflare Worker (فقط با cloudflare mode)
-    pub worker: Option<String>,
-
     /// حذف تبلیغات از زیرنویس‌های فارسی
     pub clean_ads: bool,
 
@@ -51,9 +45,6 @@ pub struct SubSourceSettings {
 impl Default for SubSourceSettings {
     fn default() -> Self {
         Self {
-            connection_mode: "direct".to_string(),
-            proxy: None,
-            worker: None,
             clean_ads: true,
             skip_existing: true,
         }
@@ -397,12 +388,13 @@ mod tests {
     fn legacy_api_key_migrates_and_is_removed_from_json() {
         let dir = unique_temp_dir("migrate-ok");
         std::fs::create_dir_all(&dir).unwrap();
+        // فایل قدیمی ممکن است حاوی فیلدهای ناشناخته مانند connectionMode باشد —
+        // این فیلدها هنگام بارگذاری نادیده گرفته می‌شوند (serde default).
         let legacy = serde_json::json!({
             "rootFolder": "D:\\Series",
             "subsource": {
                 "apiKey": "legacy-secret-key",
                 "connectionMode": "manual",
-                "proxy": "http://user:pass@proxy.example.com:8080",
                 "cleanAds": false,
                 "skipExisting": false
             },
@@ -426,11 +418,6 @@ mod tests {
             Some("legacy-secret-key".to_string())
         );
         assert_eq!(loaded.root_folder.as_deref(), Some("D:\\Series"));
-        assert_eq!(loaded.subsource.connection_mode, "manual");
-        assert_eq!(
-            loaded.subsource.proxy.as_deref(),
-            Some("http://user:pass@proxy.example.com:8080")
-        );
         assert!(!loaded.subsource.clean_ads);
 
         let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
@@ -488,10 +475,49 @@ mod tests {
 
         let loaded = load_with_store(&dir, |_| panic!("نباید برای apiKey خالی فراخوانی شود"));
 
-        assert_eq!(loaded.subsource.connection_mode, "direct");
+        assert!(loaded.subsource.clean_ads);
+        assert!(loaded.subsource.skip_existing);
         let text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
         assert!(!text.contains("apiKey"));
         assert!(!text.contains("api_key"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_settings_with_proxy_and_worker_load_and_resave_cleanly() {
+        let dir = unique_temp_dir("legacy-compat");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = serde_json::json!({
+            "rootFolder": "D:\\LegacyData",
+            "subsource": {
+                "connectionMode": "manual",
+                "proxy": "http://127.0.0.1:8080",
+                "worker": "https://subsource-proxy.worker.dev",
+                "cleanAds": true,
+                "skipExisting": false
+            }
+        });
+        std::fs::write(
+            config_file_path(&dir),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        // 1. بارگذاری بدون خطا انجام می‌شود و فیلدهای معتبر خوانده می‌شوند
+        let loaded = load(&dir);
+        assert_eq!(loaded.root_folder.as_deref(), Some("D:\\LegacyData"));
+        assert!(loaded.subsource.clean_ads);
+        assert!(!loaded.subsource.skip_existing);
+
+        // 2. ذخیره مجدد باعث حذف دائمی فیلدهای منسوخ‌شده (connectionMode, proxy, worker) می‌شود
+        save(&dir, &loaded).expect("ذخیره تنظیمات سازگار با فایل قدیمی باید موفق باشد");
+        let saved_text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(!saved_text.contains("connectionMode"));
+        assert!(!saved_text.contains("proxy"));
+        assert!(!saved_text.contains("worker"));
+        assert!(saved_text.contains("cleanAds"));
+        assert!(saved_text.contains("skipExisting"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
