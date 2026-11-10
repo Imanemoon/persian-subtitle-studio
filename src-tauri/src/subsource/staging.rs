@@ -180,19 +180,31 @@ pub fn hard_link_no_overwrite(source: &Path, target: &Path) -> Result<(), String
     std::fs::hard_link(source, target).map_err(|e| e.to_string())
 }
 
-/// نتیجهٔ پاک‌سازی لینک‌ها در جلسهٔ staging.
+/// نتیجهٔ پاک‌سازی لینک‌ها و پوشه‌ها در جلسهٔ staging.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CleanupResult {
     /// تعداد لینک‌هایی که با موفقیت حذف شدند یا از قبل موجود نبودند.
     pub removed: usize,
     /// لینک‌هایی که حذف آن‌ها ناموفق بود و همراه با پیام خطا در مالکیت باقی ماندند.
     pub failed: Vec<(PathBuf, String)>,
+    /// پوشه‌هایی که حذف آن‌ها واقعاً ناموفق بود (غیر از پوشه‌های عمداً حفظ‌شدهٔ
+    /// غیرخالی و مسیرهای از قبل حذف‌شده) — جدا از خطاهای حذف لینک.
+    pub failed_dirs: Vec<(PathBuf, String)>,
 }
 
 impl CleanupResult {
-    /// آیا همهٔ لینک‌ها بدون خطا پاک شدند؟
+    /// آیا همهٔ لینک‌ها و پوشه‌ها بدون خطا پاک شدند؟
+    ///
+    /// پوشه‌های غیرخالی (خروجی SubSource یا ریشهٔ staging که عمداً حفظ می‌شود)
+    /// شکست محسوب نمی‌شوند؛ فقط خطاهای واقعی حذف در `failed`/`failed_dirs`
+    /// ثبت می‌شوند.
     pub fn is_success(&self) -> bool {
-        self.failed.is_empty()
+        self.failed.is_empty() && self.failed_dirs.is_empty()
+    }
+
+    /// تعداد کل مسیرهایی که پاک‌سازی آن‌ها ناموفق بود.
+    pub fn failure_count(&self) -> usize {
+        self.failed.len() + self.failed_dirs.len()
     }
 }
 
@@ -252,7 +264,11 @@ impl StagingSession {
         }
 
         self.links = remaining_links;
-        CleanupResult { removed, failed }
+        CleanupResult {
+            removed,
+            failed,
+            failed_dirs: Vec::new(),
+        }
     }
 
     /// حذف همه لینک‌های ساخته‌شده توسط این جلسه — فایل اصلی هرگز دست
@@ -261,43 +277,78 @@ impl StagingSession {
         self.remove_links_with(|p| std::fs::remove_file(p))
     }
 
-    /// حذف پوشه‌های ساخته‌شده توسط جلسه — از عمیق به سطحی. پوشه‌های
-    /// غیرخالی (مثلاً حاوی خروجی SubSource یا لینک‌های باقیمانده) عمداً باقی می‌مانند
-    /// و در `self.created_dirs` ثبت می‌مانند.
+    /// حذف پوشه‌های ساخته‌شده توسط جلسه — از عمیق به سطحی، با تابع حذف سفارشی
+    /// برای تست قطعی. پوشه‌های غیرخالی (مثلاً حاوی خروجی SubSource یا لینک‌های
+    /// باقیمانده) عمداً باقی می‌مانند و در `self.created_dirs` ثبت می‌مانند؛
+    /// خطاهای واقعی حذف جداگانه برگردانده می‌شوند تا در `CleanupResult` منتشر شوند.
     /// `including_root`: در rollback صدا زده می‌شود تا در صورت خالی بودن، ریشه هم حذف شود.
-    fn remove_created_dirs(&mut self, including_root: bool) {
+    fn remove_created_dirs_with<F>(
+        &mut self,
+        including_root: bool,
+        mut remove_dir_fn: F,
+    ) -> Vec<(PathBuf, String)>
+    where
+        F: FnMut(&Path) -> std::io::Result<()>,
+    {
         let mut remaining_dirs = Vec::new();
+        let mut failed = Vec::new();
         for dir in self.created_dirs.drain(..).rev() {
             if dir == self.root && !including_root {
+                // ریشه staging عمداً برای فاز بعدی حفظ می‌شود — شکست نیست
                 remaining_dirs.push(dir);
                 continue;
             }
-            // خطای «غیرخالی» یعنی محتوای ارزشمند (خروجی SubSource) یا لینک باقیمانده — نادیده
-            if let Err(e) = std::fs::remove_dir(&dir) {
-                if e.kind() != std::io::ErrorKind::DirectoryNotEmpty
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
+            match remove_dir_fn(&dir) {
+                Ok(()) => {}
+                // از قبل حذف شده — چیزی برای پاک‌سازی نمانده
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // خطای «غیرخالی» یعنی محتوای ارزشمند (خروجی SubSource) یا لینک
+                // باقی‌مانده — عمداً حفظ می‌شود و شکست پاک‌سازی نیست
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                    remaining_dirs.push(dir);
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
                     logging::warn(
                         "subsource",
-                        &format!("حذف پوشه موقت ناموفق: {} ({e})", dir.display()),
+                        &format!(
+                            "حذف پوشه موقت ناموفق: {} ({err_msg}) — مسیر در مالکیت باقی ماند",
+                            dir.display()
+                        ),
                     );
+                    failed.push((dir.clone(), err_msg));
+                    remaining_dirs.push(dir);
                 }
-                remaining_dirs.push(dir);
             }
         }
         remaining_dirs.reverse();
         self.created_dirs = remaining_dirs;
+        failed
     }
 
     /// پاک‌سازی پس از پایان SubSource با تابع حذف سفارشی: حذف لینک‌های ویدیو +
     /// پوشه‌های خالیِ ساخته‌شده؛ ریشه staging و هر خروجی (آرشیوهای `sub/`)
-    /// حفظ می‌شود. لینک‌های ناموفق در مالکیت باقی می‌مانند و در CleanupResult گزارش می‌شوند.
+    /// حفظ می‌شود. لینک‌ها و پوشه‌های ناموفق در مالکیت باقی می‌مانند و در
+    /// CleanupResult گزارش می‌شوند.
     pub fn cleanup_keep_output_with<F>(&mut self, remove_fn: F) -> CleanupResult
     where
         F: FnMut(&Path) -> std::io::Result<()>,
     {
-        let res = self.remove_links_with(remove_fn);
-        self.remove_created_dirs(false);
+        self.cleanup_keep_output_with_removers(remove_fn, |p| std::fs::remove_dir(p))
+    }
+
+    /// همان `cleanup_keep_output_with` با امکان تزریق تابع حذف پوشه برای تست قطعی.
+    pub fn cleanup_keep_output_with_removers<F, D>(
+        &mut self,
+        remove_file_fn: F,
+        remove_dir_fn: D,
+    ) -> CleanupResult
+    where
+        F: FnMut(&Path) -> std::io::Result<()>,
+        D: FnMut(&Path) -> std::io::Result<()>,
+    {
+        let mut res = self.remove_links_with(remove_file_fn);
+        res.failed_dirs = self.remove_created_dirs_with(false, remove_dir_fn);
         res
     }
 
@@ -313,8 +364,21 @@ impl StagingSession {
     where
         F: FnMut(&Path) -> std::io::Result<()>,
     {
-        let res = self.remove_links_with(remove_fn);
-        self.remove_created_dirs(true);
+        self.rollback_with_removers(remove_fn, |p| std::fs::remove_dir(p))
+    }
+
+    /// همان `rollback_with` با امکان تزریق تابع حذف پوشه برای تست قطعی.
+    pub fn rollback_with_removers<F, D>(
+        &mut self,
+        remove_file_fn: F,
+        remove_dir_fn: D,
+    ) -> CleanupResult
+    where
+        F: FnMut(&Path) -> std::io::Result<()>,
+        D: FnMut(&Path) -> std::io::Result<()>,
+    {
+        let mut res = self.remove_links_with(remove_file_fn);
+        res.failed_dirs = self.remove_created_dirs_with(true, remove_dir_fn);
         res
     }
 
@@ -345,9 +409,9 @@ impl std::fmt::Display for StagingBuildError {
         } else {
             write!(
                 f,
-                "{} (هشدار: rollback ناقص بود و {} لینک موقت حذف نشد: «{}»)",
+                "{} (هشدار: rollback ناقص بود و {} مسیر موقت حذف نشد: «{}»)",
                 self.message,
-                self.cleanup.failed.len(),
+                self.cleanup.failure_count(),
                 self.staging_root.display()
             )
         }
@@ -367,6 +431,24 @@ pub fn build_with_remover<F>(
 where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
+    build_with_removers(root, placements, cancel, on_progress, remover, |p| {
+        std::fs::remove_dir(p)
+    })
+}
+
+/// همان `build_with_remover` با امکان تزریق تابع حذف پوشه برای rollback قطعی.
+pub fn build_with_removers<F, D>(
+    root: PathBuf,
+    placements: &[StagedPlacement],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on_progress: &mut dyn FnMut(usize, usize, &StagedPlacement),
+    remover: F,
+    dir_remover: D,
+) -> Result<StagingSession, StagingBuildError>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+    D: FnMut(&Path) -> std::io::Result<()>,
+{
     let mut session = StagingSession {
         root: root.clone(),
         links: Vec::with_capacity(placements.len()),
@@ -374,15 +456,17 @@ where
     };
 
     let mut remover = remover;
+    let mut dir_remover = dir_remover;
     let mut fail = |mut session: StagingSession, msg: String| -> StagingBuildError {
-        let cleanup = session.rollback_with(&mut remover);
+        let cleanup = session.rollback_with_removers(&mut remover, &mut dir_remover);
         if !cleanup.is_success() {
             logging::warn(
                 "subsource",
                 &format!(
-                    "rollback ناقص در حین ساخت staging: {} لینک حذف نشد: {:?}",
-                    cleanup.failed.len(),
-                    cleanup.failed
+                    "rollback ناقص در حین ساخت staging: {} مسیر حذف نشد (لینک: {:?}، پوشه: {:?})",
+                    cleanup.failure_count(),
+                    cleanup.failed,
+                    cleanup.failed_dirs
                 ),
             );
         }
@@ -990,6 +1074,158 @@ mod tests {
         assert!(root.is_dir());
 
         let _ = std::fs::remove_file(&staged_v1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rollback_reports_directory_removal_failure_and_preserves_path() {
+        let base = unique_dir("rollback-dir-fail");
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let v1 = write_video(&lib, "Ep1.mkv", b"V1");
+
+        let placements = vec![StagedPlacement {
+            source: v1.clone(),
+            rel_dir: PathBuf::from("Season 01"),
+            file_name: "Ep1.mkv".into(),
+        }];
+        let root = base.join(format!("{STAGING_DIR_PREFIX}rb_dir_fail"));
+        let mut session = build(root.clone(), &placements, None, &mut |_, _, _| {}).unwrap();
+        let season = root.join("Season 01");
+
+        let res = session.rollback_with_removers(
+            |p| std::fs::remove_file(p),
+            |p| {
+                if p == season.as_path() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "خطای شبیه‌سازی‌شده حذف پوشه در rollback",
+                    ))
+                } else {
+                    std::fs::remove_dir(p)
+                }
+            },
+        );
+
+        // لینک حذف شد، اما خطای حذف پوشه باید جداگانه گزارش شود
+        assert_eq!(res.removed, 1);
+        assert!(res.failed.is_empty());
+        assert_eq!(res.failed_dirs.len(), 1);
+        assert_eq!(res.failed_dirs[0].0, season);
+        assert!(res.failed_dirs[0].1.contains("شبیه‌سازی‌شده"));
+        assert!(!res.is_success());
+        assert_eq!(res.failure_count(), 1);
+        assert!(season.is_dir(), "مسیر پوشهٔ ناموفق باید حفظ شود");
+        assert!(root.is_dir());
+        assert_eq!(std::fs::read(&v1).unwrap(), b"V1");
+
+        // اجرای دوبارهٔ rollback با حذف عادی باید همه‌چیز را پاک کند
+        let retry = session.rollback();
+        assert!(retry.is_success());
+        assert!(!root.exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cleanup_keep_output_reports_directory_removal_failure() {
+        let base = unique_dir("cleanup-dir-fail");
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let v1 = write_video(&lib, "Ep1.mkv", b"V1");
+
+        let placements = vec![StagedPlacement {
+            source: v1.clone(),
+            rel_dir: PathBuf::from("Season 01"),
+            file_name: "Ep1.mkv".into(),
+        }];
+        let root = base.join(format!("{STAGING_DIR_PREFIX}cleanup_dir_fail"));
+        let mut session = build(root.clone(), &placements, None, &mut |_, _, _| {}).unwrap();
+        let season = root.join("Season 01");
+
+        let res = session.cleanup_keep_output_with_removers(
+            |p| std::fs::remove_file(p),
+            |p| {
+                if p == season.as_path() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "خطای شبیه‌سازی‌شده حذف پوشه در cleanup",
+                    ))
+                } else {
+                    std::fs::remove_dir(p)
+                }
+            },
+        );
+
+        assert_eq!(res.removed, 1);
+        assert!(res.failed.is_empty());
+        assert_eq!(res.failed_dirs.len(), 1);
+        assert_eq!(res.failed_dirs[0].0, season);
+        assert!(!res.is_success());
+        assert_eq!(res.failure_count(), 1);
+        assert!(season.is_dir(), "پوشهٔ ناموفق باید برای بررسی دستی بماند");
+        assert!(root.is_dir(), "ریشه staging باید حفظ شود");
+        assert_eq!(std::fs::read(&v1).unwrap(), b"V1");
+
+        // پاک‌سازی دوباره پوشهٔ خالی را برمی‌دارد ولی ریشه را حفظ می‌کند
+        let retry = session.cleanup_keep_output();
+        assert!(retry.is_success());
+        assert!(!season.exists());
+        assert!(root.is_dir());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_with_removers_preserves_session_when_directory_rollback_fails() {
+        let base = unique_dir("build-dir-rb-fail");
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let v1 = write_video(&lib, "v1.mkv", b"V1");
+
+        let placements = vec![
+            StagedPlacement {
+                source: v1.clone(),
+                rel_dir: PathBuf::from(""),
+                file_name: "v1.mkv".into(),
+            },
+            StagedPlacement {
+                source: lib.join("missing.mkv"),
+                rel_dir: PathBuf::from(""),
+                file_name: "missing.mkv".into(),
+            },
+        ];
+        let root = base.join(format!("{STAGING_DIR_PREFIX}build_dir_rb_fail"));
+
+        let err = build_with_removers(
+            root.clone(),
+            &placements,
+            None,
+            &mut |_, _, _| {},
+            |p| std::fs::remove_file(p),
+            |p| {
+                if p == root.as_path() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "خطای شبیه‌سازی‌شده حذف ریشه در rollback ساخت",
+                    ))
+                } else {
+                    std::fs::remove_dir(p)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.message.contains("hard link"));
+        assert!(err.cleanup.failed.is_empty());
+        assert_eq!(err.cleanup.failed_dirs.len(), 1);
+        assert_eq!(err.cleanup.failed_dirs[0].0, root);
+        assert!(!err.cleanup.is_success());
+        assert!(err.session.is_some(), "مالکیت پوشهٔ باقیمانده حفظ می‌شود");
+        assert!(root.is_dir());
+        assert!(!root.join("v1.mkv").exists());
+        assert_eq!(std::fs::read(&v1).unwrap(), b"V1");
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

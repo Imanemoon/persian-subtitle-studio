@@ -33,6 +33,16 @@ use crate::subsource::{
 
 use super::media::{get_entry, resolve_tool};
 
+/// رویداد پایان دانلود گروهی — payload آن `DownloadResult` کامل است تا فاز
+/// بعدی (Archive Extraction) دقیقاً بداند کدام ریشه‌های staging خروجی دارند.
+pub const SUBSOURCE_DONE_EVENT: &str = "subsource:done";
+
+/// payload رویداد `subsource:done` — فقط نتیجهٔ ساختاریافتهٔ کامل.
+/// این ساختار هیچ API key یا راز دیگری ندارد.
+pub fn download_done_payload(result: &DownloadResult) -> serde_json::Value {
+    serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+}
+
 /// رویداد پیشرفت مرحله‌دار — هیچ عدد ساختگی؛ current/total فقط برای شمارش
 /// واقعی لینک‌ها معنا دارد.
 fn stage_progress(message: &str, current: u64, total: u64, video_path: &str) -> OpsProgress {
@@ -100,6 +110,35 @@ pub fn run_download_blocking_with_remover<F>(
 where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
+    run_download_blocking_with_removers(
+        state,
+        items,
+        api_key,
+        staging_base,
+        cancel,
+        on_progress,
+        remover,
+        |p| std::fs::remove_dir(p),
+    )
+}
+
+/// همان `run_download_blocking_with_remover` با تزریق تابع حذف پوشه نیز —
+/// برای تست قطعی خطاهای پاک‌سازی پوشه در rollback و cleanup.
+#[allow(clippy::too_many_arguments)]
+pub fn run_download_blocking_with_removers<F, D>(
+    state: &AppState,
+    items: &[DownloadPlanItem],
+    api_key: Option<String>,
+    staging_base: Option<&Path>,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut dyn FnMut(OpsProgress),
+    remover: F,
+    dir_remover: D,
+) -> DownloadResult
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+    D: FnMut(&Path) -> std::io::Result<()>,
+{
     let start = Instant::now();
     let mut result = run_download_inner(
         state,
@@ -109,12 +148,14 @@ where
         cancel,
         on_progress,
         remover,
+        dir_remover,
     );
     result.duration_secs = start.elapsed().as_secs_f64();
     result
 }
 
-fn run_download_inner<F>(
+#[allow(clippy::too_many_arguments)]
+fn run_download_inner<F, D>(
     state: &AppState,
     items: &[DownloadPlanItem],
     api_key: Option<String>,
@@ -122,9 +163,11 @@ fn run_download_inner<F>(
     cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(OpsProgress),
     mut remover: F,
+    mut dir_remover: D,
 ) -> DownloadResult
 where
     F: FnMut(&Path) -> std::io::Result<()>,
+    D: FnMut(&Path) -> std::io::Result<()>,
 {
     let mut result = DownloadResult::default();
 
@@ -210,6 +253,7 @@ where
         clean_ads,
         skip_existing,
         remover: &mut remover,
+        dir_remover: &mut dir_remover,
     };
 
     let mut all_success = true;
@@ -266,7 +310,7 @@ where
     } else if result.message.is_empty() {
         if !result.cleanup_warnings.is_empty() {
             result.message = format!(
-                "دانلود انجام شد اما پاک‌سازی {} لینک موقت ناموفق بود؛ مسیرهای staging برای بررسی دستی حفظ شدند.",
+                "دانلود انجام شد اما پاک‌سازی {} مسیر موقت ناموفق بود؛ مسیرهای staging برای بررسی دستی حفظ شدند.",
                 result.cleanup_warnings.len()
             );
         } else {
@@ -274,7 +318,7 @@ where
         }
     } else if !result.cleanup_warnings.is_empty() {
         result.message.push_str(&format!(
-            " (توجه: پاک‌سازی {} لینک موقت ناموفق بود — مسیر staging برای بررسی دستی حفظ شد)",
+            " (توجه: پاک‌سازی {} مسیر موقت ناموفق بود — مسیر staging برای بررسی دستی حفظ شد)",
             result.cleanup_warnings.len()
         ));
     }
@@ -286,6 +330,7 @@ struct GroupConfig<'a> {
     clean_ads: bool,
     skip_existing: bool,
     remover: &'a mut (dyn FnMut(&Path) -> std::io::Result<()> + 'a),
+    dir_remover: &'a mut (dyn FnMut(&Path) -> std::io::Result<()> + 'a),
 }
 
 /// اجرای یک گروه volume: ساخت staging → اجرای SubSource → پاک‌سازی لینک‌ها.
@@ -309,12 +354,13 @@ fn run_group(
             &p.source.to_string_lossy(),
         ));
     };
-    let mut session = match staging::build_with_remover(
+    let mut session = match staging::build_with_removers(
         group.staging_root.clone(),
         &group.placements,
         Some(cancel),
         &mut on_link,
         &mut *cfg.remover,
+        &mut *cfg.dir_remover,
     ) {
         Ok(s) => s,
         Err(err) => {
@@ -332,11 +378,17 @@ fn run_group(
                         p.display()
                     ));
                 }
+                for (p, e) in &err.cleanup.failed_dirs {
+                    result.cleanup_warnings.push(format!(
+                        "حذف پوشه موقت «{}» در حین rollback ساخت staging ناموفق بود ({e}) — برای پاک‌سازی دستی مسیر «{root_str}» را بررسی کنید",
+                        p.display()
+                    ));
+                }
                 crate::logging::warn(
                     "subsource",
                     &format!(
-                        "ساخت staging روی {volume_key} با شکست rollback مواجه شد: {} لینک باقیمانده",
-                        err.cleanup.failed.len()
+                        "ساخت staging روی {volume_key} با شکست rollback مواجه شد: {} مسیر باقیمانده",
+                        err.cleanup.failure_count()
                     ),
                 );
             }
@@ -346,8 +398,8 @@ fn run_group(
                     format!("لغو در حین ساخت staging: {}", err.message)
                 } else {
                     format!(
-                        "لغو در حین ساخت staging (اما پاک‌سازی {} لینک موقت ناموفق بود): {}",
-                        err.cleanup.failed.len(),
+                        "لغو در حین ساخت staging (اما پاک‌سازی {} مسیر موقت ناموفق بود): {}",
+                        err.cleanup.failure_count(),
                         err.message
                     )
                 }
@@ -355,8 +407,8 @@ fn run_group(
                 format!("ساخت staging روی {volume_key} ناموفق: {}", err.message)
             } else {
                 format!(
-                    "ساخت staging روی {volume_key} ناموفق و پاک‌سازی {} لینک ناقص ماند: {}",
-                    err.cleanup.failed.len(),
+                    "ساخت staging روی {volume_key} ناموفق و پاک‌سازی {} مسیر ناقص ماند: {}",
+                    err.cleanup.failure_count(),
                     err.message
                 )
             };
@@ -382,7 +434,7 @@ fn run_group(
     // لغو بین ساخت staging و اجرای SubSource — rollback کامل (خروجی‌ای هنوز
     // تولید نشده و از دست نمی‌رود)
     if cancel.load(Ordering::SeqCst) {
-        let cleanup = session.rollback_with(&mut *cfg.remover);
+        let cleanup = session.rollback_with_removers(&mut *cfg.remover, &mut *cfg.dir_remover);
         if !cleanup.is_success() {
             let staging_root_str = session.root().to_string_lossy().to_string();
             if !result.staging_paths.contains(&staging_root_str) {
@@ -394,10 +446,16 @@ fn run_group(
                     p.display()
                 ));
             }
+            for (p, err) in &cleanup.failed_dirs {
+                result.cleanup_warnings.push(format!(
+                    "حذف پوشه موقت «{}» در حین rollback ناموفق بود ({err}) — برای بررسی دستی به «{staging_root_str}» مراجعه کنید",
+                    p.display()
+                ));
+            }
             return GroupOutcome::CancelledBeforeCli {
                 message: format!(
-                    "عملیات پیش از اجرای SubSource لغو شد، اما پاک‌سازی {} لینک موقت ناموفق بود؛ مسیر staging برای بررسی دستی حفظ شد.",
-                    cleanup.failed.len()
+                    "عملیات پیش از اجرای SubSource لغو شد، اما پاک‌سازی {} مسیر موقت ناموفق بود؛ مسیر staging برای بررسی دستی حفظ شد.",
+                    cleanup.failure_count()
                 ),
             };
         }
@@ -468,7 +526,8 @@ fn run_group(
         result.planned as u64,
         "",
     ));
-    let cleanup = session.cleanup_keep_output_with(&mut *cfg.remover);
+    let cleanup =
+        session.cleanup_keep_output_with_removers(&mut *cfg.remover, &mut *cfg.dir_remover);
     if !cleanup.is_success() {
         group_success = false;
         for (path, err) in &cleanup.failed {
@@ -477,11 +536,17 @@ fn run_group(
                 path.display()
             ));
         }
+        for (path, err) in &cleanup.failed_dirs {
+            result.cleanup_warnings.push(format!(
+                "حذف پوشه موقت «{}» ناموفق بود ({err}) — برای پاک‌سازی دستی مسیر staging «{staging_root_str}» را بررسی کنید",
+                path.display()
+            ));
+        }
         crate::logging::warn(
             "subsource",
             &format!(
-                "staging گروه {volume_key}: {} لینک حذف نشد و در مالکیت باقی ماند",
-                cleanup.failed.len()
+                "staging گروه {volume_key}: {} مسیر حذف نشد و در مالکیت باقی ماند",
+                cleanup.failure_count()
             ),
         );
     }
@@ -571,6 +636,9 @@ pub fn execute_subsource_download(
                 result.message
             ),
         );
+        // نتیجهٔ ساختاریافتهٔ کامل برای فاز بعدی (مسیرهای staging و هشدارهای
+        // پاک‌سازی) — رویداد قدیمی `ops:done` برای سازگاری حفظ می‌شود.
+        let _ = app2.emit(SUBSOURCE_DONE_EVENT, download_done_payload(&result));
         let _ = app2.emit(
             "ops:done",
             &OpsProgress {

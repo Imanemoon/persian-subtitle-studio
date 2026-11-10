@@ -10,7 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use subsync_studio_lib::commands::subsource::{
-    run_download_blocking, run_download_blocking_with_remover,
+    download_done_payload, run_download_blocking, run_download_blocking_with_remover,
+    run_download_blocking_with_removers, SUBSOURCE_DONE_EVENT,
 };
 use subsync_studio_lib::models::{OpsProgress, VideoEntry};
 use subsync_studio_lib::settings::Settings;
@@ -872,5 +873,262 @@ fn test_cancellation_after_staging_with_failed_rollback() {
     assert!(result.message.contains("پاک‌سازی"));
 
     let _ = fs::remove_file(staging_root.join("Ep1.mkv"));
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۲۱: خطای حذف پوشه در `cleanup_keep_output` باید در
+/// `DownloadResult.cleanup_warnings`، پیام نهایی و payload رویداد
+/// `subsource:done` منتشر شود؛ آرشیوهای دانلودشده و ویدیوهای اصلی حفظ شوند.
+#[test]
+fn test_cleanup_directory_failure_propagates_to_result_and_done_payload() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("cleanup-dir-fail-payload");
+
+    fs::write(base_dir.join(".fake_mode"), b"write-archives").unwrap();
+
+    let series = base_dir.join("Series");
+    let s1_dir = series.join("Season 01");
+    let s2_dir = series.join("Season 02");
+    fs::create_dir_all(&s1_dir).unwrap();
+    fs::create_dir_all(&s2_dir).unwrap();
+    let v1 = s1_dir.join("Ep1.mkv");
+    let v2 = s2_dir.join("Ep2.mkv");
+    fs::write(&v1, b"ORIGINAL_EP1").unwrap();
+    fs::write(&v2, b"ORIGINAL_EP2").unwrap();
+
+    let entries = vec![make_video_entry(&v1), make_video_entry(&v2)];
+    let state = make_test_state(&fake_exe, entries);
+
+    let plan_items = vec![
+        DownloadPlanItem {
+            video_path: v1.to_string_lossy().to_string(),
+            video_file_name: "Ep1.mkv".into(),
+        },
+        DownloadPlanItem {
+            video_path: v2.to_string_lossy().to_string(),
+            video_file_name: "Ep2.mkv".into(),
+        },
+    ];
+
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // فقط حذف پوشهٔ Season 02 در staging شکست می‌خورد؛ لینک‌ها عادی حذف می‌شوند.
+    let result = run_download_blocking_with_removers(
+        &state,
+        &plan_items,
+        Some("test-secret-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut |_| {},
+        |p| std::fs::remove_file(p),
+        |p| {
+            if p.ends_with("Season 02") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "خطای شبیه‌سازی‌شده حذف پوشه در cleanup",
+                ))
+            } else {
+                std::fs::remove_dir(p)
+            }
+        },
+    );
+
+    // ۱) نتیجه نباید موفق گزارش شود و هشدار پوشه باید ثبت شود
+    assert!(!result.success, "خطای حذف پوشه نباید موفقیت کامل گزارش شود");
+    assert!(!result.cancelled);
+    assert_eq!(result.planned, 2);
+    assert_eq!(result.staged, 2);
+    assert_eq!(result.exit_code, Some(0));
+    assert_eq!(result.cleanup_warnings.len(), 1);
+    assert!(
+        result.cleanup_warnings[0].contains("پوشه"),
+        "{}",
+        result.cleanup_warnings[0]
+    );
+    assert!(
+        result.cleanup_warnings[0].contains("Season 02"),
+        "{}",
+        result.cleanup_warnings[0]
+    );
+    assert!(
+        result.cleanup_warnings[0].contains("شبیه‌سازی‌شده"),
+        "{}",
+        result.cleanup_warnings[0]
+    );
+
+    // ۲) پیام نهایی باید شکست پاک‌سازی را صادقانه گزارش کند
+    assert!(result.message.contains("پاک‌سازی"), "{}", result.message);
+    assert!(result.message.contains('1'), "{}", result.message);
+
+    // ۳) مسیر staging و همهٔ آرشیوهای دانلودشده باید حفظ شوند
+    assert_eq!(result.staging_paths.len(), 1);
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    assert!(staging_root.is_dir());
+    let staged_s1 = staging_root.join("Season 01");
+    let staged_s2 = staging_root.join("Season 02");
+    assert!(staged_s1.is_dir());
+    assert!(staged_s2.is_dir(), "پوشهٔ ناموفق باید حفظ شود");
+
+    for season_dir in [&staged_s1, &staged_s2] {
+        let sub_dir = season_dir.join("sub");
+        assert!(sub_dir.is_dir(), "پوشهٔ sub باید حفظ شود: {sub_dir:?}");
+        let archives: Vec<_> = fs::read_dir(&sub_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().map(|x| x == "zip").unwrap_or(false))
+            .collect();
+        assert_eq!(
+            archives.len(),
+            1,
+            "آرشیو دانلودشده باید حفظ شود: {sub_dir:?}"
+        );
+    }
+
+    // لینک‌های موقت ویدیو حذف شده‌اند
+    assert!(!staged_s1.join("Ep1.mkv").exists());
+    assert!(!staged_s2.join("Ep2.mkv").exists());
+
+    // ۴) ویدیوهای اصلی کاملاً دست‌نخورده‌اند
+    assert_eq!(fs::read(&v1).unwrap(), b"ORIGINAL_EP1");
+    assert_eq!(fs::read(&v2).unwrap(), b"ORIGINAL_EP2");
+
+    // ۵) payload رویداد `subsource:done` کامل و بدون راز است
+    assert_eq!(SUBSOURCE_DONE_EVENT, "subsource:done");
+    let payload = download_done_payload(&result);
+    assert_eq!(payload["success"], serde_json::json!(false));
+    assert_eq!(payload["cancelled"], serde_json::json!(false));
+    assert_eq!(payload["planned"], serde_json::json!(2));
+    assert_eq!(payload["staged"], serde_json::json!(2));
+    assert_eq!(payload["exitCode"], serde_json::json!(0));
+    assert_eq!(
+        payload["stagingPaths"][0],
+        serde_json::json!(staging_root.to_string_lossy())
+    );
+    let warnings = payload["cleanupWarnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("Season 02"));
+    assert!(payload["message"].as_str().unwrap().contains("پاک‌سازی"));
+    assert!(payload["skipped"].is_array());
+    let serialized = payload.to_string();
+    assert!(
+        !serialized.contains("test-secret-api-key"),
+        "payload نباید API key داشته باشد"
+    );
+    assert!(payload.get("apiKey").is_none());
+
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۲۲: خطای حذف پوشه در rollback ساخت staging باید از مسیر BuildFailed
+/// به `DownloadResult.cleanup_warnings` و payload نهایی منتقل شود و ادعای
+/// rollback کامل نکند.
+#[test]
+fn test_staging_build_directory_rollback_failure_propagates_to_result() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("build-dir-rb-fail-propagate");
+
+    let lib_dir = base_dir.join("Series");
+    fs::create_dir_all(&lib_dir).unwrap();
+    let v1 = lib_dir.join("Ep1.mkv");
+    let v2 = lib_dir.join("Ep2.mkv");
+    fs::write(&v1, b"EP1_CONTENT").unwrap();
+    fs::write(&v2, b"EP2_CONTENT").unwrap();
+
+    let entries = vec![make_video_entry(&v1), make_video_entry(&v2)];
+    let state = make_test_state(&fake_exe, entries);
+
+    let plan_items = vec![
+        DownloadPlanItem {
+            video_path: v1.to_string_lossy().to_string(),
+            video_file_name: "Ep1.mkv".into(),
+        },
+        DownloadPlanItem {
+            video_path: v2.to_string_lossy().to_string(),
+            video_file_name: "Ep2.mkv".into(),
+        },
+    ];
+
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let v2_to_delete = v2.clone();
+    let mut on_progress = move |p: OpsProgress| {
+        // پس از لینک اول، منبع دوم حذف می‌شود تا ساخت لینک دوم شکست بخورد
+        if p.message.contains("Ep1.mkv") {
+            let _ = fs::remove_file(&v2_to_delete);
+        }
+    };
+
+    // حذف لینک‌ها موفق است، اما حذف ریشهٔ staging در rollback شکست می‌خورد
+    let result = run_download_blocking_with_removers(
+        &state,
+        &plan_items,
+        Some("valid-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut on_progress,
+        |p| std::fs::remove_file(p),
+        |p| {
+            let is_staging_root = p
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with(STAGING_DIR_PREFIX))
+                .unwrap_or(false);
+            if is_staging_root {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "خطای شبیه‌سازی‌شده حذف ریشه در rollback ساخت",
+                ))
+            } else {
+                std::fs::remove_dir(p)
+            }
+        },
+    );
+
+    assert!(!result.success, "rollback ناقص نباید موفق گزارش شود");
+    assert_eq!(result.staged, 0);
+    assert_eq!(result.staging_paths.len(), 1);
+    assert_eq!(result.cleanup_warnings.len(), 1);
+    assert!(
+        result.cleanup_warnings[0].contains("پوشه"),
+        "{}",
+        result.cleanup_warnings[0]
+    );
+    assert!(
+        result.cleanup_warnings[0].contains("rollback ساخت staging"),
+        "{}",
+        result.cleanup_warnings[0]
+    );
+
+    // پیام نهایی باید ناقص بودن پاک‌سازی را صادقانه بگوید
+    assert!(
+        !result.message.contains("برگردانده شد"),
+        "{}",
+        result.message
+    );
+    assert!(result.message.contains("ناقص"), "{}", result.message);
+    assert!(result.message.contains('1'), "{}", result.message);
+
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    assert!(staging_root.is_dir(), "ریشهٔ ناموفق باید حفظ شود");
+    assert!(
+        !staging_root.join("Ep1.mkv").exists(),
+        "لینک اول باید حذف شده باشد"
+    );
+    assert_eq!(fs::read(&v1).unwrap(), b"EP1_CONTENT");
+
+    let payload = download_done_payload(&result);
+    let warnings = payload["cleanupWarnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("پوشه"));
+    assert_eq!(
+        payload["stagingPaths"][0],
+        serde_json::json!(staging_root.to_string_lossy())
+    );
+    assert_eq!(payload["staged"], serde_json::json!(0));
+
     let _ = fs::remove_dir_all(&base_dir);
 }
