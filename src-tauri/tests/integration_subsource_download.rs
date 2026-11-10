@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use subsync_studio_lib::commands::subsource::run_download_blocking;
+use subsync_studio_lib::commands::subsource::{
+    run_download_blocking, run_download_blocking_with_remover,
+};
 use subsync_studio_lib::models::{OpsProgress, VideoEntry};
 use subsync_studio_lib::settings::Settings;
 use subsync_studio_lib::state::{acquire_batch_op, acquire_single_op, AppState, OpsRegistry};
@@ -608,4 +610,93 @@ fn test_volume_root_and_invalid_path_rejection() {
     assert_eq!(groups.len(), 0);
     assert_eq!(skipped.len(), 1);
     assert!(skipped[0].reason.contains("نسبی"));
+}
+
+/// تست ۱۸: عدم موفقیت در حذف لینک‌ها منجر به هشدار پاک‌سازی، عدم گزارش موفقیت کامل،
+/// و حفظ مسیر staging برای بازیابی دستی می‌شود
+#[test]
+fn test_cleanup_failure_propagates_to_download_result_and_preserves_staging() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("cleanup-fail-propagate");
+
+    fs::write(base_dir.join(".fake_mode"), b"write-archives").unwrap();
+
+    let lib_dir = base_dir.join("Series");
+    fs::create_dir_all(&lib_dir).unwrap();
+    let v1 = lib_dir.join("Ep1.mkv");
+    let v2 = lib_dir.join("Ep2.mkv");
+    fs::write(&v1, b"EP1").unwrap();
+    fs::write(&v2, b"EP2").unwrap();
+
+    let entries = vec![make_video_entry(&v1), make_video_entry(&v2)];
+    let state = make_test_state(&fake_exe, entries);
+
+    let plan_items = vec![
+        DownloadPlanItem {
+            video_path: v1.to_string_lossy().to_string(),
+            video_file_name: "Ep1.mkv".into(),
+        },
+        DownloadPlanItem {
+            video_path: v2.to_string_lossy().to_string(),
+            video_file_name: "Ep2.mkv".into(),
+        },
+    ];
+
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // شبیه‌سازی شکست حذف برای Ep2.mkv در cleanup
+    let result = run_download_blocking_with_remover(
+        &state,
+        &plan_items,
+        Some("valid-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut |_| {},
+        |p| {
+            if p.to_string_lossy().contains("Ep2.mkv") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "دسترسی شبیه‌سازی‌شده ناموفق در پاک‌سازی",
+                ))
+            } else {
+                std::fs::remove_file(p)
+            }
+        },
+    );
+
+    // ۱) عملیات نباید کاملاً موفق گزارش شود
+    assert!(
+        !result.success,
+        "عملیات با شکست پاک‌سازی نباید موفق گزارش شود"
+    );
+    assert!(!result.cancelled);
+    assert_eq!(result.planned, 2);
+    assert_eq!(result.staged, 2);
+
+    // ۲) هشدارهای پاک‌سازی صریح و همراه با مسیر فایل باشد
+    assert_eq!(result.cleanup_warnings.len(), 1);
+    assert!(result.cleanup_warnings[0].contains("Ep2.mkv"));
+    assert!(result.cleanup_warnings[0].contains("پاک‌سازی دستی"));
+
+    // ۳) مسیر staging برای بازیابی دستی حفظ شده باشد
+    assert_eq!(result.staging_paths.len(), 1);
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    assert!(staging_root.is_dir());
+    assert!(
+        staging_root.join("Ep2.mkv").exists(),
+        "لینک باقیمانده باید روی دیسک بماند"
+    );
+
+    // ۴) لینک Ep1 باید پاک شده باشد
+    assert!(!staging_root.join("Ep1.mkv").exists());
+
+    // ۵) پیام خروجی به کاربر حاوی هشدار پاک‌سازی باشد
+    assert!(result.message.contains("پاک‌سازی"));
+
+    // پاک‌سازی نهایی برای پایان تست
+    let _ = std::fs::remove_file(staging_root.join("Ep2.mkv"));
+    let _ = fs::remove_dir_all(&base_dir);
 }

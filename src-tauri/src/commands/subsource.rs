@@ -76,20 +76,56 @@ pub fn run_download_blocking(
     cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(OpsProgress),
 ) -> DownloadResult {
-    let start = Instant::now();
-    let mut result = run_download_inner(state, items, api_key, staging_base, cancel, on_progress);
-    result.duration_secs = start.elapsed().as_secs_f64();
-    result
+    run_download_blocking_with_remover(
+        state,
+        items,
+        api_key,
+        staging_base,
+        cancel,
+        on_progress,
+        |p| std::fs::remove_file(p),
+    )
 }
 
-fn run_download_inner(
+/// همان `run_download_blocking` با امکان تزریق تابع حذف لینک برای تست‌های قطعی.
+pub fn run_download_blocking_with_remover<F>(
     state: &AppState,
     items: &[DownloadPlanItem],
     api_key: Option<String>,
     staging_base: Option<&Path>,
     cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(OpsProgress),
-) -> DownloadResult {
+    remover: F,
+) -> DownloadResult
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let start = Instant::now();
+    let mut result = run_download_inner(
+        state,
+        items,
+        api_key,
+        staging_base,
+        cancel,
+        on_progress,
+        remover,
+    );
+    result.duration_secs = start.elapsed().as_secs_f64();
+    result
+}
+
+fn run_download_inner<F>(
+    state: &AppState,
+    items: &[DownloadPlanItem],
+    api_key: Option<String>,
+    staging_base: Option<&Path>,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut dyn FnMut(OpsProgress),
+    mut remover: F,
+) -> DownloadResult
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
     let mut result = DownloadResult::default();
 
     // ۰) بررسی پرچم لغو پیش از هر کاری
@@ -169,10 +205,11 @@ fn run_download_inner(
         let s = state.settings.lock().unwrap();
         (s.subsource.clean_ads, s.subsource.skip_existing)
     };
-    let group_cfg = GroupConfig {
+    let mut group_cfg = GroupConfig {
         api_key: &api_key,
         clean_ads,
         skip_existing,
+        remover: &mut remover,
     };
 
     let mut all_success = true;
@@ -184,7 +221,14 @@ fn run_download_inner(
             result.message = "عملیات توسط کاربر لغو شد.".into();
             return result;
         }
-        match run_group(&cli, group, &group_cfg, cancel, &mut result, on_progress) {
+        match run_group(
+            &cli,
+            group,
+            &mut group_cfg,
+            cancel,
+            &mut result,
+            on_progress,
+        ) {
             GroupOutcome::CliDone { success, cancelled } => {
                 all_success &= success;
                 if cancelled {
@@ -213,14 +257,26 @@ fn run_download_inner(
         }
     }
 
-    result.success = all_success && group_failures == 0;
+    result.success = all_success && group_failures == 0 && result.cleanup_warnings.is_empty();
     if result.success {
         result.message = format!(
             "دانلود تمام شد: {} ویدیو پردازش شد؛ خروجی در staging حفظ شد.",
             result.staged
         );
     } else if result.message.is_empty() {
-        result.message = "دانلود با خطا مواجه شد.".into();
+        if !result.cleanup_warnings.is_empty() {
+            result.message = format!(
+                "دانلود انجام شد اما پاک‌سازی {} لینک موقت ناموفق بود؛ مسیرهای staging برای بررسی دستی حفظ شدند.",
+                result.cleanup_warnings.len()
+            );
+        } else {
+            result.message = "دانلود با خطا مواجه شد.".into();
+        }
+    } else if !result.cleanup_warnings.is_empty() {
+        result.message.push_str(&format!(
+            " (توجه: پاک‌سازی {} لینک موقت ناموفق بود — مسیر staging برای بررسی دستی حفظ شد)",
+            result.cleanup_warnings.len()
+        ));
     }
     result
 }
@@ -229,13 +285,14 @@ struct GroupConfig<'a> {
     api_key: &'a str,
     clean_ads: bool,
     skip_existing: bool,
+    remover: &'a mut (dyn FnMut(&Path) -> std::io::Result<()> + 'a),
 }
 
 /// اجرای یک گروه volume: ساخت staging → اجرای SubSource → پاک‌سازی لینک‌ها.
 fn run_group(
     cli: &SubSourceCli,
     group: &VolumeGroup,
-    cfg: &GroupConfig<'_>,
+    cfg: &mut GroupConfig<'_>,
     cancel: &Arc<AtomicBool>,
     result: &mut DownloadResult,
     on_progress: &mut dyn FnMut(OpsProgress),
@@ -287,16 +344,29 @@ fn run_group(
     // لغو بین ساخت staging و اجرای SubSource — rollback کامل (خروجی‌ای هنوز
     // تولید نشده و از دست نمی‌رود)
     if cancel.load(Ordering::SeqCst) {
-        session.rollback();
+        let cleanup = session.rollback_with(&mut *cfg.remover);
+        if !cleanup.is_success() {
+            let staging_root_str = session.root().to_string_lossy().to_string();
+            if !result.staging_paths.contains(&staging_root_str) {
+                result.staging_paths.push(staging_root_str.clone());
+            }
+            for (p, err) in &cleanup.failed {
+                result.cleanup_warnings.push(format!(
+                    "حذف لینک موقت «{}» در حین rollback ناموفق بود ({err}) — برای بررسی دستی به «{staging_root_str}» مراجعه کنید",
+                    p.display()
+                ));
+            }
+        }
         return GroupOutcome::CancelledBeforeCli {
             message: "عملیات پیش از اجرای SubSource لغو شد؛ ساختار staging برگردانده شد.".into(),
         };
     }
 
     result.staged += session.link_count();
-    result
-        .staging_paths
-        .push(session.root().to_string_lossy().to_string());
+    let staging_root_str = session.root().to_string_lossy().to_string();
+    if !result.staging_paths.contains(&staging_root_str) {
+        result.staging_paths.push(staging_root_str.clone());
+    }
 
     // اجرای SubSource روی staging این گروه — token همان پرچم رجیستری است
     on_progress(stage_progress(
@@ -354,13 +424,29 @@ fn run_group(
         result.planned as u64,
         "",
     ));
-    let removed = session.cleanup_keep_output();
+    let cleanup = session.cleanup_keep_output_with(&mut *cfg.remover);
+    if !cleanup.is_success() {
+        group_success = false;
+        for (path, err) in &cleanup.failed {
+            result.cleanup_warnings.push(format!(
+                "حذف لینک موقت «{}» ناموفق بود ({err}) — برای پاک‌سازی دستی مسیر staging «{staging_root_str}» را بررسی کنید",
+                path.display()
+            ));
+        }
+        crate::logging::warn(
+            "subsource",
+            &format!(
+                "staging گروه {volume_key}: {} لینک حذف نشد و در مالکیت باقی ماند",
+                cleanup.failed.len()
+            ),
+        );
+    }
     crate::logging::info(
         "subsource",
         &format!(
             "staging گروه {}: {} لینک حذف شد؛ خروجی در «{}» حفظ شد",
             volume_key,
-            removed,
+            cleanup.removed,
             session.root().display()
         ),
     );

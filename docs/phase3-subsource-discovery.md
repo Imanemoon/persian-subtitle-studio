@@ -134,9 +134,11 @@ Create temporary directory tree per volume with hard links to original videos:
 3. **Scanner Exclusion**: Staging folders use the prefix `_subsource_batch_<uid>`. The scanner module explicitly ignores directories starting with `_subsource_`, ensuring staged hard links are never indexed as new library entries.
 4. **Ownership Tracking & Selective Cleanup**: The `StagingSession` explicitly tracks every hard link and directory created by the application:
    - On completion, error, or cancellation: `cleanup_keep_output()` deletes only the application's temporary video hard links and empty directories.
+   - If deletion of any hard link fails (`remove_file` returns an error other than `NotFound`), ownership tracking for that link is **preserved** in `StagingSession` (not cleared). The failure is reported in `CleanupResult`, propagated to `DownloadResult.cleanup_warnings`, and the staging root path is retained in `staging_paths` for manual recovery. The operation is not reported as fully successful.
    - The downloaded `.zip` archives and the staging root are **preserved** for the subsequent Archive Extraction phase (PR 3).
-   - If staging construction fails before SubSource executes, `rollback()` removes all created links and empty directories including the staging root.
+   - If staging construction fails before SubSource executes, `rollback()` removes all created links and empty directories including the staging root. Any hard link that fails to remove during rollback is retained in ownership tracking and reported.
 5. **No Overwrites**: Existing final subtitles (such as `.fa.srt` or `.fa.synced.srt`) are checked both during plan generation and again at execution time; affected videos are skipped so existing subtitles are never overwritten.
+6. **In-Place Modification Limitation**: Modifying a hard-linked video file **in place** (overwriting or mutating its contents directly) modifies the original video file, because both directory entries point to the identical filesystem inode / data stream. The staging architecture strictly assumes that SubSource CLI treats input video files as **read-only** (reading file metadata/hashes to find matching subtitles and writing downloaded archives into `sub/` subdirectories). Never pass the staging directory to any tool or operation that may modify video files in place.
 
 ## Security Considerations
 

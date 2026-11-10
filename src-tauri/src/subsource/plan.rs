@@ -63,6 +63,8 @@ pub struct DownloadResult {
     pub message: String,
     /// ریشه‌های staging حفظ‌شده (به ازای هر volume) — خروجی دانلود برای فاز بعد.
     pub staging_paths: Vec<String>,
+    /// هشدارهای پاک‌سازی (لینک‌های باقیمانده که حذف آن‌ها با خطا مواجه شد).
+    pub cleanup_warnings: Vec<String>,
     /// ردشده‌ها (اعتبارسنجی، تکرار، خطای staging) با دلیل.
     pub skipped: Vec<SkippedDownload>,
     pub duration_secs: f64,
@@ -78,6 +80,7 @@ impl Default for DownloadResult {
             exit_code: None,
             message: String::new(),
             staging_paths: Vec::new(),
+            cleanup_warnings: Vec::new(),
             skipped: Vec::new(),
             duration_secs: 0.0,
         }
