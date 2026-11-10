@@ -11,6 +11,8 @@ pub mod subsource;
 pub mod subtitle;
 pub mod tools;
 
+pub mod archive;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -87,6 +89,9 @@ pub fn run() {
             commands::subsource::plan_subsource_download,
             commands::subsource::execute_subsource_download,
             commands::subsource::is_download_active,
+            commands::archive::plan_archive_extraction,
+            commands::archive::execute_archive_extraction,
+            commands::archive::is_archive_active,
             commands::tools::detect_tools,
             commands::logs::get_logs,
             commands::media::analyze_video,

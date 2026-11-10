@@ -178,6 +178,37 @@ fn test_successful_staging_and_batch_download_flow() {
     let staging_root = PathBuf::from(&result.staging_paths[0]);
     assert!(staging_root.is_dir(), "Staging root must be preserved");
 
+    // ۱.۵) نگاشت پایدار ویدیوی اصلی → مسیر staging برای فاز آرشیو
+    assert_eq!(
+        result.archive_sources.len(),
+        2,
+        "Each staged video must have archive provenance"
+    );
+    let provenance_v1 = result
+        .archive_sources
+        .iter()
+        .find(|s| s.video_path == v1.to_string_lossy())
+        .expect("provenance for v1");
+    assert_eq!(provenance_v1.video_file_name, "Show.S01E01.1080p.mkv");
+    assert_eq!(provenance_v1.staging_root, result.staging_paths[0]);
+    assert_eq!(provenance_v1.relative_video_dir, "Season 01");
+    assert_eq!(
+        provenance_v1.relative_video_path,
+        Path::new("Season 01")
+            .join("Show.S01E01.1080p.mkv")
+            .to_string_lossy()
+    );
+    let provenance_v2 = result
+        .archive_sources
+        .iter()
+        .find(|s| s.video_path == v2.to_string_lossy())
+        .expect("provenance for v2");
+    assert_eq!(provenance_v2.relative_video_dir, "Season 02");
+    // API key هرگز نباید در نتیجه یا provenance سریال شود
+    let payload_text = serde_json::to_string(&download_done_payload(&result)).unwrap();
+    assert!(!payload_text.contains("test-secret-api-key"));
+    assert!(payload_text.contains("archiveSources"));
+
     // ۲) بررسی حذف لینک‌های ویدیویی موقت
     let staged_v1 = staging_root.join("Season 01").join("Show.S01E01.1080p.mkv");
     let staged_v2 = staging_root.join("Season 02").join("Show.S02E01.1080p.mp4");
@@ -334,6 +365,17 @@ fn test_partial_failure_preserves_downloaded_output() {
     assert_eq!(result.staging_paths.len(), 1);
 
     let staging_root = PathBuf::from(&result.staging_paths[0]);
+    // خروجی جزئی هم باید provenance کامل برای فاز آرشیو داشته باشد
+    assert_eq!(
+        result.archive_sources.len(),
+        2,
+        "partial download must preserve archive provenance"
+    );
+    for source in &result.archive_sources {
+        assert_eq!(source.staging_root, result.staging_paths[0]);
+        assert_eq!(source.relative_video_dir, "");
+        assert!(source.relative_video_path.ends_with(".mkv"));
+    }
     // خروجی‌های تولیدشده حتی در خطای جزئی حفظ شده‌اند
     let sub_dir = staging_root.join("sub");
     assert!(sub_dir.is_dir());
@@ -398,6 +440,16 @@ fn test_real_process_cancellation_preserves_output_and_waits() {
     assert!(result.cancelled, "Result must be marked cancelled");
     assert!(!result.success);
     assert!(result.staging_paths.len() == 1);
+    assert_eq!(
+        result.archive_sources.len(),
+        1,
+        "cancelled download must preserve archive provenance"
+    );
+    assert_eq!(
+        result.archive_sources[0].staging_root,
+        result.staging_paths[0]
+    );
+    assert_eq!(result.archive_sources[0].relative_video_path, "Ep1.mkv");
 
     let staging_root = PathBuf::from(&result.staging_paths[0]);
     // خروجی دانلودشده قبل از لغو حفظ شده است

@@ -30,12 +30,12 @@ static SE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static X_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?:^|[\s._\-\[])(\d{1,2})x(\d{1,3})(?:[^0-9]|$)").unwrap());
 
-// آرشیو چندقسمتی: S04E01-12 / S04E01-E12 / S01E01 to E04
-// (فعلاً فقط در تست‌ها استفاده می‌شود — موتور آرشیو در فاز ۳)
-#[allow(dead_code)]
+// آرشیو/زیرنویس چندقسمتی:
+//   S04E01-12 / S04E01-E12 / S01E01 to E04 / S01E01E02 / S01E01.E02
+// گارد پایانی از تطبیق E01 داخل E010 جلوگیری می‌کند.
 static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|[\s._\-\[])s(\d{1,2})[\s._\-]*e(\d{1,3})[\s._\-]*(?:-|–|—|to|till)[\s._\-]*e?(\d{1,3})(?:[^0-9]|$)",
+        r"(?i)(?:^|[\s._\-\[])s(\d{1,2})[\s._\-]*e(\d{1,3})(?:[\s._\-]*(?:-|–|—|to|till)[\s._\-]*e?|[\s._\-]*e)(\d{1,3})(?:[^0-9]|$)",
     )
     .unwrap()
 });
@@ -82,7 +82,6 @@ pub fn parse_episode(file_stem: &str) -> Option<EpisodeMatch> {
 }
 
 // فاز ۳: تطبیق دقیق آرشیوهای چندقسمتی مثل Dexter.S04E01-12.zip
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveMatch {
     pub season: u32,
@@ -90,8 +89,21 @@ pub struct ArchiveMatch {
     pub episode_end: u32,
 }
 
+/// هویت قسمت یک نام فایل: تک‌قسمت یا چندقسمتی.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpisodeIdentity {
+    Single {
+        season: u32,
+        episode: u32,
+    },
+    Multi {
+        season: u32,
+        episode_start: u32,
+        episode_end: u32,
+    },
+}
+
 /// نام آرشیو (مثلاً `Dexter.S04E01-12.DVDRip.zip`) را به بازه قسمت‌ها تبدیل می‌کند.
-#[allow(dead_code)]
 pub fn parse_archive(file_name: &str) -> Option<ArchiveMatch> {
     if let Some(c) = RANGE_RE.captures(file_name) {
         let season: u32 = c[1].parse().ok()?;
@@ -109,6 +121,26 @@ pub fn parse_archive(file_name: &str) -> Option<ArchiveMatch> {
         episode_start: m.episode,
         episode_end: m.episode,
     })
+}
+
+/// هویت قسمت را با تفکیک صریح تک‌قسمت/چندقسمتی برمی‌گرداند.
+///
+/// این تابع برای تطبیق زیرنویس حیاتی است: `S01E01-12` و `S01E01E02` هرگز
+/// نباید به یک قسمت تکی نسبت داده شوند.
+pub fn parse_episode_identity(name: &str) -> Option<EpisodeIdentity> {
+    let m = parse_archive(name)?;
+    if m.episode_start == m.episode_end {
+        Some(EpisodeIdentity::Single {
+            season: m.season,
+            episode: m.episode_start,
+        })
+    } else {
+        Some(EpisodeIdentity::Multi {
+            season: m.season,
+            episode_start: m.episode_start,
+            episode_end: m.episode_end,
+        })
+    }
 }
 
 /// اگر نام پوشه الگوی پوشه فصل باشد شماره فصل را برمی‌گرداند.
@@ -241,10 +273,65 @@ mod tests {
         let m = parse_archive("Show.S01E01-E04.zip").unwrap();
         assert_eq!((m.season, m.episode_start, m.episode_end), (1, 1, 4));
 
+        // فرم چسبیده: S01E01E02 — دو قسمت، نه فقط قسمت اول
+        let m = parse_archive("Show.S01E01E02.zip").unwrap();
+        assert_eq!((m.season, m.episode_start, m.episode_end), (1, 1, 2));
+
+        let m = parse_archive("Show.S01E01.E02.zip").unwrap();
+        assert_eq!((m.season, m.episode_start, m.episode_end), (1, 1, 2));
+
         let m = parse_archive("Show.S02E07.zip").unwrap();
         assert_eq!((m.season, m.episode_start, m.episode_end), (2, 7, 7));
 
         assert!(parse_archive("collection.2023.zip").is_none());
+    }
+
+    #[test]
+    fn episode_identity_distinguishes_single_and_multi() {
+        assert_eq!(
+            parse_episode_identity("Show.S1E1.1080p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02"),
+            Some(EpisodeIdentity::Multi {
+                season: 1,
+                episode_start: 1,
+                episode_end: 2
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-12"),
+            Some(EpisodeIdentity::Multi {
+                season: 1,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
+        // زنجیره سه‌قسمتی هم حداقل چندقسمتی شناخته می‌شود و تک‌قسمت نیست
+        assert!(matches!(
+            parse_episode_identity("Show.S01E01E02E03"),
+            Some(EpisodeIdentity::Multi { .. })
+        ));
+        // E010 قسمت ۱۰ است، نه بازه ۱..۰
+        assert_eq!(
+            parse_episode_identity("Show.S01E010"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 10
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.2x05"),
+            Some(EpisodeIdentity::Single {
+                season: 2,
+                episode: 5
+            })
+        );
+        assert_eq!(parse_episode_identity("Movie.2023.1080p"), None);
     }
 
     #[test]

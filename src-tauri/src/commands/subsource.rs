@@ -23,8 +23,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::models::{OpsProgress, VideoEntry};
 use crate::state::{acquire_batch_op, AppState};
 use crate::subsource::plan::{
-    create_download_plan, validate_video, DownloadPlan, DownloadPlanItem, DownloadResult,
-    SkippedDownload,
+    create_download_plan, validate_video, ArchiveSource, DownloadPlan, DownloadPlanItem,
+    DownloadResult, SkippedDownload,
 };
 use crate::subsource::staging::{self, VolumeGroup};
 use crate::subsource::{
@@ -266,6 +266,7 @@ where
             return result;
         }
         match run_group(
+            state,
             &cli,
             group,
             &mut group_cfg,
@@ -334,7 +335,9 @@ struct GroupConfig<'a> {
 }
 
 /// اجرای یک گروه volume: ساخت staging → اجرای SubSource → پاک‌سازی لینک‌ها.
+#[allow(clippy::too_many_arguments)]
 fn run_group(
+    state: &AppState,
     cli: &SubSourceCli,
     group: &VolumeGroup,
     cfg: &mut GroupConfig<'_>,
@@ -468,6 +471,39 @@ fn run_group(
     let staging_root_str = session.root().to_string_lossy().to_string();
     if !result.staging_paths.contains(&staging_root_str) {
         result.staging_paths.push(staging_root_str.clone());
+    }
+
+    // نگاشت پایدار ویدیوی اصلی → مسیر staging، برای فاز Archive Extraction.
+    // این کار پیش از اجرای CLI انجام می‌شود تا حتی در صورت خطا/لغو بعدی،
+    // آرشیوهای دانلودشده قابل نسبت‌دادن به ویدیوی درست باشند. هیچ رازی در
+    // این ساختار نیست.
+    for placement in &group.placements {
+        // فقط ویدیوهایی که واقعاً به staging لینک شدند (همهٔ placements در
+        // جلسهٔ موفق لینک می‌شوند؛ بررسی وجود فایل یک گارد محافظ است).
+        let relative_video_path = if placement.rel_dir.as_os_str().is_empty() {
+            placement.file_name.clone()
+        } else {
+            placement
+                .rel_dir
+                .join(&placement.file_name)
+                .to_string_lossy()
+                .to_string()
+        };
+        let staged_path = session.root().join(&relative_video_path);
+        if !staged_path.exists() {
+            continue;
+        }
+        let video_path = placement.source.to_string_lossy().to_string();
+        let entry = get_entry(state, &video_path);
+        result.archive_sources.push(ArchiveSource {
+            video_path,
+            video_file_name: placement.file_name.clone(),
+            staging_root: staging_root_str.clone(),
+            relative_video_path,
+            relative_video_dir: placement.rel_dir.to_string_lossy().to_string(),
+            season: entry.as_ref().and_then(|e| e.season),
+            episode: entry.as_ref().and_then(|e| e.episode),
+        });
     }
 
     // اجرای SubSource روی staging این گروه — token همان پرچم رجیستری است

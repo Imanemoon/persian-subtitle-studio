@@ -8,5 +8,7 @@ pub mod subsource;
 pub mod subtitle;
 pub mod tools;
 
+pub mod archive;
+
 #[cfg(test)]
 mod tests;
