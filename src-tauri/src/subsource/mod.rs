@@ -37,5 +37,5 @@ pub use cli::{CancellationToken, SubSourceCli};
 pub use error::{SubSourceError, SubSourceResult};
 pub use plan::{DownloadPlan, DownloadPlanItem, DownloadResult, SkippedDownload};
 pub use secrets::{delete_api_key, retrieve_api_key, store_api_key};
-pub use staging::{CleanupResult, StagingSession, VolumeGroup};
+pub use staging::{CleanupResult, StagingBuildError, StagingSession, VolumeGroup};
 pub use types::{BatchOptions, BatchResult};

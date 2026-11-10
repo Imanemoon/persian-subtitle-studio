@@ -309,20 +309,58 @@ fn run_group(
             &p.source.to_string_lossy(),
         ));
     };
-    let mut session = match staging::build(
+    let mut session = match staging::build_with_remover(
         group.staging_root.clone(),
         &group.placements,
         Some(cancel),
         &mut on_link,
+        &mut *cfg.remover,
     ) {
         Ok(s) => s,
-        Err(e) => {
+        Err(err) => {
             let cancelled = cancel.load(Ordering::SeqCst);
+            let root_str = err.staging_root.to_string_lossy().to_string();
+
+            // در صورت بروز خطا در rollback، مسیر staging و هشدارهای پاک‌سازی ثبت می‌شوند
+            if !err.cleanup.is_success() {
+                if !result.staging_paths.contains(&root_str) {
+                    result.staging_paths.push(root_str.clone());
+                }
+                for (p, e) in &err.cleanup.failed {
+                    result.cleanup_warnings.push(format!(
+                        "حذف لینک موقت «{}» در حین rollback ساخت staging ناموفق بود ({e}) — برای پاک‌سازی دستی مسیر «{root_str}» را بررسی کنید",
+                        p.display()
+                    ));
+                }
+                crate::logging::warn(
+                    "subsource",
+                    &format!(
+                        "ساخت staging روی {volume_key} با شکست rollback مواجه شد: {} لینک باقیمانده",
+                        err.cleanup.failed.len()
+                    ),
+                );
+            }
+
             let message = if cancelled {
-                format!("لغو در حین ساخت staging: {e}")
+                if err.cleanup.is_success() {
+                    format!("لغو در حین ساخت staging: {}", err.message)
+                } else {
+                    format!(
+                        "لغو در حین ساخت staging (اما پاک‌سازی {} لینک موقت ناموفق بود): {}",
+                        err.cleanup.failed.len(),
+                        err.message
+                    )
+                }
+            } else if err.cleanup.is_success() {
+                format!("ساخت staging روی {volume_key} ناموفق: {}", err.message)
             } else {
-                format!("ساخت staging روی {volume_key} ناموفق: {e}")
+                format!(
+                    "ساخت staging روی {volume_key} ناموفق و پاک‌سازی {} لینک ناقص ماند: {}",
+                    err.cleanup.failed.len(),
+                    err.message
+                )
             };
+
             on_progress(stage_progress(&message, 0, 0, ""));
             // فایل‌های این گروه که لینک نشدند با دلیل ثبت شوند
             let skipped = group
@@ -356,6 +394,12 @@ fn run_group(
                     p.display()
                 ));
             }
+            return GroupOutcome::CancelledBeforeCli {
+                message: format!(
+                    "عملیات پیش از اجرای SubSource لغو شد، اما پاک‌سازی {} لینک موقت ناموفق بود؛ مسیر staging برای بررسی دستی حفظ شد.",
+                    cleanup.failed.len()
+                ),
+            };
         }
         return GroupOutcome::CancelledBeforeCli {
             message: "عملیات پیش از اجرای SubSource لغو شد؛ ساختار staging برگردانده شد.".into(),

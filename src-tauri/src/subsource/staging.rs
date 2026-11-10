@@ -325,6 +325,37 @@ impl StagingSession {
     }
 }
 
+/// خطای ساخت staging — حفظ صریح دلیل خطا، وضعیت rollback، ریشه staging و مالکیت پیوندهای باقیمانده.
+#[derive(Debug)]
+pub struct StagingBuildError {
+    /// دلیل اصلی شکست ساخت staging یا پیام لغو.
+    pub message: String,
+    /// مسیر ریشه staging برای بازیابی دستی.
+    pub staging_root: PathBuf,
+    /// نتیجه rollback (تعداد لینک‌های حذف‌شده و موارد با خطا).
+    pub cleanup: CleanupResult,
+    /// جلسه staging در صورت باقی ماندن لینک‌ها یا پوشه‌ها (حفظ کامل مالکیت).
+    pub session: Option<Box<StagingSession>>,
+}
+
+impl std::fmt::Display for StagingBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.cleanup.is_success() {
+            write!(f, "{}", self.message)
+        } else {
+            write!(
+                f,
+                "{} (هشدار: rollback ناقص بود و {} لینک موقت حذف نشد: «{}»)",
+                self.message,
+                self.cleanup.failed.len(),
+                self.staging_root.display()
+            )
+        }
+    }
+}
+
+impl std::error::Error for StagingBuildError {}
+
 /// ساخت ریشه staging و همه لینک‌های یک گروه با تابع حذف سفارشی برای rollback.
 pub fn build_with_remover<F>(
     root: PathBuf,
@@ -332,7 +363,7 @@ pub fn build_with_remover<F>(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     on_progress: &mut dyn FnMut(usize, usize, &StagedPlacement),
     remover: F,
-) -> Result<StagingSession, String>
+) -> Result<StagingSession, StagingBuildError>
 where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
@@ -343,7 +374,7 @@ where
     };
 
     let mut remover = remover;
-    let mut fail = |mut session: StagingSession, msg: String| -> String {
+    let mut fail = |mut session: StagingSession, msg: String| -> StagingBuildError {
         let cleanup = session.rollback_with(&mut remover);
         if !cleanup.is_success() {
             logging::warn(
@@ -355,17 +386,30 @@ where
                 ),
             );
         }
-        msg
+        let staging_root = session.root().to_path_buf();
+        let remaining_session = if cleanup.is_success() {
+            None
+        } else {
+            Some(Box::new(session))
+        };
+        StagingBuildError {
+            message: msg,
+            staging_root,
+            cleanup,
+            session: remaining_session,
+        }
     };
 
     // ریشه staging — نباید از قبل موجود باشد (برخورد با مسیر نامعلوم ممنوع)
     match std::fs::create_dir(&root) {
         Ok(()) => session.created_dirs.push(root.clone()),
         Err(e) => {
-            return Err(format!(
-                "ساخت ریشه staging ناموفق: {} ({e})",
-                root.display()
-            ));
+            return Err(StagingBuildError {
+                message: format!("ساخت ریشه staging ناموفق: {} ({e})", root.display()),
+                staging_root: root,
+                cleanup: CleanupResult::default(),
+                session: None,
+            });
         }
     }
 
@@ -428,7 +472,7 @@ pub fn build(
     placements: &[StagedPlacement],
     cancel: Option<&std::sync::atomic::AtomicBool>,
     on_progress: &mut dyn FnMut(usize, usize, &StagedPlacement),
-) -> Result<StagingSession, String> {
+) -> Result<StagingSession, StagingBuildError> {
     build_with_remover(root, placements, cancel, on_progress, |p| {
         std::fs::remove_file(p)
     })
@@ -652,7 +696,9 @@ mod tests {
         ];
         let root = base.join(format!("{STAGING_DIR_PREFIX}test2"));
         let err = build(root.clone(), &placements, None, &mut |_, _, _| {}).unwrap_err();
-        assert!(err.contains("hard link"), "{err}");
+        assert!(err.message.contains("hard link"), "{err}");
+        assert!(err.cleanup.is_success());
+        assert!(err.session.is_none());
         assert!(!root.exists(), "rollback باید ریشه را حذف کند");
         assert_eq!(std::fs::read(&good).unwrap(), b"GOOD");
 
@@ -673,7 +719,8 @@ mod tests {
             file_name: "v.mkv".into(),
         }];
         let err = build(root.clone(), &placements, None, &mut |_, _, _| {}).unwrap_err();
-        assert!(err.contains("ناموفق"), "{err}");
+        assert!(err.message.contains("ناموفق"), "{err}");
+        assert!(err.session.is_none());
         assert_eq!(
             std::fs::read_to_string(root.join("foreign.txt")).unwrap(),
             "do not touch"
@@ -697,9 +744,58 @@ mod tests {
         let root = base.join(format!("{STAGING_DIR_PREFIX}test3"));
         let cancel = std::sync::atomic::AtomicBool::new(true);
         let err = build(root.clone(), &placements, Some(&cancel), &mut |_, _, _| {}).unwrap_err();
-        assert!(err.contains("لغو"), "{err}");
+        assert!(err.message.contains("لغو"), "{err}");
+        assert!(err.cleanup.is_success());
+        assert!(err.session.is_none());
         assert!(!root.exists());
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_with_remover_preserves_error_and_session_on_failed_rollback() {
+        let base = unique_dir("build-err-pres");
+        let v1 = write_video(&base, "v1.mkv", b"V1");
+        let root = base.join(format!("{STAGING_DIR_PREFIX}b_err"));
+
+        let placements = vec![
+            StagedPlacement {
+                source: v1.clone(),
+                rel_dir: PathBuf::from(""),
+                file_name: "v1.mkv".into(),
+            },
+            StagedPlacement {
+                source: base.join("missing.mkv"),
+                rel_dir: PathBuf::from(""),
+                file_name: "missing.mkv".into(),
+            },
+        ];
+
+        let target_v1 = root.join("v1.mkv");
+        let err = build_with_remover(root.clone(), &placements, None, &mut |_, _, _| {}, |p| {
+            if p == target_v1 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "خطای شبیه‌سازی‌شده در rollback",
+                ))
+            } else {
+                std::fs::remove_file(p)
+            }
+        })
+        .unwrap_err();
+
+        assert!(err.message.contains("hard link"));
+        assert_eq!(err.staging_root, root);
+        assert!(!err.cleanup.is_success());
+        assert_eq!(err.cleanup.failed.len(), 1);
+        assert_eq!(err.cleanup.failed[0].0, target_v1);
+        assert!(err.session.is_some());
+        let session = err.session.unwrap();
+        assert_eq!(session.link_count(), 1);
+        assert_eq!(session.links(), std::slice::from_ref(&target_v1));
+        assert!(target_v1.exists());
+
+        let _ = std::fs::remove_file(&target_v1);
         let _ = std::fs::remove_dir_all(&base);
     }
 

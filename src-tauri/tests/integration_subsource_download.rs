@@ -511,7 +511,9 @@ fn test_staging_build_failure_rolls_back_cleanly() {
     let root = base_dir.join(format!("{STAGING_DIR_PREFIX}rollback_test"));
     let err = build(root.clone(), &placements, None, &mut |_, _, _| {}).unwrap_err();
 
-    assert!(err.contains("hard link"));
+    assert!(err.message.contains("hard link"));
+    assert!(err.cleanup.is_success());
+    assert!(err.session.is_none());
     assert!(
         !root.exists(),
         "Staging root must be completely removed on failure"
@@ -698,5 +700,177 @@ fn test_cleanup_failure_propagates_to_download_result_and_preserves_staging() {
 
     // پاک‌سازی نهایی برای پایان تست
     let _ = std::fs::remove_file(staging_root.join("Ep2.mkv"));
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۱۹: شکست ساخت staging (شکست در لینک دوم) و شکست rollback (شبیه‌سازی خطای حذف لینک اول)
+/// بررسی می‌کند که خطا در سطح ارکستریشن به طور کامل به DownloadResult منتقل شده،
+/// لینک اول روی دیسک باقی مانده، مسیر staging حفظ شده و پیام نهایی ادعای rollback کامل نمی‌کند.
+#[test]
+fn test_staging_build_failure_with_failed_rollback_preserves_ownership_and_reports_warnings() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("build-fail-rollback-fail");
+
+    let lib_dir = base_dir.join("Series");
+    fs::create_dir_all(&lib_dir).unwrap();
+    let v1 = lib_dir.join("Ep1.mkv");
+    let v2 = lib_dir.join("Ep2.mkv");
+    fs::write(&v1, b"EP1_CONTENT").unwrap();
+    fs::write(&v2, b"EP2_CONTENT").unwrap();
+
+    let entries = vec![make_video_entry(&v1), make_video_entry(&v2)];
+    let state = make_test_state(&fake_exe, entries);
+
+    let plan_items = vec![
+        DownloadPlanItem {
+            video_path: v1.to_string_lossy().to_string(),
+            video_file_name: "Ep1.mkv".into(),
+        },
+        DownloadPlanItem {
+            video_path: v2.to_string_lossy().to_string(),
+            video_file_name: "Ep2.mkv".into(),
+        },
+    ];
+
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // در حین پیشرفت لینک اول، فایل v2 را از دیسک حذف می‌کنیم تا ساخت لینک دوم در staging شکست بخورد
+    let v2_to_delete = v2.clone();
+    let mut on_progress = move |p: OpsProgress| {
+        if p.message.contains("Ep1.mkv") {
+            let _ = fs::remove_file(&v2_to_delete);
+        }
+    };
+
+    // در زمان rollback لینک‌های ساخته‌شده (Ep1.mkv)، خطای PermissionDenied شبیه‌سازی می‌کنیم
+    let result = run_download_blocking_with_remover(
+        &state,
+        &plan_items,
+        Some("valid-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut on_progress,
+        |p| {
+            if p.to_string_lossy().contains("Ep1.mkv") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "دسترسی شبیه‌سازی‌شده ناموفق در rollback ساخت staging",
+                ))
+            } else {
+                std::fs::remove_file(p)
+            }
+        },
+    );
+
+    // ۱) عملیات نباید موفق گزارش شود
+    assert!(!result.success, "عملیات نباید موفق باشد");
+    assert_eq!(result.staged, 0, "هیچ مرحله دانلودی نباید کامل شده باشد");
+
+    // ۲) فایل ویدیوی اصلی دست‌نخورده و سالم بماند
+    assert_eq!(fs::read(&v1).unwrap(), b"EP1_CONTENT");
+
+    // ۳) لینک موقت اول حذف‌نشده و روی دیسک باقی مانده باشد
+    assert_eq!(
+        result.staging_paths.len(),
+        1,
+        "مسیر ریشه staging برای بازیابی دستی باید حفظ شود"
+    );
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    assert!(staging_root.is_dir());
+    let leftover_link = staging_root.join("Ep1.mkv");
+    assert!(
+        leftover_link.exists(),
+        "لینک اول که rollback آن شکست خورد باید روی دیسک بماند"
+    );
+
+    // ۴) cleanup_warnings شامل مسیر لینک و دلیل شکست باشد
+    assert_eq!(result.cleanup_warnings.len(), 1);
+    assert!(result.cleanup_warnings[0].contains("Ep1.mkv"));
+    assert!(result.cleanup_warnings[0].contains("rollback"));
+    assert!(result.cleanup_warnings[0].contains("دسترسی"));
+
+    // ۵) پیام نهایی ادعای rollback کامل نکند
+    assert!(
+        !result.message.contains("برگردانده شد") && !result.message.contains("کامل"),
+        "پیام نباید ادعای بازگردانی کامل کند: {}",
+        result.message
+    );
+    assert!(
+        result.message.contains("ناقص") || result.message.contains("پاک‌سازی"),
+        "پیام باید هشدار پاک‌سازی ناقص دهد: {}",
+        result.message
+    );
+
+    // پاک‌سازی نهایی
+    let _ = fs::remove_file(leftover_link);
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۲۰: لغو بلافاصله پس از ساخت staging به همراه شکست در rollback
+/// بررسی می‌کند که مسیرهای باقیمانده حفظ شده، cleanup_warnings ثبت شده و پیام ادعای بازگردانی کامل نکند.
+#[test]
+fn test_cancellation_after_staging_with_failed_rollback() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("cancel-rb-fail");
+
+    let lib_dir = base_dir.join("Series");
+    fs::create_dir_all(&lib_dir).unwrap();
+    let v1 = lib_dir.join("Ep1.mkv");
+    fs::write(&v1, b"EP1").unwrap();
+
+    let entries = vec![make_video_entry(&v1)];
+    let state = make_test_state(&fake_exe, entries);
+
+    let plan_items = vec![DownloadPlanItem {
+        video_path: v1.to_string_lossy().to_string(),
+        video_file_name: "Ep1.mkv".into(),
+    }];
+
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+
+    // فعال کردن لغو بلافاصله پس از اتمام ساخت staging
+    let mut on_progress = move |p: OpsProgress| {
+        if p.message.contains("لینک") {
+            cancel_clone.store(true, Ordering::SeqCst);
+        }
+    };
+
+    let result = run_download_blocking_with_remover(
+        &state,
+        &plan_items,
+        Some("valid-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut on_progress,
+        |p| {
+            if p.to_string_lossy().contains("Ep1.mkv") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "دسترسی شبیه‌سازی‌شده ناموفق در rollback لغو",
+                ))
+            } else {
+                std::fs::remove_file(p)
+            }
+        },
+    );
+
+    assert!(result.cancelled);
+    assert!(!result.success);
+    assert_eq!(result.staging_paths.len(), 1);
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    assert!(staging_root.join("Ep1.mkv").exists());
+    assert_eq!(result.cleanup_warnings.len(), 1);
+    assert!(result.cleanup_warnings[0].contains("Ep1.mkv"));
+    assert!(!result.message.contains("برگردانده شد"));
+    assert!(result.message.contains("پاک‌سازی"));
+
+    let _ = fs::remove_file(staging_root.join("Ep1.mkv"));
     let _ = fs::remove_dir_all(&base_dir);
 }
