@@ -110,6 +110,40 @@ pub fn acquire_single_op(
     })
 }
 
+/// دستگیرهٔ عملیات گروهی — با Drop، اسلات را از Registry آزاد می‌کند (RAII).
+/// حتی در صورت panic یا خطای Thread، اسلات قفل نمی‌ماند.
+///
+/// پرچم لغو مخصوص همین عملیات گروهی است؛ همان `AtomicBool` که در Registry
+/// ثبت شده و `cancel_all` روی آن عمل می‌کند.
+#[derive(Debug)]
+pub struct BatchOpGuard {
+    registry: Arc<Mutex<OpsRegistry>>,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl BatchOpGuard {
+    /// آزادسازی صریح (Drop هم همین کار را می‌کند).
+    pub fn release(self) {
+        // drop(self) رخ می‌دهد و اسلات آزاد می‌شود
+    }
+}
+
+impl Drop for BatchOpGuard {
+    fn drop(&mut self) {
+        self.registry.lock().unwrap().end_batch();
+    }
+}
+
+/// رزرو اتمیک اسلات عملیات گروهی با گارد RAII — همان قوانین `start_batch`
+/// (تعارض با عملیات گروهی دیگر و همهٔ عملیات‌های تکی رد می‌شود).
+pub fn acquire_batch_op(registry: &Arc<Mutex<OpsRegistry>>) -> Result<BatchOpGuard, String> {
+    let cancel = registry.lock().unwrap().start_batch()?;
+    Ok(BatchOpGuard {
+        registry: registry.clone(),
+        cancel,
+    })
+}
+
 /// وضعیت سراسری برنامه — از طریق `app.state::<AppState>()` در دسترس است.
 pub struct AppState {
     pub settings: Mutex<Settings>,
@@ -196,5 +230,38 @@ mod tests {
         assert!(handle.join().is_err());
         // اسلات آزاد شده باشد
         assert!(acquire_single_op(&reg, "v").is_ok());
+    }
+
+    /// گارد گروهی (RAII): Drop اسلات را آزاد می‌کند؛ لغو از cancel_all روی
+    /// همان پرچم ثبت‌شده اثر می‌گذارد؛ panic هم اسلات را آزاد می‌کند.
+    #[test]
+    fn batch_guard_releases_slot_on_drop_and_panic() {
+        let reg = registry();
+
+        // ۱) acquire → batch فعال؛ تکی رد می‌شود
+        let guard = acquire_batch_op(&reg).unwrap();
+        assert!(acquire_single_op(&reg, "v").is_err());
+        assert!(reg.lock().unwrap().start_batch().is_err());
+
+        // ۲) cancel_all → همان پرچمِ گارد set می‌شود
+        assert!(reg.lock().unwrap().cancel_all());
+        assert!(guard.cancel.load(Ordering::SeqCst));
+
+        // ۳) Drop → اسلات آزاد و پرچم تازه برای عملیات بعدی
+        drop(guard);
+        let g2 = acquire_batch_op(&reg).unwrap();
+        assert!(!g2.cancel.load(Ordering::SeqCst));
+        drop(g2);
+
+        // ۴) panic در حین عملیات گروهی → اسلات آزاد
+        let handle = {
+            let reg = reg.clone();
+            std::thread::spawn(move || {
+                let _g = acquire_batch_op(&reg).unwrap();
+                panic!("شبیه‌سازی خطای غیرمنتظره در عملیات گروهی");
+            })
+        };
+        assert!(handle.join().is_err());
+        assert!(acquire_batch_op(&reg).is_ok());
     }
 }

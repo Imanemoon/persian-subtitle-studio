@@ -1,11 +1,31 @@
 //! Fake executable برای تست واقعی CLI adapter
+//!
+//! حالت‌ها (از آرگومان صریح یا فایل marker `.fake_mode` در پوشه کاری جاری،
+//! پوشه `--directory` یا والدین آن تا ریشه):
+//! - `slow` / `large-output` / `large-stderr` / `leak-credentials` /
+//!   `leak-credentials-error` / `simulate-network-error` — رفتارهای قدیمی
+//! - `write-archives` — برای هر ویدیوی داخل directory، آرشیو جعلی در
+//!   `<video_dir>/sub/` می‌سازد (شبیه‌سازی دانلود موفق) و موفق خارج می‌شود
+//! - `write-archives-then-fail` — همان نوشتن آرشیوها، سپس کد خروج ۱
+//!   (شبیه‌سازی دانلود جزئی)
+//! - `write-then-slow` — آرشیوها را می‌سازد و سپس مدت‌ها ادامه می‌دهد
+//!   (شبیه‌سازی لغو در میانه دانلود)
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
 use std::time::Duration;
+
+const VIDEO_EXTS: &[&str] = &[
+    "mkv", "mp4", "m4v", "mov", "avi", "ts", "m2ts", "webm", "mpg", "mpeg", "wmv", "flv",
+];
+
+fn directory_arg(args: &[String]) -> Option<PathBuf> {
+    let pos = args.iter().position(|a| a == "-d" || a == "--directory")?;
+    args.get(pos + 1).map(PathBuf::from)
+}
 
 fn determine_mode(args: &[String]) -> Option<String> {
     // 1. بررسی آرگومان‌های صریح (در صورت وجود)
@@ -21,14 +41,19 @@ fn determine_mode(args: &[String]) -> Option<String> {
         }
     }
 
-    // 2. بررسی فایل marker اختصاصی (.fake_mode) در پوشه کاری جاری یا پوشه --directory
+    // 2. بررسی فایل marker اختصاصی (.fake_mode) در پوشه کاری جاری، پوشه
+    //    --directory و همهٔ والدین آن — تا تست‌های staging بتوانند marker را
+    //    در پوشه بیس بگذارند در حالی که CLI با ریشه staging اجرا می‌شود.
     let mut check_dirs = Vec::new();
     if let Ok(cwd) = env::current_dir() {
         check_dirs.push(cwd);
     }
-    if let Some(pos) = args.iter().position(|a| a == "-d" || a == "--directory") {
-        if let Some(dir) = args.get(pos + 1) {
-            check_dirs.push(PathBuf::from(dir));
+    if let Some(dir) = directory_arg(args) {
+        check_dirs.push(dir.clone());
+        let mut anc = dir.parent();
+        while let Some(a) = anc {
+            check_dirs.push(a.to_path_buf());
+            anc = a.parent();
         }
     }
 
@@ -45,6 +70,62 @@ fn determine_mode(args: &[String]) -> Option<String> {
     }
 
     None
+}
+
+/// آیا این فایل ویدیو حساب می‌شود؟
+fn is_video(path: &Path) -> bool {
+    path.extension()
+        .map(|e| {
+            let e = e.to_string_lossy().to_lowercase();
+            VIDEO_EXTS.contains(&e.as_str())
+        })
+        .unwrap_or(false)
+}
+
+/// جمع‌آوری بازگشتی ویدیوها (پوشه‌های sub/ نادیده گرفته می‌شوند)
+fn collect_videos(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if p.file_name().map(|n| n == "sub").unwrap_or(false) {
+                continue;
+            }
+            collect_videos(&p, out);
+        } else if p.is_file() && is_video(&p) {
+            out.push(p);
+        }
+    }
+}
+
+/// شبیه‌سازی دانلود: برای هر ویدیو یک آرشیو جعلی در `<video_dir>/sub/`
+fn write_archives(root: &Path) -> usize {
+    let mut videos = Vec::new();
+    collect_videos(root, &mut videos);
+    let mut written = 0;
+    for video in &videos {
+        let Some(parent) = video.parent() else {
+            continue;
+        };
+        let Some(stem) = video.file_stem() else {
+            continue;
+        };
+        let sub_dir = parent.join("sub");
+        if fs::create_dir_all(&sub_dir).is_err() {
+            continue;
+        }
+        let archive = sub_dir.join(format!(
+            "{}_sub_{}.zip",
+            stem.to_string_lossy(),
+            written + 1
+        ));
+        if fs::write(&archive, b"FAKE SUBSOURCE ARCHIVE").is_ok() {
+            written += 1;
+        }
+    }
+    written
 }
 
 fn main() {
@@ -124,6 +205,34 @@ fn main() {
             }
         }
         process::exit(1);
+    }
+
+    let target = directory_arg(&args).unwrap_or_else(|| env::current_dir().unwrap_or_default());
+
+    // شبیه‌سازی دانلود موفق: آرشیو جعلی کنار هر ویدیو در sub/
+    if mode.as_deref() == Some("write-archives") {
+        let n = write_archives(&target);
+        println!("Downloaded {n} subtitles successfully");
+        process::exit(0);
+    }
+
+    // شبیه‌سازی دانلود جزئی: آرشیوها نوشته می‌شوند ولی کد خروج غیر صفر
+    if mode.as_deref() == Some("write-archives-then-fail") {
+        let n = write_archives(&target);
+        println!("Downloaded {n} subtitles before failure");
+        eprintln!("Error: simulated partial failure after writing {n} archives");
+        process::exit(1);
+    }
+
+    // شبیه‌سازی لغو در میانه: آرشیوها نوشته می‌شوند و سپس عملیات ادامه می‌یابد
+    if mode.as_deref() == Some("write-then-slow") {
+        let n = write_archives(&target);
+        println!("Downloaded {n} subtitles, continuing...");
+        for i in 0..60 {
+            println!("Progress: {}%", i * 5);
+            thread::sleep(Duration::from_millis(500));
+        }
+        process::exit(0);
     }
 
     // موفقیت پیش‌فرض

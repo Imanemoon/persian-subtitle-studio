@@ -48,5 +48,8 @@ jobs:
       - name: Rust integration tests (SubSource CLI)
         run: cargo test --manifest-path src-tauri/Cargo.toml --test integration_subsource_cli
 
+      - name: Rust integration tests (SubSource Staging & Batch Download)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test integration_subsource_download
+
       - name: Build debug binary (smoke)
         run: cargo build --manifest-path src-tauri/Cargo.toml

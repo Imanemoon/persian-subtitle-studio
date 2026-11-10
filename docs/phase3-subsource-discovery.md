@@ -52,8 +52,9 @@ sub-rs.exe [OPTIONS]
 ### Authentication
 - Requires `--api-key` for SubSource API access
 - Secure storage via Windows Credential Manager is implemented in `subsource::secrets` (`store_api_key`, `retrieve_api_key`, `delete_api_key`)
-- In the current CLI adapter layer, `BatchOptions.api_key` accepts the key directly as an input parameter
-- Connecting `retrieve_api_key()` to Tauri commands and orchestrating automatic credential retrieval for CLI execution is deferred to subsequent integration phases
+- In Phase 3 PR 2, `retrieve_api_key()` is invoked before creating any staging files or reserving operation slots. If the key is absent or empty, the operation aborts immediately with an explanatory error message, ensuring zero filesystem modifications.
+- The retrieved key is passed into `BatchOptions.api_key` for CLI execution in memory; it is never written to `settings.json` or any disk file.
+- Direct UI integration for entering the key into Credential Manager via the frontend settings page remains slated for a future phase.
 
 ## Archive Format Handling
 
@@ -115,36 +116,35 @@ sub-rs.exe [OPTIONS]
 3. Others (lowest)
 4. File size (descending, as tiebreaker)
 
-## Hard Link Staging Pattern (from PowerShell)
+## Hard Link Staging Pattern
 
-### Purpose
-Create temporary directory tree with hard links to original videos:
+### Implementation in Phase 3 PR 2
+Create temporary directory tree per volume with hard links to original videos:
 ```
-<root>/_SubSource_Batch_<guid>/
-  └─ Season 01/
+<volume_root>/_subsource_batch_<uid>/
+  └─ <relative_dir>/
       ├─ Show.S01E01.mkv  (hard link to original)
-      ├─ Show.S01E01.fa.srt  (hard link if exists, to skip download)
-      ...
+      └─ sub/             (created by SubSource containing downloaded ZIPs)
+          └─ Show.S01E01_sub_1.zip
 ```
 
-### Benefits
-- SubSource CLI processes entire directory structure
-- No video file duplication (hard links share inode)
-- Existing subtitles prevent re-download via `--skip-existing`
-- All downloads land in known staging area
-- Cleanup doesn't affect originals
-
-### Constraints
-- Only works on same filesystem/drive
-- NTFS supports hard links for files (not directories)
-- Hard link changes DO affect original if file is modified in-place
-- Our use case: read-only video files, write-only subtitle files (safe)
+### Operational Rules & Platform Limitations
+1. **Volume Boundary Limitation**: On Windows (NTFS) and Unix filesystems, hard links can only exist within the same filesystem volume. Videos spanning multiple volumes (e.g. `C:\` and `D:\`) are partitioned via `group_by_volume()`. Each volume gets an independent staging root on that same drive.
+2. **Zero-Copy Guarantee**: Large video files are strictly linked via `std::fs::hard_link`. The application **never** falls back to copying video files. If hard linking fails, the entire staging structure for that group is cleanly rolled back (`rollback()`), and original files are left untouched.
+3. **Scanner Exclusion**: Staging folders use the prefix `_subsource_batch_<uid>`. The scanner module explicitly ignores directories starting with `_subsource_`, ensuring staged hard links are never indexed as new library entries.
+4. **Ownership Tracking & Selective Cleanup**: The `StagingSession` explicitly tracks every hard link and directory created by the application:
+   - On completion, error, or cancellation: `cleanup_keep_output()` deletes only the application's temporary video hard links and empty directories.
+   - If deletion of any hard link fails (`remove_file` returns an error other than `NotFound`), ownership tracking for that link is **preserved** in `StagingSession` (not cleared). The failure is reported in `CleanupResult`, propagated to `DownloadResult.cleanup_warnings`, and the staging root path is retained in `staging_paths` for manual recovery. The operation is not reported as fully successful.
+   - The downloaded `.zip` archives and the staging root are **preserved** for the subsequent Archive Extraction phase (PR 3).
+   - If staging construction fails or is cancelled before SubSource executes, `rollback()` removes all created links and empty directories including the staging root. Any hard link that fails to remove during rollback is retained in ownership tracking within `StagingBuildError` / `StagingSession`, propagated into `DownloadResult.cleanup_warnings`, the staging root is preserved in `staging_paths` for recovery, and the operation never claims complete rollback.
+5. **No Overwrites**: Existing final subtitles (such as `.fa.srt` or `.fa.synced.srt`) are checked both during plan generation and again at execution time; affected videos are skipped so existing subtitles are never overwritten.
+6. **In-Place Modification Limitation**: Modifying a hard-linked video file **in place** (overwriting or mutating its contents directly) modifies the original video file, because both directory entries point to the identical filesystem inode / data stream. The staging architecture strictly assumes that SubSource CLI treats input video files as **read-only** (reading file metadata/hashes to find matching subtitles and writing downloaded archives into `sub/` subdirectories). Never pass the staging directory to any tool or operation that may modify video files in place.
 
 ## Security Considerations
 
 1. **API Key Storage**: The API Key is stored exclusively in the **Windows Credential Manager**
    (`PersianSubtitleStudio` / `SubSourceApiKey`). It is **never** written to `settings.json` or
-   any config file on disk.
+   any config file on disk. `retrieve_api_key()` checks the key before any staging or filesystem operations.
 
 2. **Command-Line Exposure**: The SubSource CLI (`sub-rs.exe`) accepts the API key only via the
    `--api-key` argument — there is no alternative mechanism (e.g., environment variable or config
@@ -157,31 +157,31 @@ Create temporary directory tree with hard links to original videos:
    uses the Windows network connection directly. Users who need to route traffic through a proxy
    or VPN should configure that at the OS or VPN client level before running the application.
 
-4. **Path Traversal**: Validate archive contents before extraction.
-5. **Staging Isolation**: Staging directory must be inside project root or user-approved location.
-6. **Archive Validation**: Check extracted files are subtitle formats only.
+4. **Path Traversal & Unicode**: Hard-link paths and directory structures support Persian filenames, Unicode paths, and paths with spaces. Paths must be absolute.
 
 ## Implementation Requirements from Discovery
 
 ### Backend Module Design
 ```
 src-tauri/src/subsource/
-  ├─ mod.rs           (public API)
-  ├─ cli.rs           (sub-rs.exe execution)
-  ├─ staging.rs       (staging directory + hard links)
-  ├─ archive.rs       (7-Zip extraction + matching)
-  ├─ plan.rs          (download plan generation)
-  └─ types.rs         (DTOs for frontend)
+  ├─ mod.rs           (public API, re-exports)
+  ├─ cli.rs           (sub-rs.exe Command wrapper, cancellation token)
+  ├─ staging.rs       (volume grouping, hard-link staging, selective cleanup)
+  ├─ plan.rs          (download plan generation, sidecar detection, validation)
+  ├─ secrets.rs       (Windows Credential Manager integration)
+  ├─ types.rs         (BatchOptions, BatchResult, error classification)
+  └─ error.rs         (SubSourceError taxonomy)
 ```
 
 ### Commands (Tauri)
 ```
 src-tauri/src/commands/subsource.rs
-  - create_download_plan(videos: Vec<VideoInfo>) -> Plan
-  - execute_download_plan(plan_id: String) -> Progress
-  - cancel_download(operation_id: String)
-  - get_download_status(operation_id: String) -> Status
+  - plan_subsource_download(paths: Vec<String>) -> Result<DownloadPlan, String>
+  - execute_subsource_download(items: Vec<DownloadPlanItem>) -> Result<u64, String>
+  - is_download_active() -> bool
 ```
+
+Cancellation is integrated with the existing `cancel_subtitle_ops` command via `OpsRegistry::cancel_all()`.
 
 ### Settings Integration
 
@@ -202,9 +202,9 @@ the Windows network connection directly.
 > **Windows Credential Manager** (service `PersianSubtitleStudio`, account `SubSourceApiKey`)
 > through helper functions in `subsource::secrets`.
 >
-> In the current codebase, `BatchOptions.api_key` accepts the key directly as a field.
-> Connecting `retrieve_api_key()` to Tauri commands and wiring it into the active CLI execution
-> flow — along with UI support in the Settings page — is planned for future phases.
+> In Phase 3 PR 2, `execute_subsource_download` retrieves the API key via `retrieve_api_key()`
+> before initiating staging or batch operations. Adding a dedicated Settings UI input for
+> credential management is scheduled for a future UI integration phase.
 
 ### Workflow Stages
 
