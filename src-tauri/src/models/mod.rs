@@ -186,6 +186,9 @@ pub struct ScanProgress {
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
     pub root: String,
+    /// مسیرهای پذیرفته‌شده در اسکنِ «فایل‌های انتخابی» (برای اسکن پوشه خالی).
+    #[serde(default)]
+    pub selected_files: Vec<String>,
     pub dirs_scanned: u64,
     pub files_seen: u64,
     pub video_count: u64,
@@ -237,4 +240,38 @@ pub struct LogEntry {
     pub level: LogLevel,
     pub source: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_summary_selected_files_defaults_for_old_payloads() {
+        // payload قدیمی (پیش از افزودن selectedFiles) باید بدون خطا deserialize شود
+        let json = r#"{
+            "root": "D:/Media",
+            "dirsScanned": 3,
+            "filesSeen": 5,
+            "videoCount": 2,
+            "excludedDirHits": 0,
+            "parseFailed": 1,
+            "withFaSidecar": 1,
+            "withAnySidecar": 1,
+            "durationMs": 42,
+            "cancelled": false
+        }"#;
+        let summary: ScanSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(summary.root, "D:/Media");
+        assert!(summary.selected_files.is_empty());
+
+        // راندتریپ کامل هم باید فیلد جدید را حفظ کند
+        let full = ScanSummary {
+            selected_files: vec!["D:/Media/a.mkv".into()],
+            ..Default::default()
+        };
+        let back: ScanSummary =
+            serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back.selected_files, vec!["D:/Media/a.mkv".to_string()]);
+    }
 }
