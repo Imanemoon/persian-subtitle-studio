@@ -161,6 +161,7 @@ fn make_state() -> Arc<AppState> {
         scanning: std::sync::atomic::AtomicBool::new(false),
         cancel_scan: std::sync::atomic::AtomicBool::new(false),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
+        archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
     })
 }
 

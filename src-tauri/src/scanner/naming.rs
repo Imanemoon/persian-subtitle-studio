@@ -4,6 +4,9 @@
 //! - `S04E01` نباید به اشتباه داخل `S04E010` (قسمت ۱۰) تطبیق داده شود؛
 //!   پس از ارقام شماره قسمت باید حتماً یک کاراکتر غیر عددی (یا انتهای رشته) بیاید.
 //! - الگوهای `2x05` نیز پشتیبانی می‌شوند.
+//! - هویت چندقسمتی دقیق نگه داشته می‌شود: زنجیرهٔ صریح (`S04E01E02E03`) با هر
+//!   طولی کامل ثبت می‌شود و هرگز به دو قسمت کوتاه نمی‌شود؛ بازهٔ پیوسته
+//!   (`S04E01-12`) و فهرست صریح (`S04E01E12`) نیز هرگز با هم برابر نیستند.
 
 use std::sync::LazyLock;
 
@@ -30,14 +33,22 @@ static SE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static X_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?:^|[\s._\-\[])(\d{1,2})x(\d{1,3})(?:[^0-9]|$)").unwrap());
 
-// آرشیو چندقسمتی: S04E01-12 / S04E01-E12 / S01E01 to E04
-// (فعلاً فقط در تست‌ها استفاده می‌شود — موتور آرشیو در فاز ۳)
-#[allow(dead_code)]
-static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:^|[\s._\-\[])s(\d{1,2})[\s._\-]*e(\d{1,3})[\s._\-]*(?:-|–|—|to|till)[\s._\-]*e?(\d{1,3})(?:[^0-9]|$)",
-    )
-    .unwrap()
+// ادامهٔ زنجیرهٔ صریح قسمت‌ها: S01E01E02 / S01E01.E02 / S01E01_E02
+// خط تیره عمداً جداکنندهٔ زنجیره نیست؛ `S01E01-E02` بازه است.
+static EXPLICIT_EPISODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^[\s._]*e(\d{1,3})").unwrap());
+
+// ادامهٔ بازه: S01E01-12 / S01E01-E12 / S01E01 to E12
+// گروه ۱ وجود `E` صریح و گروه ۲ ارقام نقطهٔ پایانی را نگه می‌دارد.
+// مرز و تگ کیفیت در `range_continuation` بررسی می‌شوند.
+static RANGE_CONTINUATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*(e?)(\d{1,3})").unwrap()
+});
+
+// نشانگر `E` ناقص پس از جداکنندهٔ بازه: S01E01-E / S01E01-E.fa
+// اگر بعد از `E` حرف بیاید (مثل `-Extended`) متن عنوان است، نه نشانگر ناقص.
+static DANGLING_E_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*e(?:$|[^\p{L}\p{N}])").unwrap()
 });
 
 // نام پوشه فصل: "Season 02" / "S02" / "Season 2"
@@ -81,33 +92,225 @@ pub fn parse_episode(file_stem: &str) -> Option<EpisodeMatch> {
     })
 }
 
-// فاز ۳: تطبیق دقیق آرشیوهای چندقسمتی مثل Dexter.S04E01-12.zip
-#[allow(dead_code)]
+/// هویت قسمت یک نام فایل.
+///
+/// سه شکل از هم متمایزند و هرگز با هم برابر نمی‌شوند:
+/// - `Single`: یک قسمت (`S01E01`)
+/// - `Range`: بازهٔ پیوسته (`S01E01-12`، `S01E01-E12`)
+/// - `Sequence`: فهرست صریح قسمت‌ها (`S01E01E02`، `S01E01.E02.E03`)
+///
+/// `Range` و `Sequence` حتی اگر همان مجموعه قسمت‌ها را توصیف کنند برابر نیستند.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchiveMatch {
-    pub season: u32,
-    pub episode_start: u32,
-    pub episode_end: u32,
+pub enum EpisodeIdentity {
+    Single {
+        season: u32,
+        episode: u32,
+    },
+    Range {
+        season: u32,
+        episode_start: u32,
+        episode_end: u32,
+    },
+    Sequence {
+        season: u32,
+        episodes: Vec<u32>,
+    },
 }
 
-/// نام آرشیو (مثلاً `Dexter.S04E01-12.DVDRip.zip`) را به بازه قسمت‌ها تبدیل می‌کند.
-#[allow(dead_code)]
-pub fn parse_archive(file_name: &str) -> Option<ArchiveMatch> {
-    if let Some(c) = RANGE_RE.captures(file_name) {
-        let season: u32 = c[1].parse().ok()?;
-        let a: u32 = c[2].parse().ok()?;
-        let b: u32 = c[3].parse().ok()?;
-        return Some(ArchiveMatch {
-            season,
-            episode_start: a.min(b),
-            episode_end: a.max(b),
-        });
+enum ChainItem {
+    Stop,
+    Valid { episode: u32, next: usize },
+    Unsupported,
+}
+
+/// یک شناسهٔ صریح `E02` را از ابتدای متن مصرف می‌کند.
+fn episode_chain_item(text: &str) -> ChainItem {
+    let Some(c) = EXPLICIT_EPISODE_RE.captures(text) else {
+        return ChainItem::Stop;
+    };
+    let Some(digits) = c.get(1) else {
+        return ChainItem::Stop;
+    };
+    // `E1000` یعنی شناسهٔ خارج از پشتیبانی؛ نباید به `E100` کوتاه شود.
+    if text[digits.end()..]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return ChainItem::Unsupported;
     }
-    let m = parse_episode(file_name)?;
-    Some(ArchiveMatch {
-        season: m.season,
-        episode_start: m.episode,
-        episode_end: m.episode,
+    let Ok(episode) = digits.as_str().parse::<u32>() else {
+        return ChainItem::Unsupported;
+    };
+    ChainItem::Valid {
+        episode,
+        next: digits.end(),
+    }
+}
+
+enum RangeContinuation {
+    NoRange,
+    Valid { episode: u32, next: usize },
+    Unsupported,
+}
+
+/// بازهٔ پیوسته را از ابتدای متن مصرف می‌کند.
+///
+/// سه حالت را از هم جدا می‌کند: نشانگر بازه وجود ندارد، بازهٔ معتبر است، یا
+/// نشانگر وجود دارد ولی نقطهٔ پایانی خارج از پشتیبانی/مخلوط با زنجیره است.
+/// تگ‌های کیفیت (`-720p`، `-1080i`) بازه نیستند.
+fn range_continuation(text: &str) -> RangeContinuation {
+    let Some(c) = RANGE_CONTINUATION_RE.captures(text) else {
+        return if DANGLING_E_MARKER_RE.is_match(text) {
+            RangeContinuation::Unsupported
+        } else {
+            RangeContinuation::NoRange
+        };
+    };
+    let Some(digits) = c.get(2) else {
+        return RangeContinuation::NoRange;
+    };
+    let explicit_episode = !c[1].is_empty();
+
+    // کل رشتهٔ رقمی پس از نشانگر خوانده می‌شود؛ `-1080p` پیش از بررسی سرریز
+    // باید به‌عنوان تگ کیفیت شناخته شود.
+    let mut full_end = digits.end();
+    for ch in text[full_end..].chars() {
+        if !ch.is_ascii_digit() {
+            break;
+        }
+        full_end += 1;
+    }
+    let after_full = text[full_end..].chars().next();
+
+    if !explicit_episode
+        && after_full
+            .is_some_and(|ch| ch.eq_ignore_ascii_case(&'p') || ch.eq_ignore_ascii_case(&'i'))
+    {
+        return RangeContinuation::NoRange;
+    }
+
+    // نقطهٔ پایانی بیش از سه رقم (مثل `-E1000`) پشتیبانی نمی‌شود.
+    if full_end > digits.end() {
+        return RangeContinuation::Unsupported;
+    }
+
+    match after_full {
+        None => {}
+        Some(ch) if ch.is_ascii_alphabetic() => {
+            if ch.eq_ignore_ascii_case(&'e') {
+                let after_ch = text[full_end + ch.len_utf8()..].chars().next();
+                let incomplete_or_mixed = match after_ch {
+                    None => true,
+                    Some(d) => d.is_ascii_digit() || !d.is_alphanumeric(),
+                };
+                // `-E02E03` (مخلوط) یا `-12E` / `-12E.fa` (ناقص) پشتیبانی نمی‌شود.
+                if incomplete_or_mixed {
+                    return RangeContinuation::Unsupported;
+                }
+            }
+            // حروف دیگر (مثل `-10bit`، `-x264` یا `-Extended`) ادامهٔ بازه نیستند.
+            return RangeContinuation::NoRange;
+        }
+        Some(_) => {}
+    }
+
+    let Ok(episode) = digits.as_str().parse::<u32>() else {
+        return RangeContinuation::Unsupported;
+    };
+    RangeContinuation::Valid {
+        episode,
+        next: digits.end(),
+    }
+}
+
+/// آیا پس از یک بازه، ادامهٔ قسمت دیگری مانده است؟ (فرم ترکیبی پشتیبانی نمی‌شود)
+fn has_dangling_episode(text: &str) -> bool {
+    match episode_chain_item(text) {
+        ChainItem::Stop => matches!(
+            range_continuation(text),
+            RangeContinuation::Valid { .. } | RangeContinuation::Unsupported
+        ),
+        ChainItem::Valid { .. } | ChainItem::Unsupported => true,
+    }
+}
+
+/// هویت کامل قسمت را از نام فایل استخراج می‌کند.
+///
+/// زنجیره‌های صریح با هر طولی دقیق حفظ می‌شوند (`S01E01E02E03` سه قسمت است)،
+/// بازه‌ها با `Range` و فهرست‌های صریح با `Sequence` نمایش داده می‌شوند و
+/// هرگز به هم تبدیل نمی‌شوند. شناسه‌های خارج از پشتیبانی (مثلاً `E1000`)
+/// به‌جای کوتاه‌شدن، کل نتیجه را نامعتبر می‌کنند.
+pub fn parse_episode_identity(name: &str) -> Option<EpisodeIdentity> {
+    if let Some(c) = SE_RE.captures(name) {
+        let season: u32 = c[1].parse().ok()?;
+        let episode: u32 = c[2].parse().ok()?;
+        let token_end = c.get(2)?.end();
+        return parse_identity_tail(name, season, episode, token_end);
+    }
+    let c = X_RE.captures(name)?;
+    let season: u32 = c[1].parse().ok()?;
+    let episode: u32 = c[2].parse().ok()?;
+    let token_end = c.get(2)?.end();
+    parse_identity_tail(name, season, episode, token_end)
+}
+
+fn parse_identity_tail(
+    name: &str,
+    season: u32,
+    first_episode: u32,
+    mut pos: usize,
+) -> Option<EpisodeIdentity> {
+    let mut episodes = vec![first_episode];
+
+    loop {
+        match episode_chain_item(&name[pos..]) {
+            ChainItem::Stop => break,
+            ChainItem::Unsupported => return None,
+            ChainItem::Valid { episode, next } => {
+                episodes.push(episode);
+                pos += next;
+            }
+        }
+    }
+
+    if episodes.len() > 1 {
+        // ترکیب زنجیرهٔ صریح و بازه پشتیبانی نمی‌شود؛ به‌جای نادیده‌گرفتن رد می‌شود.
+        if !matches!(range_continuation(&name[pos..]), RangeContinuation::NoRange) {
+            return None;
+        }
+        return Some(EpisodeIdentity::Sequence { season, episodes });
+    }
+
+    match range_continuation(&name[pos..]) {
+        RangeContinuation::NoRange => {}
+        RangeContinuation::Unsupported => return None,
+        RangeContinuation::Valid {
+            episode: last,
+            next,
+        } => {
+            if has_dangling_episode(&name[pos + next..]) {
+                return None;
+            }
+            let start = first_episode.min(last);
+            let end = first_episode.max(last);
+            if start == end {
+                return Some(EpisodeIdentity::Single {
+                    season,
+                    episode: start,
+                });
+            }
+            return Some(EpisodeIdentity::Range {
+                season,
+                episode_start: start,
+                episode_end: end,
+            });
+        }
+    }
+
+    Some(EpisodeIdentity::Single {
+        season,
+        episode: first_episode,
     })
 }
 
@@ -234,17 +437,222 @@ mod tests {
     }
 
     #[test]
-    fn parses_multi_episode_archives() {
-        let m = parse_archive("Dexter.S04E01-12.DVDRip.zip").unwrap();
-        assert_eq!((m.season, m.episode_start, m.episode_end), (4, 1, 12));
+    fn parses_multi_episode_identities_exactly() {
+        assert_eq!(
+            parse_episode_identity("Dexter.S04E01-12.DVDRip.zip"),
+            Some(EpisodeIdentity::Range {
+                season: 4,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
 
-        let m = parse_archive("Show.S01E01-E04.zip").unwrap();
-        assert_eq!((m.season, m.episode_start, m.episode_end), (1, 1, 4));
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-E04.zip"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 4
+            })
+        );
 
-        let m = parse_archive("Show.S02E07.zip").unwrap();
-        assert_eq!((m.season, m.episode_start, m.episode_end), (2, 7, 7));
+        // فرم چسبیده: S01E01E02 — دو قسمت، نه فقط قسمت اول
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02.zip"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
 
-        assert!(parse_archive("collection.2023.zip").is_none());
+        assert_eq!(
+            parse_episode_identity("Show.S01E01.E02.zip"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
+
+        assert_eq!(
+            parse_episode_identity("Show.S02E07.zip"),
+            Some(EpisodeIdentity::Single {
+                season: 2,
+                episode: 7
+            })
+        );
+
+        assert_eq!(parse_episode_identity("collection.2023.zip"), None);
+    }
+
+    #[test]
+    fn episode_identity_distinguishes_single_range_and_sequence() {
+        assert_eq!(
+            parse_episode_identity("Show.S1E1.1080p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-12"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-E02"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 2
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
+        // فهرست صریح [1, 12] با بازهٔ پیوستهٔ 1..12 یکی نیست
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E12"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 12]
+            })
+        );
+        assert_ne!(
+            parse_episode_identity("Show.S01E01E12"),
+            parse_episode_identity("Show.S01E01-12")
+        );
+        // زنجیرهٔ سه‌قسمتی نباید به دو قسمت کوتاه شود
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02E03"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2, 3]
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02E03E04"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2, 3, 4]
+            })
+        );
+        // ترکیب زنجیرهٔ صریح و بازه پشتیبانی نمی‌شود و باید کامل رد شود
+        assert_eq!(parse_episode_identity("Show.S01E01E02-03"), None);
+        // E010 قسمت ۱۰ است، نه بازه ۱..۰
+        assert_eq!(
+            parse_episode_identity("Show.S01E010"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 10
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.2x05"),
+            Some(EpisodeIdentity::Single {
+                season: 2,
+                episode: 5
+            })
+        );
+        assert_eq!(parse_episode_identity("Movie.2023.1080p"), None);
+        // شناسهٔ چهاررقمی پشتیبانی نمی‌شود و هرگز نباید کوتاه شود
+        assert_eq!(parse_episode_identity("Show.S01E01E1000"), None);
+        // بازهٔ معکوس نرمال می‌شود؛ بازهٔ یک‌عضوی همان تک‌قسمت است
+        assert_eq!(
+            parse_episode_identity("Show.S01E12-01"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E05-05"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 5
+            })
+        );
+        // تگ کیفیت با خط تیره بازه نیست
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-720p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02-720p"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_range_continuations_fail_closed() {
+        // نقطهٔ پایانی چهاررقمی یا خارج از پشتیبانی نباید به Single تبدیل شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E1000"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-1000"), None);
+        // ترکیب بازه و زنجیرهٔ صریح پشتیبانی نمی‌شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E02E03"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-12E13"), None);
+        // نشانگر صریح E بدون شمارهٔ قسمت نباید به Single/Sequence تبدیل شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-12E"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01E02-E"), None);
+        // پسوند متنی معتبر بعد از قسمت نباید نشانگر ناقص تلقی شود.
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-Extended"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02-Extended"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
+        // کنترل‌ها: بازهٔ معتبر و تگ کیفیت باید مثل قبل بمانند.
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-12"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-720p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-1080p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-10bit"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
     }
 
     #[test]

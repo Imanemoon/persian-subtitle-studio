@@ -45,6 +45,33 @@ pub struct DownloadPlan {
     pub skipped: Vec<SkippedDownload>,
 }
 
+/// نگاشت پایدار «ویدیوی اصلی → مسیر staging همان ویدیو».
+///
+/// پوشهٔ آرشیو هر ویدیو دقیقاً از این اطلاعات ساخته می‌شود:
+/// `staging_root / relative_video_dir / sub`
+///
+/// هیچ راز/API key در این ساختار نیست. این mapping پس از حذف hard linkهای
+/// موقت هم معتبر می‌ماند، چون فقط به مسیرهای staging و ویدیوی اصلی اشاره
+/// می‌کند.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveSource {
+    /// مسیر کامل ویدیوی اصلی در کتابخانه.
+    pub video_path: String,
+    pub video_file_name: String,
+    /// ریشهٔ staging که خروجی SubSource در آن حفظ شده است.
+    pub staging_root: String,
+    /// مسیر نسبی ویدیو در staging (مثلاً `Season 01/Show.S01E01.mkv`).
+    pub relative_video_path: String,
+    /// پوشهٔ نسبی ویدیو در staging (مثلاً `Season 01`؛ برای ریشه خالی است).
+    pub relative_video_dir: String,
+    /// فصل/قسمت از `VideoEntry` اسکن‌شده، در صورت وجود.
+    #[serde(default)]
+    pub season: Option<u32>,
+    #[serde(default)]
+    pub episode: Option<u32>,
+}
+
 /// نتیجه نهایی عملیات دانلود — مناسب مصرف در فاز بعدی (Archive Extraction).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +90,10 @@ pub struct DownloadResult {
     pub message: String,
     /// ریشه‌های staging حفظ‌شده (به ازای هر volume) — خروجی دانلود برای فاز بعد.
     pub staging_paths: Vec<String>,
+    /// نگاشت هر ویدیوی staged به مسیر نسبی‌اش در staging — ورودی فاز
+    /// Archive Extraction. برای payloadهای قدیمی به‌صورت خالی خوانده می‌شود.
+    #[serde(default)]
+    pub archive_sources: Vec<ArchiveSource>,
     /// هشدارهای پاک‌سازی (لینک‌های باقیمانده که حذف آن‌ها با خطا مواجه شد).
     pub cleanup_warnings: Vec<String>,
     /// ردشده‌ها (اعتبارسنجی، تکرار، خطای staging) با دلیل.
@@ -80,6 +111,7 @@ impl Default for DownloadResult {
             exit_code: None,
             message: String::new(),
             staging_paths: Vec::new(),
+            archive_sources: Vec::new(),
             cleanup_warnings: Vec::new(),
             skipped: Vec::new(),
             duration_secs: 0.0,
@@ -322,5 +354,43 @@ mod tests {
     #[test]
     fn path_key_is_case_insensitive_on_windows() {
         assert_eq!(path_key("C:\\A\\X.mkv"), path_key("c:\\a\\x.mkv"));
+    }
+
+    #[test]
+    fn download_result_without_archive_sources_still_deserializes() {
+        // payload قدیمی (قبل از PR آرشیو) نباید خطا بدهد
+        let json = r#"{
+            "planned": 1,
+            "staged": 1,
+            "success": true,
+            "cancelled": false,
+            "exitCode": 0,
+            "message": "ok",
+            "stagingPaths": ["C:\\staging\\_subsource_batch_x"],
+            "cleanupWarnings": [],
+            "skipped": [],
+            "durationSecs": 1.5
+        }"#;
+        let result: DownloadResult = serde_json::from_str(json).unwrap();
+        assert!(result.archive_sources.is_empty());
+        assert_eq!(result.staging_paths.len(), 1);
+    }
+
+    #[test]
+    fn archive_source_roundtrips_without_secrets() {
+        let source = ArchiveSource {
+            video_path: "C:\\lib\\Show\\S01\\Show.S01E01.mkv".into(),
+            video_file_name: "Show.S01E01.mkv".into(),
+            staging_root: "C:\\_subsource_batch_abc".into(),
+            relative_video_path: "S01\\Show.S01E01.mkv".into(),
+            relative_video_dir: "S01".into(),
+            season: Some(1),
+            episode: Some(1),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(!json.to_lowercase().contains("apikey"));
+        assert!(json.contains("relativeVideoDir"));
+        let back: ArchiveSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, source);
     }
 }
