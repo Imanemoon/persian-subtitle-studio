@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, FolderOpen, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { Check, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
@@ -19,6 +20,32 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [newExcluded, setNewExcluded] = useState("");
+  // ---- SubSource API key — کاملاً مستقل از draft و دکمهٔ ذخیرهٔ تنظیمات؛
+  // مقدار کلید فقط در این input محلی می‌ماند و هرگز به Settings/draft نمی‌رود ----
+  const [keyStored, setKeyStored] = useState<boolean | null>(null); // null = در حال بررسی
+  const [keyInput, setKeyInput] = useState("");
+  const [keyBusy, setKeyBusy] = useState<"save" | "delete" | null>(null);
+  const [keyMessage, setKeyMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .hasSubsourceApiKey()
+      .then((stored) => {
+        if (!cancelled) setKeyStored(stored);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setKeyStored(false);
+          setKeyMessage({ tone: "danger", text: `بررسی وضعیت کلید ناموفق بود: ${String(e)}` });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (settings && draft === null) {
@@ -79,6 +106,57 @@ export function SettingsPage() {
   const toolStatus = (key: keyof ToolPathOverrides) => {
     const id = key === "sevenZip" ? "sevenZip" : key;
     return tools.find((t) => t.id === id)?.status ?? null;
+  };
+
+  // ---- کنش‌های API key — مستقل از save عمومی تنظیمات ----
+
+  const refreshKeyStatus = async () => {
+    try {
+      setKeyStored(await api.hasSubsourceApiKey());
+    } catch (e) {
+      setKeyStored(false);
+      setKeyMessage({ tone: "danger", text: `بررسی وضعیت کلید ناموفق بود: ${String(e)}` });
+    }
+  };
+
+  const saveKey = async () => {
+    const value = keyInput.trim();
+    if (!value) {
+      setKeyMessage({ tone: "danger", text: "مقدار API key خالی است." });
+      return;
+    }
+    setKeyBusy("save");
+    setKeyMessage(null);
+    try {
+      await api.setSubsourceApiKey(value);
+      setKeyInput("");
+      await refreshKeyStatus();
+      setKeyMessage({ tone: "success", text: "API key در Credential Manager ذخیره شد." });
+    } catch (e) {
+      setKeyMessage({ tone: "danger", text: `ذخیرهٔ API key ناموفق بود: ${String(e)}` });
+    } finally {
+      setKeyBusy(null);
+    }
+  };
+
+  const deleteKey = async () => {
+    const ok = await ask(
+      "کلید ذخیره‌شدهٔ SubSource حذف شود؟\n\nبرای دانلود بعدی باید دوباره کلید وارد کنید. خود کلید هرگز نمایش داده نمی‌شود.",
+      { title: "حذف SubSource API key", kind: "warning" },
+    );
+    if (!ok) return;
+    setKeyBusy("delete");
+    setKeyMessage(null);
+    try {
+      await api.deleteSubsourceApiKey();
+      setKeyInput("");
+      await refreshKeyStatus();
+      setKeyMessage({ tone: "success", text: "API key از Credential Manager حذف شد." });
+    } catch (e) {
+      setKeyMessage({ tone: "danger", text: `حذف API key ناموفق بود: ${String(e)}` });
+    } finally {
+      setKeyBusy(null);
+    }
   };
 
   return (
@@ -289,6 +367,74 @@ export function SettingsPage() {
             در شروع اجرا و با دکمهٔ «بررسی دوباره»، سلامت ابزارها آزموده می‌شود (اجرای
             <span dir="ltr" className="mx-1 font-mono">--version/--help</span>).
           </p>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={KeyRound} title="SubSource API Key" />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-40 shrink-0 text-sm text-ink-2">وضعیت کلید</span>
+            {keyStored === null ? (
+              <Badge tone="warn">در حال بررسی…</Badge>
+            ) : keyStored ? (
+              <Badge tone="success">ذخیره‌شده در Credential Manager</Badge>
+            ) : (
+              <Badge tone="warn">ذخیره نشده</Badge>
+            )}
+          </div>
+          <p className="text-xs text-ink-3">
+            این وضعیت فقط یعنی کلیدی روی همین سیستم ذخیره شده است؛ معتبر بودن آن هنگام دانلود توسط
+            SubSource بررسی می‌شود. خود کلید هرگز نمایش داده نمی‌شود و در settings.json نوشته نمی‌شود.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-40 shrink-0 text-sm text-ink-2">کلید جدید</span>
+            <input
+              type="password"
+              dir="ltr"
+              autoComplete="new-password"
+              value={keyInput}
+              onChange={(e) => {
+                setKeyInput(e.target.value);
+                setKeyMessage(null);
+              }}
+              placeholder="API key را اینجا وارد کنید…"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-start font-mono text-xs outline-none focus:border-accent"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              onClick={saveKey}
+              loading={keyBusy === "save"}
+              disabled={keyBusy !== null || !keyInput.trim()}
+            >
+              <Save className="size-4" />
+              ذخیره کلید
+            </Button>
+            <Button
+              variant="danger"
+              onClick={deleteKey}
+              loading={keyBusy === "delete"}
+              disabled={keyBusy !== null || keyStored !== true}
+              title="حذف کلید ذخیره‌شده"
+            >
+              <Trash2 className="size-4" />
+              حذف کلید
+            </Button>
+          </div>
+          {keyMessage && (
+            <div
+              className={`flex items-center justify-between gap-3 rounded-lg px-4 py-3 text-sm ${
+                keyMessage.tone === "success"
+                  ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border border-red-500/30 bg-red-500/10 text-red-300"
+              }`}
+            >
+              <span>{keyMessage.text}</span>
+              <button onClick={() => setKeyMessage(null)}>✕</button>
+            </div>
+          )}
         </div>
       </Card>
 

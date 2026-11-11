@@ -3,6 +3,7 @@
 pub mod logs;
 pub mod media;
 pub mod scan;
+pub mod secrets;
 pub mod settings;
 pub mod subsource;
 pub mod subtitle;

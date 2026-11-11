@@ -23,6 +23,13 @@ export const api = {
   saveSettings: (settings: Settings) =>
     invoke<Settings>("save_settings", { settings }),
 
+  // ---- مدیریت امن SubSource API key — فقط Credential Manager؛
+  // مقدار واقعی کلید هرگز به فرانت برگردانده نمی‌شود، فقط وضعیت boolean ----
+  setSubsourceApiKey: (apiKey: string) =>
+    invoke<void>("set_subsource_api_key", { apiKey }),
+  hasSubsourceApiKey: () => invoke<boolean>("has_subsource_api_key"),
+  deleteSubsourceApiKey: () => invoke<void>("delete_subsource_api_key"),
+
   detectTools: () => invoke<ToolInfo[]>("detect_tools"),
   getLogs: (limit = 300) => invoke<LogEntry[]>("get_logs", { limit }),
 
