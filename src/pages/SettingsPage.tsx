@@ -14,6 +14,10 @@ const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }
   { key: "ffsubsync", label: "FFsubsync (ffs.exe)", hint: "همگام‌سازی (فاز ۴)" },
 ];
 
+/** نتیجهٔ بازخوانی وضعیت کلید — همان چیزی که واقعاً دیده شد، نه صرفاً «درخواست موفق بود».
+ * خواندنِ موفقِ متناقض هم stored/missing برمی‌گرداند، نه unknown. */
+type KeyStatusRefresh = { state: "stored" | "missing" | "unknown"; error: string | null };
+
 export function SettingsPage() {
   const { settings, reloadSettings, tools, refreshTools, toolsLoading } = useAppData();
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -117,16 +121,18 @@ export function SettingsPage() {
 
   // ---- کنش‌های API key — مستقل از save عمومی تنظیمات ----
 
-  /** بازخوانی وضعیت کلید؛ verified=false یعنی خواندن ناموفق بود و وضعیت «نامشخص» می‌ماند.
-   * پیام را فراخواننده می‌سازد تا نتیجهٔ خودش (ذخیره/حذف موفق) با خطای refresh ترکیب شود. */
-  const refreshKeyStatus = async (): Promise<{ verified: boolean; error: string | null }> => {
+  /** بازخوانی وضعیت کلید — خروجی همان وضعیت مشاهده‌شده است:
+   * «stored»/«missing» پس از خواندن موفق (هرچه بود، حتی اگر با کنش قبلی متناقض باشد)،
+   * «unknown» فقط پس از خطای خواندن. بج از همین نتیجه پیروی می‌کند. */
+  const refreshKeyStatus = async (): Promise<KeyStatusRefresh> => {
     try {
       const stored = await api.hasSubsourceApiKey();
-      setKeyStatus(stored ? "stored" : "missing");
-      return { verified: true, error: null };
+      const state = stored ? "stored" : "missing";
+      setKeyStatus(state);
+      return { state, error: null };
     } catch (e) {
       setKeyStatus("unknown");
-      return { verified: false, error: String(e) };
+      return { state: "unknown", error: String(e) };
     }
   };
 
@@ -141,17 +147,22 @@ export function SettingsPage() {
     try {
       await api.setSubsourceApiKey(value);
       setKeyInput("");
-      // نتیجهٔ خود ذخیره از بازخوانی وضعیت جدا گزارش می‌شود تا خطای بررسی
-      // هرگز با پیام موفقیت جایگزین نشود.
-      const { verified, error } = await refreshKeyStatus();
-      setKeyMessage(
-        verified
-          ? { tone: "success", text: "API key در Credential Manager ذخیره شد." }
-          : {
-              tone: "danger",
-              text: `ذخیرهٔ API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${error ?? ""}`,
-            },
-      );
+      // نتیجهٔ خود ذخیره از بازخوانی وضعیت جدا گزارش می‌شود — حتی خواندنِ
+      // موفقِ متناقض، پیام موفقیت بی‌قید نمی‌سازد.
+      const refresh = await refreshKeyStatus();
+      if (refresh.state === "stored") {
+        setKeyMessage({ tone: "success", text: "API key در Credential Manager ذخیره شد." });
+      } else if (refresh.state === "missing") {
+        setKeyMessage({
+          tone: "danger",
+          text: "ذخیرهٔ API key انجام شد، اما بررسی بلافاصلهٔ وضعیت نشان می‌دهد کلید ذخیره نشده است — لطفاً دوباره تلاش کنید.",
+        });
+      } else {
+        setKeyMessage({
+          tone: "danger",
+          text: `ذخیرهٔ API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${refresh.error ?? ""}`,
+        });
+      }
     } catch (e) {
       setKeyMessage({ tone: "danger", text: `ذخیرهٔ API key ناموفق بود: ${String(e)}` });
     } finally {
@@ -170,15 +181,20 @@ export function SettingsPage() {
     try {
       await api.deleteSubsourceApiKey();
       setKeyInput("");
-      const { verified, error } = await refreshKeyStatus();
-      setKeyMessage(
-        verified
-          ? { tone: "success", text: "API key از Credential Manager حذف شد." }
-          : {
-              tone: "danger",
-              text: `حذف API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${error ?? ""}`,
-            },
-      );
+      const refresh = await refreshKeyStatus();
+      if (refresh.state === "missing") {
+        setKeyMessage({ tone: "success", text: "API key از Credential Manager حذف شد." });
+      } else if (refresh.state === "stored") {
+        setKeyMessage({
+          tone: "danger",
+          text: "حذف API key انجام شد، اما بررسی بلافاصلهٔ وضعیت همچنان کلید ذخیره‌شده‌ای می‌بیند — ظاهراً حذف کامل نشده است.",
+        });
+      } else {
+        setKeyMessage({
+          tone: "danger",
+          text: `حذف API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${refresh.error ?? ""}`,
+        });
+      }
     } catch (e) {
       setKeyMessage({ tone: "danger", text: `حذف API key ناموفق بود: ${String(e)}` });
     } finally {
