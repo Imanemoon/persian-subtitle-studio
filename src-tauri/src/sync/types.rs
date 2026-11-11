@@ -1,0 +1,142 @@
+//! انواع عمومی آداپتور FFsubsync — کاملاً مستقل از Tauri.
+//!
+//! این ماژول فقط هستهٔ اجراست: ورودی/خروجی ساختاریافته می‌گیرد و کاندیدای
+//! موقتِ سینک‌شده را برای مرحلهٔ جانمایی بعدی (pipeline) برمی‌گرداند. هیچ
+//! جانمایی کنار ویدیو، هیچ worker pool و هیچ وابستگی به AppHandle/State
+//! اینجا وجود ندارد.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::settings::ProcessingSettings;
+
+/// markerهای لاگ ffsubsync 0.5.1 (تأییدشده از سورس نصب‌شده) — نسخه‌محور.
+/// اگر نسخه‌ای این متن‌ها را عوض کند، طبقه‌بندی fail-closed می‌ماند:
+/// بدون marker آفست، هیچ خروجی‌ای «سینک‌شده» شمرده نمی‌شود.
+pub const LOW_QUALITY_MARKER: &str = "leaving subtitles unmodified";
+pub const OFFSET_MARKER: &str = "offset seconds:";
+
+/// سقف کاراکترهای diagnostic در خروجی — متن خام فرایند هرگز کامل به UI نمی‌رسد.
+pub const DIAGNOSTIC_TAIL_CHARS: usize = 2000;
+
+/// سقف بایت‌های ثبت‌شده از هر pipe (آخرین بخش نگه داشته می‌شود).
+pub(crate) const CAPTURE_CAP_BYTES: usize = 128 * 1024;
+
+/// تنظیمات اجرای سینک — قرینهٔ `ProcessingSettings`.
+/// (`sync_workers` در این سطح معنا ندارد؛ تعداد فرایندهای موازی را
+/// pipeline آینده کنترل می‌کند و هر فرایند همیشه `--parallel-workers 1` می‌گیرد.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConfig {
+    pub multi_segment: bool,
+    pub segment_count: u32,
+    pub skip_intro_outro: bool,
+    pub skip_sync_on_low_quality: bool,
+}
+
+impl SyncConfig {
+    /// مقدار قطعیِ امن برای تعداد segmentها (تنظیمات sanitized کلامپ شده؛ دوباره محک می‌زنیم).
+    pub(crate) fn effective_segment_count(&self) -> u32 {
+        self.segment_count.max(1)
+    }
+}
+
+impl From<&ProcessingSettings> for SyncConfig {
+    fn from(settings: &ProcessingSettings) -> Self {
+        SyncConfig {
+            multi_segment: settings.multi_segment,
+            segment_count: settings.segment_count,
+            skip_intro_outro: settings.skip_intro_outro,
+            skip_sync_on_low_quality: settings.skip_sync_on_low_quality,
+        }
+    }
+}
+
+/// درخواست اجرای سینک برای یک ویدیو — همهٔ مسیرها صریح و از قبل resolve‌شده.
+/// هیچ مقدار secret (مثل SubSource API key) در این ساختار جایی ندارد.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRequest {
+    /// ویدیوی مرجع (صوتی/VAD) — فقط خوانده می‌شود.
+    pub video_path: PathBuf,
+    /// زیرنویس فارسیِ از پیش اعتبارسنجی‌شده — هرگز تغییر نمی‌کند.
+    pub subtitle_path: PathBuf,
+    /// مسیر اجرایی ffs (از resolver ابزارها) — مستقیم اجرا می‌شود، بدون shell.
+    pub ffsubsync_path: PathBuf,
+    /// مسیر FFmpeg برای `--ffmpeg-path`؛ اگر None باشد ffsubsync از PATH می‌خواند.
+    pub ffmpeg_path: Option<PathBuf>,
+    pub config: SyncConfig,
+    /// ریشهٔ ساخت workspace موقت؛ None = پوشهٔ temp سیستم.
+    pub workspace_root: Option<PathBuf>,
+}
+
+/// وضعیت نهایی یک اجرا — fail-closed: بدون تأیید marker آفست + خروجی معتبر فارسی،
+/// هیچ اجرایی «سینک‌شده» شمرده نمی‌شود.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncStatus {
+    /// سینک تأیید شد؛ کاندیدای موقت معتبر در `output_path` برای جانمایی بعدی.
+    Synced,
+    /// کیفیت هم‌ترازی پایین بود — خروجی unmodified دور ریخته شد و ورودی دست‌نخورده ماند.
+    UnchangedLowQuality,
+    /// توسط کاربر لغو شد؛ هیچ کاندیدایی باقی نمی‌ماند.
+    Cancelled,
+    /// ورودی نامعتبر (مسیر/فرمت/محتوا) — فرایند اصلاً اجرا نشد.
+    InvalidInput,
+    /// ابزار (ffs یا ffmpeg) مسیر معتبری نداشت.
+    ToolMissing,
+    /// فرایند اجرا نشد یا با کد خروج غیرصفر خاتمه یافت.
+    ToolExecutionFailed,
+    /// کد خروج صفر بود اما marker آفست پیدا نشد — نتیجهٔ سینک نامشخص.
+    UnknownOutcome,
+    /// خروجی ساخته شد اما معتبر/فارسی نبود — دور ریخته شد.
+    OutputValidationFailed,
+    /// شکست داخلی (workspace/IO) که به خود ابزار مربوط نیست.
+    Failed,
+}
+
+/// نتیجهٔ ساختاریافتهٔ یک اجرا — برای pipeline/رویدادها قابل serialize.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncOutcome {
+    pub status: SyncStatus,
+    /// فقط برای `Synced` — مسیر کاندیدای تأییدشده داخل workspace موقت.
+    pub output_path: Option<PathBuf>,
+    /// فقط برای `Synced` — آفست گزارش‌شدهٔ ffsubsync (ثانیه) اگر از لاگ قابل استخراج بود.
+    pub offset_seconds: Option<f64>,
+    /// هشدارها — مثلاً از دست رفتن استایل ASS/SSA در تبدیل به SRT.
+    pub warnings: Vec<String>,
+    /// تشخیص کوتاه و محدودشده (tail لاگ) — برای لاگ/عیب‌یابی، نه نمایش کامل.
+    pub diagnostic: String,
+}
+
+impl SyncOutcome {
+    pub(crate) fn bare(status: SyncStatus, diagnostic: impl Into<String>) -> Self {
+        SyncOutcome {
+            status,
+            output_path: None,
+            offset_seconds: None,
+            warnings: Vec::new(),
+            diagnostic: diagnostic.into(),
+        }
+    }
+}
+
+/// مراحل صادقانهٔ اجرا — هیچ درصدی وجود ندارد؛ ffsubsync پیشرفت درصدی معتبری نمی‌دهد.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncStage {
+    Validating,
+    Preparing,
+    Running,
+    Verifying,
+}
+
+/// رخداد پیشرفت — فقط مراحل واقعی و پیام متنی.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncProgress {
+    pub stage: SyncStage,
+    pub message: String,
+}

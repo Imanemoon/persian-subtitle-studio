@@ -9,6 +9,7 @@ pub mod settings;
 pub mod state;
 pub mod subsource;
 pub mod subtitle;
+pub mod sync;
 pub mod tools;
 
 pub mod archive;
