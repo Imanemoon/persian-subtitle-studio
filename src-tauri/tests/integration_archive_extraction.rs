@@ -408,6 +408,10 @@ fn strict_episode_matching_forms() {
         // نشانگر بازهٔ خراب/خارج از پشتیبانی نباید به Single تبدیل شود
         ("Show.S01E01.mkv", "Show.S01E01-E1000.fa.srt", false),
         ("Show.S01E01.mkv", "Show.S01E01-E02E03.fa.srt", false),
+        // نشانگر E ناقص هم نباید تطبیق دهد
+        ("Show.S01E01.mkv", "Show.S01E01-E.fa.srt", false),
+        ("Show.S01E01.mkv", "Show.S01E01-12E.fa.srt", false),
+        ("Show.S01E01E02.mkv", "Show.S01E01E02-E.fa.srt", false),
     ];
 
     for (idx, (video_name, member_path, should_match)) in cases.iter().enumerate() {

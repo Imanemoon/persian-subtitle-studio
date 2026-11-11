@@ -45,6 +45,12 @@ static RANGE_CONTINUATION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*(e?)(\d{1,3})").unwrap()
 });
 
+// نشانگر `E` ناقص پس از جداکنندهٔ بازه: S01E01-E / S01E01-E.fa
+// اگر بعد از `E` حرف بیاید (مثل `-Extended`) متن عنوان است، نه نشانگر ناقص.
+static DANGLING_E_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*e(?:$|[^\p{L}\p{N}])").unwrap()
+});
+
 // نام پوشه فصل: "Season 02" / "S02" / "Season 2"
 static SEASON_DIR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(?:season|s)[\s._\-]*(\d{1,2})$").unwrap());
@@ -155,7 +161,11 @@ enum RangeContinuation {
 /// تگ‌های کیفیت (`-720p`، `-1080i`) بازه نیستند.
 fn range_continuation(text: &str) -> RangeContinuation {
     let Some(c) = RANGE_CONTINUATION_RE.captures(text) else {
-        return RangeContinuation::NoRange;
+        return if DANGLING_E_MARKER_RE.is_match(text) {
+            RangeContinuation::Unsupported
+        } else {
+            RangeContinuation::NoRange
+        };
     };
     let Some(digits) = c.get(2) else {
         return RangeContinuation::NoRange;
@@ -188,14 +198,18 @@ fn range_continuation(text: &str) -> RangeContinuation {
     match after_full {
         None => {}
         Some(ch) if ch.is_ascii_alphabetic() => {
-            // `-E02E03`: بازه به‌همراه زنجیرهٔ صریح — ترکیب پشتیبانی‌نشده.
-            let after_ch = &text[full_end + ch.len_utf8()..];
-            if ch.eq_ignore_ascii_case(&'e')
-                && after_ch.chars().next().is_some_and(|d| d.is_ascii_digit())
-            {
-                return RangeContinuation::Unsupported;
+            if ch.eq_ignore_ascii_case(&'e') {
+                let after_ch = text[full_end + ch.len_utf8()..].chars().next();
+                let incomplete_or_mixed = match after_ch {
+                    None => true,
+                    Some(d) => d.is_ascii_digit() || !d.is_alphanumeric(),
+                };
+                // `-E02E03` (مخلوط) یا `-12E` / `-12E.fa` (ناقص) پشتیبانی نمی‌شود.
+                if incomplete_or_mixed {
+                    return RangeContinuation::Unsupported;
+                }
             }
-            // حروف دیگر (مثل `-10bit` یا `-x264`) ادامهٔ بازه نیستند.
+            // حروف دیگر (مثل `-10bit`، `-x264` یا `-Extended`) ادامهٔ بازه نیستند.
             return RangeContinuation::NoRange;
         }
         Some(_) => {}
@@ -590,6 +604,25 @@ mod tests {
         // ترکیب بازه و زنجیرهٔ صریح پشتیبانی نمی‌شود.
         assert_eq!(parse_episode_identity("Show.S01E01-E02E03"), None);
         assert_eq!(parse_episode_identity("Show.S01E01-12E13"), None);
+        // نشانگر صریح E بدون شمارهٔ قسمت نباید به Single/Sequence تبدیل شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-12E"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01E02-E"), None);
+        // پسوند متنی معتبر بعد از قسمت نباید نشانگر ناقص تلقی شود.
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-Extended"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01E02-Extended"),
+            Some(EpisodeIdentity::Sequence {
+                season: 1,
+                episodes: vec![1, 2]
+            })
+        );
         // کنترل‌ها: بازهٔ معتبر و تگ کیفیت باید مثل قبل بمانند.
         assert_eq!(
             parse_episode_identity("Show.S01E01-12"),
