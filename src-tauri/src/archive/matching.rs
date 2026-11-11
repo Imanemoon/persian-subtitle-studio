@@ -5,7 +5,10 @@
 //! - فصل جداگانه بررسی می‌شود.
 //! - `2x05` پشتیبانی می‌شود.
 //! - زیرنویس چندقسمتی (`S01E01-12`، `S01E01E02`) هرگز به یک قسمت تکی
-//!   نسبت داده نمی‌شود؛ فقط با ویدیوی همان بازهٔ دقیق تطبیق می‌خورد.
+//!   نسبت داده نمی‌شود؛ فقط با ویدیوی همان هویت دقیق تطبیق می‌خورد.
+//! - بازهٔ پیوسته (`S01E01-12`) و فهرست صریح (`S01E01E12`) هویت‌های جدا هستند
+//!   و هرگز با هم تطبیق نمی‌خورند؛ زنجیره‌های سه‌قسمتی و بلندتر هم کامل مقایسه
+//!   می‌شوند و به دو قسمت کوتاه نمی‌شوند.
 //! - برای فیلم (بدون هویت قسمت)، تطبیق پیشوندی سختگیرانهٔ نام انجام می‌شود.
 
 use std::path::Path;
@@ -55,7 +58,9 @@ pub fn member_matches_video(key: &VideoKey, member_path: &str) -> bool {
     }
 
     match key {
-        VideoKey::Episode(identity) => parse_episode_identity(&stem) == Some(*identity),
+        VideoKey::Episode(identity) => {
+            parse_episode_identity(&stem).is_some_and(|parsed| &parsed == identity)
+        }
         VideoKey::Movie { stem: video_stem } => {
             // زیرنویس دارای هویت قسمت برای فیلم پذیرفته نمی‌شود.
             parse_episode_identity(&stem).is_none() && movie_stem_matches(&stem, video_stem)
@@ -162,6 +167,29 @@ mod tests {
         assert!(member_matches_video(&double, "Show.S01E01E02.fa.srt"));
         assert!(!member_matches_video(&double, "Show.S01E01.fa.srt"));
         assert!(!member_matches_video(&double, "Show.S01E01-03.fa.srt"));
+    }
+
+    #[test]
+    fn three_episode_sequences_are_never_truncated() {
+        let double = key("Show.S01E01E02.mkv");
+        assert!(!member_matches_video(&double, "Show.S01E01E02E03.fa.srt"));
+
+        let triple = key("Show.S01E01E02E03.mkv");
+        assert!(member_matches_video(&triple, "Show.S01E01E02E03.fa.srt"));
+        assert!(member_matches_video(&triple, "Show.S1E1E2E3.fa.srt"));
+        assert!(!member_matches_video(&triple, "Show.S01E01E02.fa.srt"));
+    }
+
+    #[test]
+    fn explicit_sequences_do_not_equal_continuous_ranges() {
+        let explicit = key("Show.S01E01E12.mkv");
+        assert!(!member_matches_video(&explicit, "Show.S01E01-12.fa.srt"));
+        assert!(member_matches_video(&explicit, "Show.S1E1E12.fa.srt"));
+
+        let range = key("Show.S01E01-12.mkv");
+        assert!(member_matches_video(&range, "Show.S1E1-12.fa.srt"));
+        assert!(member_matches_video(&range, "Show.S01E01-E12.fa.srt"));
+        assert!(!member_matches_video(&range, "Show.S01E01E12.fa.srt"));
     }
 
     #[test]

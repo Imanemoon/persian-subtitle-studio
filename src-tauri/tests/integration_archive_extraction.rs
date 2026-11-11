@@ -398,6 +398,13 @@ fn strict_episode_matching_forms() {
         ("Show.S01E01.mkv", "Show.S01E01E02.fa.srt", false),
         ("Show.S01E01E02.mkv", "Show.S01E01E02.fa.srt", true),
         ("Show.S01E01E02.mkv", "Show.S01E01-03.fa.srt", false),
+        // زنجیرهٔ سه‌قسمتی نباید به دو قسمت کوتاه شود
+        ("Show.S01E01E02.mkv", "Show.S01E01E02E03.fa.srt", false),
+        ("Show.S01E01E02E03.mkv", "Show.S01E01E02E03.fa.srt", true),
+        ("Show.S01E01E02E03.mkv", "Show.S1E1E2E3.fa.srt", true),
+        // فهرست صریح [1, 12] با بازهٔ پیوستهٔ 1..12 یکی نیست
+        ("Show.S01E01E12.mkv", "Show.S01E01-12.fa.srt", false),
+        ("Show.S01E01-12.mkv", "Show.S01E01-E12.fa.srt", true),
     ];
 
     for (idx, (video_name, member_path, should_match)) in cases.iter().enumerate() {
