@@ -34,16 +34,30 @@ pub fn is_user_excluded(name: &str, excluded: &[String]) -> bool {
     excluded.iter().any(|e| e.trim().to_lowercase() == lower)
 }
 
-/// آیا نام پوشه باید از اسکن مستثنا شود؟
-pub fn is_excluded_dir_name(name: &str, excluded: &[String]) -> bool {
+/// دلیل ممنوعیتِ داخلیِ یک نام پوشه — مخفی، staging یا سیستمی محافظت‌شده.
+/// مستثناهای پیکربندی‌شدهٔ کاربر اینجا نقشی ندارند: انتخاب صریح فایل فقط همان
+/// دسته را می‌تواند بازنویسی کند، نه ممنوعیت‌های داخلی را.
+fn builtin_exclusion_reason(name: &str) -> Option<&'static str> {
     let lower = name.to_lowercase();
-    if lower.starts_with('.') || lower.starts_with(STAGING_PREFIX) {
-        return true;
+    if lower.starts_with('.') {
+        return Some(if lower == "." || lower == ".." {
+            "مسیر باید نرمال‌شده باشد و «.» یا «..» نداشته باشد"
+        } else {
+            "مسیر درون پوشهٔ مخفی است"
+        });
+    }
+    if lower.starts_with(STAGING_PREFIX) {
+        return Some("مسیر درون پوشهٔ کاری staging است");
     }
     if ALWAYS_EXCLUDED_DIRS.contains(&lower.as_str()) {
-        return true;
+        return Some("مسیر درون پوشهٔ سیستمی محافظت‌شده است");
     }
-    is_user_excluded(name, excluded)
+    None
+}
+
+/// آیا نام پوشه باید از اسکن مستثنا شود؟
+pub fn is_excluded_dir_name(name: &str, excluded: &[String]) -> bool {
+    builtin_exclusion_reason(name).is_some() || is_user_excluded(name, excluded)
 }
 
 /// اگر مسیر ریشه (یا والدین آن) درون یکی از پوشه‌های مستثنا باشد، نام آن را برمی‌گرداند.
@@ -244,8 +258,9 @@ fn selected_scan_progress(summary: &ScanSummary, current: &str) -> ScanProgress 
 ///
 /// مسیرهای نامعتبر تک‌به‌تک در `warnings` گزارش می‌شوند (دور انداخته نمی‌شوند).
 /// پوشه‌های مستثنای پیکربندی‌شدهٔ کاربر برای انتخاب صریح پذیرفته می‌شوند (فقط در
-/// `summary.excluded_dir_hits` شمرده می‌شوند)، اما staging (`_subsource_*`) و
-/// پوشه‌های سیستمی محافظت‌شده در هر عمقی رد می‌شوند.
+/// `summary.excluded_dir_hits` شمرده می‌شوند)، اما ممنوعیت‌های داخلی — پوشه‌های
+/// مخفی (نقطه‌دار)، staging (`_subsource_*`) و پوشه‌های سیستمی محافظت‌شده — در
+/// هر عمقی رد می‌شوند. نام خود فایل نقطه‌دار باشد، ربطی به این ممنوعیت ندارد.
 /// هیچ تغییری روی دیسک داده نمی‌شود؛ فقط خواندن متادیتا.
 pub fn scan_selected_files<F: FnMut(ScanProgress)>(
     paths: &[String],
@@ -325,18 +340,15 @@ fn validate_selected_path(path: &Path) -> Result<(), String> {
         return Err("مسیر مطلق نیست".into());
     }
 
-    // اجزای پوشه‌ای (خود فایل نه) در هر عمقی باید خارج از staging و
-    // پوشه‌های سیستمی محافظت‌شده باشند؛ مستثناهای کاربر اینجا نادیده گرفته می‌شوند.
-    for anc in path.ancestors().skip(1) {
-        let Some(name) = anc.file_name() else {
-            continue;
-        };
-        let lower = name.to_string_lossy().to_lowercase();
-        if lower.starts_with(STAGING_PREFIX) {
-            return Err("مسیر درون پوشهٔ کاری staging است".into());
-        }
-        if ALWAYS_EXCLUDED_DIRS.contains(&lower.as_str()) {
-            return Err("مسیر درون پوشهٔ سیستمی محافظت‌شده است".into());
+    // اجزای پوشه‌ای — همهٔ اجزای والد، بدون خود فایل — در هر عمقی باید خارج از
+    // ممنوعیت‌های داخلی باشند: پوشهٔ مخفی، staging و پوشه‌های سیستمی. اجزای
+    // «.»/«..» هم ممنوع‌اند (مسیر باید نرمال‌شده باشد). روی components کار
+    // می‌کنیم چون file_name برای مسیر منتهی به «..» مقدار None می‌دهد.
+    // مستثناهای پیکربندی‌شدهٔ کاربر اینجا معتبرند و فقط در مسیر پذیرش شمرده می‌شوند.
+    let parent = path.parent().unwrap_or(path);
+    for comp in parent.components() {
+        if let Some(reason) = builtin_exclusion_reason(&comp.as_os_str().to_string_lossy()) {
+            return Err(reason.into());
         }
     }
 
@@ -860,6 +872,67 @@ mod tests {
             "{:?}",
             out.warnings
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selected_video_in_hidden_parent_dir_is_rejected() {
+        let root = unique_temp_dir("sel-hidden");
+        let hidden = mkv(&root.join(".hidden"), "v.mkv");
+
+        let out = run_selected(&sel(&[hidden]));
+
+        assert!(out.entries.is_empty());
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains("پوشهٔ مخفی"), "{:?}", out.warnings);
+        assert_eq!(out.summary.video_count, 0);
+
+        // همان پوشه در اسکن پوشه نیز مستثنا می‌شود — رفتار پوشه دست‌نخورده
+        let cancel = AtomicBool::new(false);
+        let mut no_progress = |_p: ScanProgress| {};
+        let folder_out = scan_folder(&root, &[], &cancel, &mut no_progress);
+        assert_eq!(folder_out.summary.video_count, 0);
+        assert_eq!(folder_out.summary.excluded_dir_hits, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selected_dot_prefixed_filename_is_accepted_for_its_own_name() {
+        let root = unique_temp_dir("sel-dotfile");
+        // ممنوعیت فقط دربارهٔ پوشه‌های والد است؛ نام خود فایل نقطه‌دار مشکلی ندارد
+        let video = mkv(&root, ".video.mkv");
+
+        let out = run_selected(&sel(std::slice::from_ref(&video)));
+        assert_eq!(out.entries.len(), 1, "{:?}", out.warnings);
+        assert_eq!(out.entries[0].file_name, ".video.mkv");
+        assert!(out.warnings.is_empty());
+
+        // در اسکن پوشه هم فایل نقطه‌دار (برخلاف پوشهٔ نقطه‌دار) وارد نتیجه می‌شود
+        let cancel = AtomicBool::new(false);
+        let mut no_progress = |_p: ScanProgress| {};
+        let folder_out = scan_folder(&root, &[], &cancel, &mut no_progress);
+        assert_eq!(folder_out.summary.video_count, 1);
+        assert_eq!(folder_out.entries[0].file_name, ".video.mkv");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selected_parent_with_dotdot_component_is_rejected() {
+        let root = unique_temp_dir("sel-dotdot");
+        // فایل واقعی موجود است تا تنها دلیل رد شدن، جزء «..» باشد
+        let real = mkv(&root, "v.mkv");
+        assert!(real.is_file());
+        let path_text = root.join("sub").join("..").join("v.mkv");
+
+        let out = run_selected(&sel(&[path_text]));
+
+        assert!(out.entries.is_empty());
+        assert_eq!(out.warnings.len(), 1);
+        // پیش از هر فراخوانی fs رد می‌شود — مسیر با «..» هرگز پذیرفته نمی‌شود
+        assert!(out.warnings[0].contains("نرمال‌شده"), "{:?}", out.warnings);
 
         let _ = std::fs::remove_dir_all(&root);
     }
