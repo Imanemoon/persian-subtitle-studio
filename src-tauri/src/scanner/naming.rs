@@ -39,9 +39,10 @@ static EXPLICIT_EPISODE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^[\s._]*e(\d{1,3})").unwrap());
 
 // ادامهٔ بازه: S01E01-12 / S01E01-E12 / S01E01 to E12
-// مرز پایان بازه در `range_continuation` بررسی می‌شود تا `-720p` بازه تلقی نشود.
+// گروه ۱ وجود `E` صریح و گروه ۲ ارقام نقطهٔ پایانی را نگه می‌دارد.
+// مرز و تگ کیفیت در `range_continuation` بررسی می‌شوند.
 static RANGE_CONTINUATION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*e?(\d{1,3})").unwrap()
+    Regex::new(r"(?i)^[\s._\-]*(?:-|–|—|to\b|till\b)[\s._\-]*(e?)(\d{1,3})").unwrap()
 });
 
 // نام پوشه فصل: "Season 02" / "S02" / "Season 2"
@@ -141,28 +142,81 @@ fn episode_chain_item(text: &str) -> ChainItem {
     }
 }
 
+enum RangeContinuation {
+    NoRange,
+    Valid { episode: u32, next: usize },
+    Unsupported,
+}
+
 /// بازهٔ پیوسته را از ابتدای متن مصرف می‌کند.
 ///
-/// پس از شمارهٔ پایانی حرف/رقم مجاز نیست تا تگ‌هایی مثل `-720p` یا `-10bit`
-/// به‌اشتباه بازه تفسیر نشوند.
-fn range_continuation(text: &str) -> Option<(u32, usize)> {
-    let c = RANGE_CONTINUATION_RE.captures(text)?;
-    let digits = c.get(1)?;
-    if text[digits.end()..]
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric())
-    {
-        return None;
+/// سه حالت را از هم جدا می‌کند: نشانگر بازه وجود ندارد، بازهٔ معتبر است، یا
+/// نشانگر وجود دارد ولی نقطهٔ پایانی خارج از پشتیبانی/مخلوط با زنجیره است.
+/// تگ‌های کیفیت (`-720p`، `-1080i`) بازه نیستند.
+fn range_continuation(text: &str) -> RangeContinuation {
+    let Some(c) = RANGE_CONTINUATION_RE.captures(text) else {
+        return RangeContinuation::NoRange;
+    };
+    let Some(digits) = c.get(2) else {
+        return RangeContinuation::NoRange;
+    };
+    let explicit_episode = !c[1].is_empty();
+
+    // کل رشتهٔ رقمی پس از نشانگر خوانده می‌شود؛ `-1080p` پیش از بررسی سرریز
+    // باید به‌عنوان تگ کیفیت شناخته شود.
+    let mut full_end = digits.end();
+    for ch in text[full_end..].chars() {
+        if !ch.is_ascii_digit() {
+            break;
+        }
+        full_end += 1;
     }
-    let episode = digits.as_str().parse::<u32>().ok()?;
-    Some((episode, digits.end()))
+    let after_full = text[full_end..].chars().next();
+
+    if !explicit_episode
+        && after_full
+            .is_some_and(|ch| ch.eq_ignore_ascii_case(&'p') || ch.eq_ignore_ascii_case(&'i'))
+    {
+        return RangeContinuation::NoRange;
+    }
+
+    // نقطهٔ پایانی بیش از سه رقم (مثل `-E1000`) پشتیبانی نمی‌شود.
+    if full_end > digits.end() {
+        return RangeContinuation::Unsupported;
+    }
+
+    match after_full {
+        None => {}
+        Some(ch) if ch.is_ascii_alphabetic() => {
+            // `-E02E03`: بازه به‌همراه زنجیرهٔ صریح — ترکیب پشتیبانی‌نشده.
+            let after_ch = &text[full_end + ch.len_utf8()..];
+            if ch.eq_ignore_ascii_case(&'e')
+                && after_ch.chars().next().is_some_and(|d| d.is_ascii_digit())
+            {
+                return RangeContinuation::Unsupported;
+            }
+            // حروف دیگر (مثل `-10bit` یا `-x264`) ادامهٔ بازه نیستند.
+            return RangeContinuation::NoRange;
+        }
+        Some(_) => {}
+    }
+
+    let Ok(episode) = digits.as_str().parse::<u32>() else {
+        return RangeContinuation::Unsupported;
+    };
+    RangeContinuation::Valid {
+        episode,
+        next: digits.end(),
+    }
 }
 
 /// آیا پس از یک بازه، ادامهٔ قسمت دیگری مانده است؟ (فرم ترکیبی پشتیبانی نمی‌شود)
 fn has_dangling_episode(text: &str) -> bool {
     match episode_chain_item(text) {
-        ChainItem::Stop => range_continuation(text).is_some(),
+        ChainItem::Stop => matches!(
+            range_continuation(text),
+            RangeContinuation::Valid { .. } | RangeContinuation::Unsupported
+        ),
         ChainItem::Valid { .. } | ChainItem::Unsupported => true,
     }
 }
@@ -208,29 +262,36 @@ fn parse_identity_tail(
 
     if episodes.len() > 1 {
         // ترکیب زنجیرهٔ صریح و بازه پشتیبانی نمی‌شود؛ به‌جای نادیده‌گرفتن رد می‌شود.
-        if range_continuation(&name[pos..]).is_some() {
+        if !matches!(range_continuation(&name[pos..]), RangeContinuation::NoRange) {
             return None;
         }
         return Some(EpisodeIdentity::Sequence { season, episodes });
     }
 
-    if let Some((last, next)) = range_continuation(&name[pos..]) {
-        if has_dangling_episode(&name[pos + next..]) {
-            return None;
-        }
-        let start = first_episode.min(last);
-        let end = first_episode.max(last);
-        if start == end {
-            return Some(EpisodeIdentity::Single {
+    match range_continuation(&name[pos..]) {
+        RangeContinuation::NoRange => {}
+        RangeContinuation::Unsupported => return None,
+        RangeContinuation::Valid {
+            episode: last,
+            next,
+        } => {
+            if has_dangling_episode(&name[pos + next..]) {
+                return None;
+            }
+            let start = first_episode.min(last);
+            let end = first_episode.max(last);
+            if start == end {
+                return Some(EpisodeIdentity::Single {
+                    season,
+                    episode: start,
+                });
+            }
+            return Some(EpisodeIdentity::Range {
                 season,
-                episode: start,
+                episode_start: start,
+                episode_end: end,
             });
         }
-        return Some(EpisodeIdentity::Range {
-            season,
-            episode_start: start,
-            episode_end: end,
-        });
     }
 
     Some(EpisodeIdentity::Single {
@@ -517,6 +578,46 @@ mod tests {
             Some(EpisodeIdentity::Sequence {
                 season: 1,
                 episodes: vec![1, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_range_continuations_fail_closed() {
+        // نقطهٔ پایانی چهاررقمی یا خارج از پشتیبانی نباید به Single تبدیل شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E1000"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-1000"), None);
+        // ترکیب بازه و زنجیرهٔ صریح پشتیبانی نمی‌شود.
+        assert_eq!(parse_episode_identity("Show.S01E01-E02E03"), None);
+        assert_eq!(parse_episode_identity("Show.S01E01-12E13"), None);
+        // کنترل‌ها: بازهٔ معتبر و تگ کیفیت باید مثل قبل بمانند.
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-12"),
+            Some(EpisodeIdentity::Range {
+                season: 1,
+                episode_start: 1,
+                episode_end: 12
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-720p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-1080p"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
+            })
+        );
+        assert_eq!(
+            parse_episode_identity("Show.S01E01-10bit"),
+            Some(EpisodeIdentity::Single {
+                season: 1,
+                episode: 1
             })
         );
     }

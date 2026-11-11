@@ -170,6 +170,13 @@ mod tests {
     }
 
     #[test]
+    fn malformed_range_subtitles_do_not_match_single_episode_video() {
+        let k = key("Show.S01E01.mkv");
+        assert!(!member_matches_video(&k, "Show.S01E01-E1000.fa.srt"));
+        assert!(!member_matches_video(&k, "Show.S01E01-E02E03.fa.srt"));
+    }
+
+    #[test]
     fn three_episode_sequences_are_never_truncated() {
         let double = key("Show.S01E01E02.mkv");
         assert!(!member_matches_video(&double, "Show.S01E01E02E03.fa.srt"));

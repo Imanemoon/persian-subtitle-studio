@@ -405,6 +405,9 @@ fn strict_episode_matching_forms() {
         // فهرست صریح [1, 12] با بازهٔ پیوستهٔ 1..12 یکی نیست
         ("Show.S01E01E12.mkv", "Show.S01E01-12.fa.srt", false),
         ("Show.S01E01-12.mkv", "Show.S01E01-E12.fa.srt", true),
+        // نشانگر بازهٔ خراب/خارج از پشتیبانی نباید به Single تبدیل شود
+        ("Show.S01E01.mkv", "Show.S01E01-E1000.fa.srt", false),
+        ("Show.S01E01.mkv", "Show.S01E01-E02E03.fa.srt", false),
     ];
 
     for (idx, (video_name, member_path, should_match)) in cases.iter().enumerate() {
