@@ -2,12 +2,15 @@
 
 pub mod naming;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, UNIX_EPOCH};
 
 use walkdir::WalkDir;
+
+use serde::{Deserialize, Serialize};
 
 use crate::archive::listing::is_link_or_reparse;
 use crate::models::{ScanProgress, ScanSummary, SubtitleFileInfo, VideoEntry};
@@ -22,10 +25,74 @@ pub const ALWAYS_EXCLUDED_DIRS: &[&str] = &["$recycle.bin", "system volume infor
 /// پیشوند پوشه‌های کاری موقت که باید از اسکن مستثنا باشند.
 const STAGING_PREFIX: &str = "_subsource_";
 
+/// نوع typedِ رد شدنِ یک مسیرِ «انتخاب‌شدهٔ صریح» — قرارداد پایدار برای pipeline/UI.
+/// پیام انسانی هر نوع در `warnings` حفظ می‌شود؛ این enum فقط معنا را حمل می‌کند.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectionIssueKind {
+    /// متن مسیر خالی بود
+    EmptyPath,
+    /// مسیر مطلق نبود
+    RelativePath,
+    /// جزء ممنوع داخلی در والدین — مخفی/نقطه‌دار یا نرمال‌نشده، staging، پوشهٔ سیستمی
+    ForbiddenComponent,
+    /// یکی از پوشه‌های والد روی دیسک نیست
+    ParentMissing,
+    /// یکی از پوشه‌های والد symlink یا Reparse Point است
+    ParentLink,
+    /// فایل انتخاب‌شده روی دیسک نیست
+    MissingFile,
+    /// خود فایل انتخاب‌شده symlink یا Reparse Point است
+    SelectedLink,
+    /// مسیر پوشه است یا فایل معمولی نیست
+    NotRegularFile,
+    /// پسوند در فهرست ویدیوهای پشتیبانی‌شده نیست
+    UnsupportedExtension,
+    /// همان مسیر قبلاً در همین انتخاب ثبت شده (حساس به بزرگی/کوچکی ویندوز)
+    Duplicate,
+}
+
+/// یک مسیر انتخاب‌شدهٔ ردشده — مسیر ورودی + نوع پایدار + پیام انسانی
+/// (پیام همان است که در `warnings` با قالب `<path>: <reason>` می‌آید).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionIssue {
+    pub path: String,
+    pub kind: SelectionIssueKind,
+    pub detail: String,
+}
+
+/// نتیجهٔ داخلی اعتبارسنجی یک مسیر انتخابی — kind پایدار + پیام انسانی.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectionRejection {
+    kind: SelectionIssueKind,
+    message: Cow<'static, str>,
+}
+
+impl SelectionRejection {
+    const fn new(kind: SelectionIssueKind, message: &'static str) -> Self {
+        SelectionRejection {
+            kind,
+            message: Cow::Borrowed(message),
+        }
+    }
+
+    /// برای پیام‌های دارای جزئیات متغیر (مثل نام پوشهٔ دارای پیوند)
+    fn formatted(kind: SelectionIssueKind, message: String) -> Self {
+        SelectionRejection {
+            kind,
+            message: Cow::Owned(message),
+        }
+    }
+}
+
 pub struct ScanOutput {
     pub entries: Vec<VideoEntry>,
     pub summary: ScanSummary,
     pub warnings: Vec<String>,
+    /// مسیرهای انتخاب‌شدهٔ ردشده به‌صورت ساختاریافته — فقط `scan_selected_files` پر می‌کند؛
+    /// `scan_folder` همیشه خالی برمی‌گرداند.
+    pub issues: Vec<SelectionIssue>,
 }
 
 /// آیا نام پوشه در فهرست مستثناهای پیکربندی‌شدهٔ کاربر است؟
@@ -162,7 +229,24 @@ pub fn scan_folder<F: FnMut(ScanProgress)>(
         entries,
         summary,
         warnings,
+        issues: Vec::new(), // اسکن پوشه، مسیرِ «انتخاب‌شدهٔ صریح» ندارد
     }
+}
+
+/// ثبت یک ردشدگی انتخاب — warning انسانی و issue ساختاریافته از یک منبع واحد.
+fn record_selection_rejection(
+    warnings: &mut Vec<String>,
+    issues: &mut Vec<SelectionIssue>,
+    path_text: &str,
+    kind: SelectionIssueKind,
+    message: &str,
+) {
+    warnings.push(format!("{path_text}: {message}"));
+    issues.push(SelectionIssue {
+        path: path_text.to_string(),
+        kind,
+        detail: message.to_string(),
+    });
 }
 
 /// ساخت ورودی ویدیو از یک مسیر ویدیوی معتبر + به‌روزرسانی شمارنده‌های خلاصه.
@@ -276,6 +360,7 @@ pub fn scan_selected_files<F: FnMut(ScanProgress)>(
     };
     let mut entries: Vec<VideoEntry> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut issues: Vec<SelectionIssue> = Vec::new();
     let mut sub_cache: HashMap<PathBuf, Vec<SubtitleFileInfo>> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -289,15 +374,27 @@ pub fn scan_selected_files<F: FnMut(ScanProgress)>(
         let path_text = raw.trim().trim_matches('"');
         let path = Path::new(path_text);
 
-        if let Err(reason) = validate_selected_path(path) {
-            warnings.push(format!("{path_text}: {reason}"));
+        if let Err(rejection) = validate_selected_path(path) {
+            record_selection_rejection(
+                &mut warnings,
+                &mut issues,
+                path_text,
+                rejection.kind,
+                &rejection.message,
+            );
             on_progress(selected_scan_progress(&summary, path_text));
             continue;
         }
 
         let key = selected_path_key(path_text);
         if !seen.insert(key) {
-            warnings.push(format!("{path_text}: مسیر تکراری است"));
+            record_selection_rejection(
+                &mut warnings,
+                &mut issues,
+                path_text,
+                SelectionIssueKind::Duplicate,
+                "مسیر تکراری است",
+            );
             on_progress(selected_scan_progress(&summary, path_text));
             continue;
         }
@@ -328,16 +425,24 @@ pub fn scan_selected_files<F: FnMut(ScanProgress)>(
         entries,
         summary,
         warnings,
+        issues,
     }
 }
 
 /// اعتبارسنجی کامل یک مسیر انتخاب‌شدهٔ صریح — فقط خواندن، بدون هیچ تغییر روی دیسک.
-fn validate_selected_path(path: &Path) -> Result<(), String> {
+/// خروجی typed است: kind پایدار برای ساختار و پیام انسانی که عیناً در warnings می‌آید.
+fn validate_selected_path(path: &Path) -> Result<(), SelectionRejection> {
     if path.as_os_str().is_empty() {
-        return Err("مسیر خالی است".into());
+        return Err(SelectionRejection::new(
+            SelectionIssueKind::EmptyPath,
+            "مسیر خالی است",
+        ));
     }
     if !path.is_absolute() {
-        return Err("مسیر مطلق نیست".into());
+        return Err(SelectionRejection::new(
+            SelectionIssueKind::RelativePath,
+            "مسیر مطلق نیست",
+        ));
     }
 
     // اجزای پوشه‌ای — همهٔ اجزای والد، بدون خود فایل — در هر عمقی باید خارج از
@@ -348,7 +453,10 @@ fn validate_selected_path(path: &Path) -> Result<(), String> {
     let parent = path.parent().unwrap_or(path);
     for comp in parent.components() {
         if let Some(reason) = builtin_exclusion_reason(&comp.as_os_str().to_string_lossy()) {
-            return Err(reason.into());
+            return Err(SelectionRejection::new(
+                SelectionIssueKind::ForbiddenComponent,
+                reason,
+            ));
         }
     }
 
@@ -357,23 +465,36 @@ fn validate_selected_path(path: &Path) -> Result<(), String> {
         match std::fs::symlink_metadata(anc) {
             Ok(meta) => {
                 if is_link_or_reparse(&meta) {
-                    return Err(format!(
-                        "پوشهٔ «{}» پیوند نمادین یا Reparse Point است",
-                        anc.display()
+                    return Err(SelectionRejection::formatted(
+                        SelectionIssueKind::ParentLink,
+                        format!("پوشهٔ «{}» پیوند نمادین یا Reparse Point است", anc.display()),
                     ));
                 }
             }
-            Err(_) => return Err("مسیر روی دیسک پیدا نشد".into()),
+            Err(_) => {
+                return Err(SelectionRejection::new(
+                    SelectionIssueKind::ParentMissing,
+                    "مسیر روی دیسک پیدا نشد",
+                ))
+            }
         }
     }
 
     // خود فایل: موجود، پیوند/ری‌پارس نباشد، فایل معمولی باشد.
-    let meta = std::fs::symlink_metadata(path).map_err(|_| "فایل روی دیسک پیدا نشد".to_string())?;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| {
+        SelectionRejection::new(SelectionIssueKind::MissingFile, "فایل روی دیسک پیدا نشد")
+    })?;
     if is_link_or_reparse(&meta) {
-        return Err("پیوند نمادین یا Reparse Point پذیرفته نمی‌شود".into());
+        return Err(SelectionRejection::new(
+            SelectionIssueKind::SelectedLink,
+            "پیوند نمادین یا Reparse Point پذیرفته نمی‌شود",
+        ));
     }
     if !meta.is_file() {
-        return Err("مسیر یک پوشه است، نه فایل ویدیویی".into());
+        return Err(SelectionRejection::new(
+            SelectionIssueKind::NotRegularFile,
+            "مسیر یک پوشه است، نه فایل ویدیویی",
+        ));
     }
 
     let file_name = path
@@ -381,7 +502,10 @@ fn validate_selected_path(path: &Path) -> Result<(), String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     if !is_video_file(&file_name) {
-        return Err("فرمت ویدیویی پشتیبانی نمی‌شود".into());
+        return Err(SelectionRejection::new(
+            SelectionIssueKind::UnsupportedExtension,
+            "فرمت ویدیویی پشتیبانی نمی‌شود",
+        ));
     }
     Ok(())
 }
@@ -562,6 +686,8 @@ mod tests {
         // پوشه‌های مستثنا: Ted Lasso، _SubSource_Batch_abc، .hidden
         assert_eq!(out.summary.excluded_dir_hits, 3);
         assert_eq!(out.summary.parse_failed, 1); // Movie.2023
+                                                 // اسکن پوشه هرگز selection issue نمی‌سازد
+        assert!(out.issues.is_empty());
         assert_eq!(out.summary.with_any_sidecar, 3);
         assert_eq!(out.summary.with_fa_sidecar, 2);
 
@@ -695,6 +821,7 @@ mod tests {
         assert_eq!(out.summary.files_seen, 1);
         assert_eq!(out.summary.selected_files.len(), 1);
         assert!(out.warnings.is_empty());
+        assert!(out.issues.is_empty());
         assert!(!out.summary.cancelled);
 
         let _ = std::fs::remove_dir_all(&root);
@@ -721,6 +848,7 @@ mod tests {
         assert!(!got.iter().any(|p| p.contains("Decoy")));
         assert_eq!(out.summary.selected_files, got);
         assert!(out.warnings.is_empty());
+        assert!(out.issues.is_empty());
         // ریشهٔ فریبنده نباید پر شود — selected_files مرجع صادقانه است
         assert_eq!(out.summary.root, "");
 
@@ -738,10 +866,12 @@ mod tests {
         let out = scan_selected_files(&sel(&[video]), &excluded, &cancel, &mut no_progress);
         assert_eq!(out.entries.len(), 1, "{:?}", out.warnings);
         assert_eq!(out.summary.excluded_dir_hits, 1);
+        assert!(out.issues.is_empty()); // انتخاب داخل مستثنای کاربر، issue نیست
 
         // همان مسیر در اسکن پوشه همچنان مستثنا می‌ماند — رفتار پوشه دست‌نخورده
         let folder_out = scan_folder(&root, &excluded, &cancel, &mut no_progress);
         assert_eq!(folder_out.summary.video_count, 0);
+        assert!(folder_out.issues.is_empty()); // اسکن پوشه هرگز selection issue نمی‌سازد
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -839,6 +969,99 @@ mod tests {
             "{:?}",
             out.warnings
         );
+        // تکراری دقیقاً یک issue ساختاریافته با نوع Duplicate می‌دهد
+        assert_eq!(out.issues.len(), 1);
+        assert_eq!(out.issues[0].kind, SelectionIssueKind::Duplicate);
+        assert_eq!(
+            out.warnings[0],
+            format!("{}: {}", out.issues[0].path, out.issues[0].detail)
+        );
+        assert_eq!(out.issues[0].detail, "مسیر تکراری است");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// هر ردشدگی دقیقاً یک issue ساختاریافته + یک warning هم‌زوج می‌دهد؛
+    /// kind هر issue با سناریوی آن مطابق است.
+    #[test]
+    fn every_rejection_yields_one_structured_issue_and_one_matching_warning() {
+        let root = unique_temp_dir("sel-structured");
+        std::fs::create_dir_all(&root).unwrap();
+        let txt = mkv(&root, "notes.txt");
+        let dir = root.join("Season 01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let staged = mkv(&root.join("_SubSource_Batch_abc"), "vid.mkv");
+        let protected = mkv(&root.join("$Recycle.Bin"), "v1.mkv");
+        let hidden = mkv(&root.join(".hidden"), "v2.mkv");
+        let real = mkv(&root, "v.mkv"); // برای مسیر «..» فایل واقعی باید موجود باشد
+        assert!(real.is_file());
+        let dotdot = root.join("sub").join("..").join("v.mkv");
+
+        let paths = [
+            "".to_string(),                                       // EmptyPath
+            "some/relative/video.mkv".to_string(),                // RelativePath
+            root.join("nope.mkv").to_string_lossy().into_owned(), // MissingFile
+            root.join("ghost-dir")
+                .join("x.mkv")
+                .to_string_lossy()
+                .into_owned(), // ParentMissing
+            txt.to_string_lossy().into_owned(),                   // UnsupportedExtension
+            dir.to_string_lossy().into_owned(),                   // NotRegularFile
+            staged.to_string_lossy().into_owned(),                // ForbiddenComponent
+            protected.to_string_lossy().into_owned(),             // ForbiddenComponent
+            hidden.to_string_lossy().into_owned(),                // ForbiddenComponent
+            dotdot.to_string_lossy().into_owned(),                // ForbiddenComponent («..»)
+        ];
+        let out = run_selected(&paths);
+
+        assert!(out.entries.is_empty());
+        // تناظر یک‌به‌یک: هر ردشدگی یک warning و یک issue با همان مسیر و پیام
+        assert_eq!(out.issues.len(), paths.len(), "{:?}", out.warnings);
+        assert_eq!(out.warnings.len(), paths.len());
+        for (issue, warning) in out.issues.iter().zip(&out.warnings) {
+            assert_eq!(warning, &format!("{}: {}", issue.path, issue.detail));
+        }
+        // نگاشت kindها
+        assert_eq!(out.issues[0].kind, SelectionIssueKind::EmptyPath);
+        assert_eq!(out.issues[1].kind, SelectionIssueKind::RelativePath);
+        assert_eq!(out.issues[2].kind, SelectionIssueKind::MissingFile);
+        assert_eq!(out.issues[3].kind, SelectionIssueKind::ParentMissing);
+        assert_eq!(out.issues[4].kind, SelectionIssueKind::UnsupportedExtension);
+        assert_eq!(out.issues[5].kind, SelectionIssueKind::NotRegularFile);
+        assert_eq!(out.issues[6].kind, SelectionIssueKind::ForbiddenComponent);
+        assert_eq!(out.issues[7].kind, SelectionIssueKind::ForbiddenComponent);
+        assert_eq!(out.issues[8].kind, SelectionIssueKind::ForbiddenComponent);
+        assert_eq!(out.issues[9].kind, SelectionIssueKind::ForbiddenComponent);
+        assert_eq!(out.summary.selected_files.len(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// لغو: issueها و entries جمع‌شده قبل از لغو حفظ می‌شوند؛ مسیرهای بعدی پردازش نمی‌شوند.
+    #[test]
+    fn cancellation_preserves_collected_issues_and_entries() {
+        let root = unique_temp_dir("sel-cancel-issues");
+        let invalid = mkv(&root, "notes.txt"); // اولین مسیر → issue ثبت می‌شود
+        let valid = mkv(&root, "b.mkv"); // بعد از لغو هرگز پردازش نمی‌شود
+        let cancel = AtomicBool::new(false);
+        let paths = sel(&[invalid, valid]);
+
+        let mut progress_calls = 0u32;
+        let mut on_progress = |_p: ScanProgress| {
+            progress_calls += 1;
+            if progress_calls == 1 {
+                cancel.store(true, Ordering::Relaxed); // پس از پردازش اولین مسیر
+            }
+        };
+        let out = scan_selected_files(&paths, &[], &cancel, &mut on_progress);
+
+        assert!(out.summary.cancelled);
+        assert_eq!(out.summary.files_seen, 1);
+        assert_eq!(out.entries.len(), 0);
+        // issue ثبت‌شده قبل از لغو حفظ شده است
+        assert_eq!(out.issues.len(), 1);
+        assert_eq!(out.issues[0].kind, SelectionIssueKind::UnsupportedExtension);
+        assert_eq!(out.summary.selected_files.len(), 0);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -965,6 +1188,9 @@ mod tests {
                 "{:?}",
                 rejected.warnings
             );
+            // والدِ دارای پیوند → kind متمایز از پیوندِ خود فایل
+            assert_eq!(rejected.issues.len(), 1);
+            assert_eq!(rejected.issues[0].kind, SelectionIssueKind::ParentLink);
         } else {
             eprintln!("mklink /J در این محیط پشتیبانی نشد");
         }
@@ -983,6 +1209,9 @@ mod tests {
                     "{:?}",
                     rejected.warnings
                 );
+                // پیوندِ خود فایل → kind متمایز
+                assert_eq!(rejected.issues.len(), 1);
+                assert_eq!(rejected.issues[0].kind, SelectionIssueKind::SelectedLink);
             }
             Err(e) => eprintln!("symlink_file در این محیط پشتیبانی نشد: {e}"),
         }
