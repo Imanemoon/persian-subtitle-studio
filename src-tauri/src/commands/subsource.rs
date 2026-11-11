@@ -23,8 +23,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::models::{OpsProgress, VideoEntry};
 use crate::state::{acquire_batch_op, AppState};
 use crate::subsource::plan::{
-    create_download_plan, validate_video, DownloadPlan, DownloadPlanItem, DownloadResult,
-    SkippedDownload,
+    create_download_plan, validate_video_typed, DownloadPlan, DownloadPlanItem, DownloadResult,
+    SkipReasonCode, SkippedDownload, VideoSkipIssue,
 };
 use crate::subsource::staging::{self, VolumeGroup};
 use crate::subsource::{
@@ -199,13 +199,49 @@ where
     let mut valid: Vec<DownloadPlanItem> = Vec::new();
     for item in items {
         let entry = get_entry(state, &item.video_path);
-        match validate_video(&item.video_path, entry.as_ref()) {
+        match validate_video_typed(&item.video_path, entry.as_ref()) {
             Ok(()) => valid.push(item.clone()),
-            Err(reason) => result.skipped.push(SkippedDownload {
-                video_path: item.video_path.clone(),
-                video_file_name: item.video_file_name.clone(),
-                reason,
-            }),
+            Err(issue) => {
+                // نگاشت اجرا: وضعیت‌های بین پلن و اجرا کد مخصوص خودشان را می‌گیرند
+                let (code, reason) = match &issue {
+                    VideoSkipIssue::MissingFile => (
+                        SkipReasonCode::MissingAtExecution,
+                        "ویدیو در لحظهٔ اجرا روی دیسک پیدا نشد".to_string(),
+                    ),
+                    VideoSkipIssue::ValidSidecarExists { .. } => (
+                        SkipReasonCode::SidecarAppearedAtExecution,
+                        "زیرنویس فارسی معتبر در لحظهٔ اجرا کنار ویدیو ظاهر شد — بازنویسی نمی‌شود"
+                            .to_string(),
+                    ),
+                    VideoSkipIssue::SidecarConflict { .. } => (
+                        SkipReasonCode::SidecarConflict,
+                        "فایل کناری نامعتبر در لحظهٔ اجرا — تعارض؛ فایل حفظ می‌شود".to_string(),
+                    ),
+                    VideoSkipIssue::SidecarInspectionFailed => {
+                        (SkipReasonCode::SidecarInspectionFailed, issue.message())
+                    }
+                    other => (other.code(), other.message()),
+                };
+                let mut skipped_item = SkippedDownload::with_code(
+                    item.video_path.clone(),
+                    item.video_file_name.clone(),
+                    code,
+                    reason,
+                );
+                match &issue {
+                    VideoSkipIssue::ValidSidecarExists { valid } => {
+                        skipped_item.valid_sidecar_paths = valid
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect();
+                    }
+                    VideoSkipIssue::SidecarConflict { conflicts } => {
+                        skipped_item.sidecar_conflicts = conflicts.clone();
+                    }
+                    _ => {}
+                }
+                result.skipped.push(skipped_item);
+            }
         }
     }
     result.planned = valid.len();
@@ -421,10 +457,13 @@ fn run_group(
             let skipped = group
                 .placements
                 .iter()
-                .map(|p| SkippedDownload {
-                    video_path: p.source.to_string_lossy().to_string(),
-                    video_file_name: p.file_name.clone(),
-                    reason: message.clone(),
+                .map(|p| {
+                    SkippedDownload::with_code(
+                        p.source.to_string_lossy().to_string(),
+                        p.file_name.clone(),
+                        SkipReasonCode::StagingBuildFailed,
+                        message.clone(),
+                    )
                 })
                 .collect();
             if cancelled {

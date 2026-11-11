@@ -17,7 +17,8 @@ use subsync_studio_lib::models::{OpsProgress, VideoEntry};
 use subsync_studio_lib::settings::Settings;
 use subsync_studio_lib::state::{acquire_batch_op, acquire_single_op, AppState, OpsRegistry};
 use subsync_studio_lib::subsource::plan::{
-    create_download_plan, has_final_persian_sidecar, validate_video, DownloadPlanItem,
+    create_download_plan, inspect_persian_sidecars, validate_video_typed, DownloadPlanItem,
+    SkipReasonCode,
 };
 use subsync_studio_lib::subsource::staging::{
     build, group_by_volume, hard_link_no_overwrite, volume_root_of, StagedPlacement,
@@ -504,7 +505,10 @@ fn test_protection_against_overwriting_existing_files() {
     let _ = fs::remove_dir_all(&base_dir);
 }
 
-/// تست ۷: عدم دانلود و عدم بازنویسی در صورت وجود زیرنویس فارسی کنار ویدیو
+/// fixture زیرنویس فارسی معتبر برای تست‌های runtime
+const FA_SRT: &str = "1\r\n00:00:01,000 --> 00:00:02,000\r\nسلام\r\n";
+
+/// تست ۷: عدم دانلود و عدم بازنویسی در صورت وجود زیرنویس فارسی معتبر کنار ویدیو
 #[test]
 fn test_skip_videos_with_existing_persian_subtitles() {
     let base_dir = unique_test_dir("skip-fa-sub");
@@ -512,25 +516,243 @@ fn test_skip_videos_with_existing_persian_subtitles() {
     let v1 = base_dir.join("Show.S01E01.mkv");
     fs::write(&v1, b"VIDEO").unwrap();
     let fa_sub = base_dir.join("Show.S01E01.fa.srt");
-    fs::write(&fa_sub, b"EXISTING_PERSIAN_SUBTITLE").unwrap();
+    fs::write(&fa_sub, FA_SRT).unwrap();
 
     let entry = make_video_entry(&v1);
 
-    // ۱) بررسی تابع اختصاصی تشخیص
-    assert!(has_final_persian_sidecar(&v1, Some(&entry)));
+    // ۱) بازبینی تازهٔ فایل‌سیستم: sidecar معتبر فارسی دیده می‌شود
+    let inspection = inspect_persian_sidecars(&v1).unwrap();
+    assert_eq!(inspection.valid.len(), 1);
+    assert!(inspection.conflicts.is_empty());
 
-    // ۲) بررسی اعتبارسنجی پلن
-    let err = validate_video(&v1.to_string_lossy(), Some(&entry)).unwrap_err();
-    assert!(err.contains("زیرنویس فارسی"));
+    // ۲) اعتبارسنجی typed پلن
+    let issue = validate_video_typed(&v1.to_string_lossy(), Some(&entry)).unwrap_err();
+    assert_eq!(issue.code(), SkipReasonCode::ValidSidecarExists);
 
-    // ۳) بررسی ساخت پلن
+    // ۳) بررسی ساخت پلن — کد typed + مسیر valid حفظ می‌شود
     let plan = create_download_plan(&[entry], &[v1.to_string_lossy().to_string()]);
     assert_eq!(plan.items.len(), 0);
     assert_eq!(plan.skipped.len(), 1);
+    assert_eq!(plan.skipped[0].code, SkipReasonCode::ValidSidecarExists);
     assert!(plan.skipped[0].reason.contains("زیرنویس فارسی"));
+    assert_eq!(plan.skipped[0].valid_sidecar_paths, vec![fa_sub.clone()]);
 
     // زیرنویس موجود به هیچ وجه تغییر نکند
-    assert_eq!(fs::read(&fa_sub).unwrap(), b"EXISTING_PERSIAN_SUBTITLE");
+    assert_eq!(fs::read(&fa_sub).unwrap(), FA_SRT.as_bytes());
+
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۱۴ و ۱۶ و ۱۸: sidecar معتبرِ ظاهرشده بین پلن و اجرا فقط همان ویدیو را skip
+/// می‌کند (کد SidecarAppearedAtExecution)؛ ویدیوی بی‌ارتباط عادی ادامه می‌دهد و
+/// فایل sidecar بایت‌به‌بایت دست‌نخورده می‌ماند.
+#[test]
+fn sidecar_appearing_at_execution_skips_only_that_video() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("sidecar-appeared");
+    fs::write(base_dir.join(".fake_mode"), b"write-archives").unwrap();
+
+    let work_dir = base_dir.join("Season 01");
+    fs::create_dir_all(&work_dir).unwrap();
+    let v1 = work_dir.join("Show.S01E01.mkv");
+    let v2 = work_dir.join("Show.S01E02.mkv");
+    fs::write(&v1, b"VIDEO_1").unwrap();
+    fs::write(&v2, b"VIDEO_2").unwrap();
+
+    // پلن هر دو ویدیو — پیش از ظاهر شدن sidecar
+    let plan = create_download_plan(
+        &[make_video_entry(&v1), make_video_entry(&v2)],
+        &[
+            v1.to_string_lossy().to_string(),
+            v2.to_string_lossy().to_string(),
+        ],
+    );
+    assert_eq!(plan.items.len(), 2);
+
+    // «بعد از پلن» یک sidecar معتبر فارسی برای v1 ظاهر می‌شود
+    let fa = work_dir.join("Show.S01E01.fa.srt");
+    fs::write(&fa, FA_SRT).unwrap();
+
+    let state = make_test_state(
+        &fake_exe,
+        vec![make_video_entry(&v1), make_video_entry(&v2)],
+    );
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut progress_events: Vec<OpsProgress> = Vec::new();
+
+    let result = run_download_blocking(
+        &state,
+        &plan.items,
+        Some("test-secret-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut |p| progress_events.push(p),
+    );
+
+    // فقط v1 با کد typed skip می‌شود؛ v2 عادی ادامه می‌دهد
+    assert_eq!(result.skipped.len(), 1, "{:?}", result.skipped);
+    assert_eq!(
+        result.skipped[0].code,
+        SkipReasonCode::SidecarAppearedAtExecution
+    );
+    assert_eq!(
+        result.skipped[0].video_path,
+        v1.to_string_lossy().to_string()
+    );
+    assert_eq!(
+        result.skipped[0].valid_sidecar_paths,
+        vec![fa.to_string_lossy().to_string()]
+    );
+    assert_ne!(result.skipped[0].code, SkipReasonCode::Unknown);
+    assert_eq!(result.planned, 1);
+    assert_eq!(result.staged, 1);
+    assert!(result.success, "{}", result.message);
+
+    // sidecar بایت‌به‌بایت دست‌نخورده
+    assert_eq!(fs::read(&fa).unwrap(), FA_SRT.as_bytes());
+    // staging فقط برای v2 ساخته شده و آرشیو دانلودشدهٔ آن حفظ شده است
+    // (لینک‌های ویدیو پس از اجرا پاک می‌شوند؛ فقط sub/ می‌ماند)
+    let staging_root = PathBuf::from(&result.staging_paths[0]);
+    fn has_archive(dir: &Path, needle: &str) -> bool {
+        let mut found = false;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    found = found || has_archive(&path, needle);
+                } else if entry.file_name().to_string_lossy().contains(needle) {
+                    found = true;
+                }
+            }
+        }
+        found
+    }
+    assert!(
+        has_archive(&staging_root, "S01E02"),
+        "آرشیو v2 باید حفظ شده باشد"
+    );
+    assert!(
+        !has_archive(&staging_root, "S01E01"),
+        "برای v1 هیچ دانلودی نباید باشد"
+    );
+
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۱۵ و ۱۶ و ۱۸: sidecar فارسی‌نامِ نامعتبرِ ظاهرشده در اجرا → تعارض typed؛
+/// ویدیوی بی‌ارتباط ادامه می‌دهد؛ فایل تعارض حفظ می‌شود.
+#[test]
+fn invalid_sidecar_at_execution_is_typed_conflict() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("sidecar-conflict");
+    fs::write(base_dir.join(".fake_mode"), b"write-archives").unwrap();
+
+    let work_dir = base_dir.join("Season 01");
+    fs::create_dir_all(&work_dir).unwrap();
+    let v1 = work_dir.join("Show.S01E01.mkv");
+    let v2 = work_dir.join("Show.S01E02.mkv");
+    fs::write(&v1, b"VIDEO_1").unwrap();
+    fs::write(&v2, b"VIDEO_2").unwrap();
+
+    let plan = create_download_plan(
+        &[make_video_entry(&v1), make_video_entry(&v2)],
+        &[
+            v1.to_string_lossy().to_string(),
+            v2.to_string_lossy().to_string(),
+        ],
+    );
+    assert_eq!(plan.items.len(), 2);
+
+    // «بعد از پلن» یک sidecar فارسی‌نامِ خراب ظاهر می‌شود
+    let fa = work_dir.join("Show.S01E01.fa.srt");
+    fs::write(&fa, b"GARBAGE_NOT_A_SUBTITLE").unwrap();
+
+    let state = make_test_state(
+        &fake_exe,
+        vec![make_video_entry(&v1), make_video_entry(&v2)],
+    );
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let result = run_download_blocking(
+        &state,
+        &plan.items,
+        Some("test-secret-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut |_| {},
+    );
+
+    assert_eq!(result.skipped.len(), 1, "{:?}", result.skipped);
+    assert_eq!(result.skipped[0].code, SkipReasonCode::SidecarConflict);
+    assert_ne!(result.skipped[0].code, SkipReasonCode::Unknown);
+    let conflicts = &result.skipped[0].sidecar_conflicts;
+    assert_eq!(conflicts.len(), 1);
+    assert!(conflicts[0].reason.contains("ساختار"));
+    assert_eq!(result.planned, 1);
+    assert_eq!(result.staged, 1);
+
+    // فایل تعارض حفظ شده
+    assert_eq!(fs::read(&fa).unwrap(), b"GARBAGE_NOT_A_SUBTITLE");
+
+    let _ = fs::remove_dir_all(&base_dir);
+}
+
+/// تست ۱۷: ویدیویی که بین پلن و اجرا غیب می‌شود → MissingAtExecution برای همان
+/// ویدیو؛ بقیه عادی ادامه می‌دهند.
+#[test]
+fn missing_video_at_execution_reports_missing_at_execution() {
+    let fake_exe = get_fake_exe();
+    let base_dir = unique_test_dir("missing-at-exec");
+    fs::write(base_dir.join(".fake_mode"), b"write-archives").unwrap();
+
+    let work_dir = base_dir.join("Season 01");
+    fs::create_dir_all(&work_dir).unwrap();
+    let v1 = work_dir.join("Show.S01E01.mkv");
+    let v2 = work_dir.join("Show.S01E02.mkv");
+    fs::write(&v1, b"VIDEO_1").unwrap();
+    fs::write(&v2, b"VIDEO_2").unwrap();
+
+    let plan = create_download_plan(
+        &[make_video_entry(&v1), make_video_entry(&v2)],
+        &[
+            v1.to_string_lossy().to_string(),
+            v2.to_string_lossy().to_string(),
+        ],
+    );
+    assert_eq!(plan.items.len(), 2);
+
+    // «بعد از پلن» v1 حذف می‌شود
+    fs::remove_file(&v1).unwrap();
+
+    let state = make_test_state(
+        &fake_exe,
+        vec![make_video_entry(&v1), make_video_entry(&v2)],
+    );
+    let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let result = run_download_blocking(
+        &state,
+        &plan.items,
+        Some("test-secret-api-key".into()),
+        Some(&staging_base),
+        &cancel,
+        &mut |_| {},
+    );
+
+    assert_eq!(result.skipped.len(), 1, "{:?}", result.skipped);
+    assert_eq!(result.skipped[0].code, SkipReasonCode::MissingAtExecution);
+    assert_eq!(
+        result.skipped[0].video_path,
+        v1.to_string_lossy().to_string()
+    );
+    assert_eq!(result.planned, 1);
+    assert_eq!(result.staged, 1);
 
     let _ = fs::remove_dir_all(&base_dir);
 }
