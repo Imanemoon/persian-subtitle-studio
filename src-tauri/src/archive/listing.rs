@@ -10,13 +10,17 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use super::types::MAX_ARCHIVE_UNPACKED_BYTES;
+use super::types::{MAX_ARCHIVE_MEMBERS, MAX_ARCHIVE_UNPACKED_BYTES};
 
 /// یک عضو خام از خروجی `-slt`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArchiveMember {
     pub path: String,
-    pub size: u64,
+    /// مقدار خام `Size` دقیقاً همان‌طور که 7-Zip گزارش کرده؛ `None` یعنی خط
+    /// `Size` وجود نداشته است.
+    pub size_raw: Option<String>,
+    /// مقدار پارس‌شدهٔ `Size`؛ `None` یعنی غایب، نامعتبر یا سرریز.
+    pub size: Option<u64>,
     pub is_dir: bool,
     pub encrypted: bool,
     pub attributes: String,
@@ -105,7 +109,10 @@ pub fn parse_listing(output: &str) -> Result<Vec<ArchiveMember>, String> {
             continue;
         };
         match key.as_str() {
-            "size" => member.size = value.parse().unwrap_or(0),
+            "size" => {
+                member.size_raw = Some(value.to_string());
+                member.size = value.parse::<u64>().ok();
+            }
             "folder" => member.is_dir = is_truthy(value),
             "encrypted" => member.encrypted = is_truthy(value),
             "attributes" => member.attributes = value.to_string(),
@@ -132,7 +139,7 @@ fn is_truthy(value: &str) -> bool {
 
 /// اعتبارسنجی همهٔ اعضا. اگر حتی یک عضو ناامن باشد، کل آرشیو رد می‌شود.
 pub fn validate_members(members: &[ArchiveMember]) -> Result<Vec<SafeMember>, String> {
-    if members.len() > 10_000 {
+    if members.len() > MAX_ARCHIVE_MEMBERS {
         return Err(format!(
             "آرشیو بیش از حد اعضا دارد ({} عضو) — پردازش متوقف شد",
             members.len()
@@ -175,7 +182,35 @@ pub fn validate_members(members: &[ArchiveMember]) -> Result<Vec<SafeMember>, St
         }
 
         let normalized = validate_member_path(&member.path)?;
-        total_size = total_size.saturating_add(member.size);
+
+        // اندازه فقط برای فایل‌های معمولی الزامی و امنیتی است. پوشه‌ها در
+        // خروجی واقعی 7-Zip ممکن است Size نداشته باشند/صفر باشند.
+        let size = if member.is_dir {
+            0
+        } else {
+            match (member.size, member.size_raw.as_deref()) {
+                (Some(size), _) => size,
+                (None, Some(raw)) if !raw.trim().is_empty() => {
+                    return Err(format!(
+                        "اندازهٔ اعلام‌شدهٔ عضو «{}» نامعتبر یا سرریز است («{}») — آرشیو رد شد",
+                        member.path, raw
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "عضو فایل «{}» اندازهٔ اعلام‌شده ندارد — آرشیو رد شد",
+                        member.path
+                    ));
+                }
+            }
+        };
+
+        total_size = total_size.checked_add(size).ok_or_else(|| {
+            format!(
+                "جمع اندازه‌های اعلام‌شدهٔ آرشیو سرریز کرد — آرشیو رد شد (عضو «{}»)",
+                member.path
+            )
+        })?;
         if total_size > MAX_ARCHIVE_UNPACKED_BYTES {
             return Err(format!(
                 "حجم بازشدهٔ آرشیو از حد مجاز ({} MiB) بیشتر است",
@@ -186,7 +221,7 @@ pub fn validate_members(members: &[ArchiveMember]) -> Result<Vec<SafeMember>, St
         safe.push(SafeMember {
             path: member.path.clone(),
             normalized,
-            size: member.size,
+            size,
             is_dir: member.is_dir,
         });
     }
@@ -288,11 +323,14 @@ pub fn is_link_or_reparse(meta: &fs::Metadata) -> bool {
 }
 
 /// بررسی درخت استخراج‌شده: هیچ symlink/reparse و هیچ مسیر خارج از ریشه.
+/// علاوه بر آن، تعداد و مجموع اندازهٔ واقعی فایل‌ها از متادیتای فایل‌سیستم
+/// محاسبه و با سقف‌های امنیتی مقایسه می‌شود (metadata اعلامی 7-Zip کافی نیست).
 /// همهٔ فایل‌های معمولی برگردانده می‌شوند.
 pub fn verify_extracted_tree(root: &Path) -> Result<Vec<PathBuf>, String> {
     let canonical_root = fs::canonicalize(root)
         .map_err(|e| format!("canonicalize ریشهٔ استخراج «{}» ناموفق: {e}", root.display()))?;
     let mut files = Vec::new();
+    let mut total_size: u64 = 0;
 
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = entry.map_err(|e| format!("پیمایش درخت استخراج ناموفق: {e}"))?;
@@ -319,6 +357,25 @@ pub fn verify_extracted_tree(root: &Path) -> Result<Vec<PathBuf>, String> {
                 ));
             }
             files.push(canonical);
+
+            if files.len() > MAX_ARCHIVE_MEMBERS {
+                return Err(format!(
+                    "تعداد فایل‌های استخراج‌شده از حد مجاز ({} فایل) بیشتر است — استخراج رد شد",
+                    MAX_ARCHIVE_MEMBERS
+                ));
+            }
+            total_size = total_size.checked_add(meta.len()).ok_or_else(|| {
+                format!(
+                    "جمع اندازهٔ فایل‌های استخراج‌شده سرریز کرد — استخراج رد شد (فایل «{}»)",
+                    path.display()
+                )
+            })?;
+            if total_size > MAX_ARCHIVE_UNPACKED_BYTES {
+                return Err(format!(
+                    "حجم واقعی فایل‌های استخراج‌شده از حد مجاز ({} MiB) بیشتر است — استخراج رد شد",
+                    MAX_ARCHIVE_UNPACKED_BYTES / (1024 * 1024)
+                ));
+            }
         }
     }
 
@@ -416,9 +473,11 @@ Size = 43
         let members = parse_listing(output).unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].path, "Show.S01E01.fa.srt");
-        assert_eq!(members[0].size, 42);
+        assert_eq!(members[0].size, Some(42));
+        assert_eq!(members[0].size_raw.as_deref(), Some("42"));
         assert!(!members[0].is_dir);
         assert_eq!(members[1].path, "Show.S01E02.fa.srt");
+        assert_eq!(members[1].size, Some(43));
     }
 
     #[test]
@@ -426,7 +485,72 @@ Size = 43
         let output = "Path = nested\nFolder = +\n\nPath = ../evil.srt\nSize = 1\n";
         let members = parse_listing(output).unwrap();
         assert!(members[0].is_dir);
+        assert_eq!(members[0].size, None);
         assert!(!members[0].encrypted);
         assert!(validate_members(&members).is_err());
+    }
+
+    #[test]
+    fn regular_file_requires_well_formed_size() {
+        // پوشه بدون Size مجاز است.
+        let dir_output = "Path = nested\nFolder = +\n";
+        let dirs = parse_listing(dir_output).unwrap();
+        assert!(validate_members(&dirs).is_ok());
+
+        for (label, output, needle) in [
+            (
+                "missing",
+                "Path = a.srt\nFolder = -\n",
+                "اندازهٔ اعلام‌شده ندارد",
+            ),
+            (
+                "empty",
+                "Path = a.srt\nFolder = -\nSize = \n",
+                "اندازهٔ اعلام‌شده ندارد",
+            ),
+            (
+                "malformed",
+                "Path = a.srt\nFolder = -\nSize = abc\n",
+                "نامعتبر",
+            ),
+            (
+                "negative",
+                "Path = a.srt\nFolder = -\nSize = -1\n",
+                "نامعتبر",
+            ),
+            (
+                "overflow",
+                "Path = a.srt\nFolder = -\nSize = 18446744073709551616\n",
+                "نامعتبر",
+            ),
+            (
+                "over-limit",
+                "Path = a.srt\nFolder = -\nSize = 536870913\n",
+                "حد مجاز",
+            ),
+        ] {
+            let members = parse_listing(output).unwrap();
+            let err = validate_members(&members).unwrap_err();
+            assert!(err.contains(needle), "{label}: {err}");
+        }
+    }
+
+    #[test]
+    fn extracted_tree_limits_use_actual_filesystem_metadata() {
+        let base = std::env::temp_dir().join(format!(
+            "subsync-listing-tree-{}-{}",
+            std::process::id(),
+            crate::subsource::staging::new_uid()
+        ));
+        fs::create_dir_all(&base).unwrap();
+
+        // مجموع اندازهٔ واقعی بیش از سقف اعلامیٔ 512 MiB (بدون نوشتن داده).
+        let big = base.join("big.bin");
+        let file = fs::File::create(&big).unwrap();
+        file.set_len(MAX_ARCHIVE_UNPACKED_BYTES + 1).unwrap();
+        drop(file);
+        let err = verify_extracted_tree(&base).unwrap_err();
+        assert!(err.contains("حجم واقعی"), "{err}");
+        let _ = fs::remove_dir_all(&base);
     }
 }

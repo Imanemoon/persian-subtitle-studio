@@ -40,7 +40,9 @@ impl std::fmt::Display for ToolError {
 
 pub struct ToolRun {
     pub exit_code: Option<i32>,
-    pub stdout: String,
+    /// خروجی خام؛ تفسیر آن (مثلاً UTF-8 سخت‌گیرانه برای فهرست آرشیو) به
+    /// فراخواننده سپرده می‌شود.
+    pub stdout: Vec<u8>,
     pub stderr: String,
 }
 
@@ -103,9 +105,7 @@ pub fn run_7z(
         }
     };
 
-    let stdout = fs::read(&out_path)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
+    let stdout = fs::read(&out_path).unwrap_or_default();
     let stderr = fs::read(&err_path)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
@@ -129,6 +129,9 @@ pub fn list_archive(
         OsString::from("l"),
         OsString::from("-slt"),
         OsString::from("-ba"),
+        // 7-Zip روی ویندوز به‌طور پیش‌فرض با Encoding کنسول (OEM) چاپ می‌کند؛
+        // بدون این سوئیچ نام‌های فارسی/یونیکد خراب می‌شوند.
+        OsString::from("-sccUTF-8"),
         OsString::from("--"),
         archive.as_os_str().to_os_string(),
     ];
@@ -158,7 +161,20 @@ pub fn list_archive(
         }
     }
 
-    let members = parse_listing(&run.stdout).map_err(ToolError::Failed)?;
+    // تفسیر سخت‌گیرانه: هر بایت نامعتبر UTF-8 → خطا. استفاده از
+    // `from_utf8_lossy` می‌تواند نام فایل را با U+FFFD جایگزین کند و تطبیق
+    // نادرست/دورزنندهٔ محدودیت‌ها بسازد؛ بنابراین fail-closed عمل می‌کنیم.
+    let stdout_text = std::str::from_utf8(&run.stdout).map_err(|e| {
+        ToolError::Failed(format!(
+            "خروجی فهرست 7-Zip برای «{}» UTF-8 معتبر نیست (بایت {}) — برای جلوگیری از تطبیق نادرست متوقف شد",
+            archive.display(),
+            e.valid_up_to()
+        ))
+    })?;
+    // بعضی نسخه‌های 7-Zip در حالت UTF-8 یک BOM ابتدایی می‌نویسند؛ فقط
+    // همان BOM حذف می‌شود و بقیهٔ بایت‌ها باید UTF-8 معتبر بمانند.
+    let stdout_text = stdout_text.strip_prefix('\u{feff}').unwrap_or(stdout_text);
+    let members = parse_listing(stdout_text).map_err(ToolError::Failed)?;
     Ok((members, warnings))
 }
 

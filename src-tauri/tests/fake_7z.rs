@@ -15,9 +15,16 @@
 //! - `extract-warning` / `extract-fail` (فایل‌ها را می‌نویسد، سپس ۲)
 //! - `partial` (اعضای با flag=SKIP را رد می‌کند و با ۱ خارج می‌شود)
 //! - `slow` (۳۰ ثانیه تأخیر برای تست لغو)
+//! - `invalid-utf8` (خروجی فهرست حاوی بایت نامعتبر UTF-8)
+//! - `inflated` (پس از استخراج یک فایل با اندازهٔ واقعی > 512 MiB می‌سازد)
+//! - `many-files` (پس از استخراج هزاران فایل اضافی می‌سازد)
+//!
+//! برای `F|...` مقدار `size` می‌تواند `-` باشد (خط Size حذف می‌شود) یا هر
+//! مقدار خام دیگری برای تست اندازهٔ نامعتبر/سرریز.
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
@@ -124,7 +131,9 @@ fn listing(archive: &Path, lines: &[String]) {
         if let Some(rest) = line.strip_prefix("F|") {
             let p = split_file(&format!("F|{rest}"));
             println!("Path = {}", p[1]);
-            println!("Size = {}", p[2]);
+            if p[2] != "-" {
+                println!("Size = {}", p[2]);
+            }
             println!("Folder = -");
             if !p[3].is_empty() {
                 println!("Attributes = {}", p[3]);
@@ -207,9 +216,22 @@ fn main() {
 
     match command.as_str() {
         "l" => {
+            // قرارداد ابزار: فهرست باید همیشه با UTF-8 صریح اجرا شود؛ نبود
+            // سوئیچ در fake مانند 7-Zip واقعی یک خطای قرارداد است.
+            if !args.iter().any(|a| a == "-sccUTF-8") {
+                eprintln!("fake 7z: listing must pass -sccUTF-8");
+                process::exit(2);
+            }
             if has_mode(&modes, "list-fail") {
                 eprintln!("fake 7z: simulated listing failure");
                 process::exit(2);
+            }
+            if has_mode(&modes, "invalid-utf8") {
+                let mut out = std::io::stdout();
+                out.write_all(b"Path = broken\xFF.srt\nSize = 1\nFolder = -\n\n")
+                    .unwrap();
+                out.flush().unwrap();
+                return;
             }
             let lines = read_manifest(&archive);
             listing(&archive, &lines);
@@ -235,6 +257,18 @@ fn main() {
                 let _ = wrote_any;
                 eprintln!("fake 7z: simulated extraction failure");
                 process::exit(2);
+            }
+            // metadata اعلامی در listing کوچک است، اما دیسک چیز دیگری دارد.
+            if has_mode(&modes, "inflated") {
+                let f = fs::File::create(out_dir.join("inflated.bin")).unwrap();
+                f.set_len(536_870_913).unwrap();
+            }
+            if has_mode(&modes, "many-files") {
+                let bulk = out_dir.join("_bulk");
+                fs::create_dir_all(&bulk).unwrap();
+                for i in 0..=10_000 {
+                    fs::write(bulk.join(format!("bulk_{i}.bin")), b"x").unwrap();
+                }
             }
             if has_mode(&modes, "extract-warning") || (partial && skipped_any) {
                 eprintln!("fake 7z: simulated extraction warning");

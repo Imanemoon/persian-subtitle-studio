@@ -23,8 +23,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::models::{OpsProgress, VideoEntry};
 use crate::state::{acquire_batch_op, AppState};
 use crate::subsource::plan::{
-    create_download_plan, validate_video, ArchiveSource, DownloadPlan, DownloadPlanItem,
-    DownloadResult, SkippedDownload,
+    create_download_plan, validate_video, DownloadPlan, DownloadPlanItem, DownloadResult,
+    SkippedDownload,
 };
 use crate::subsource::staging::{self, VolumeGroup};
 use crate::subsource::{
@@ -476,7 +476,8 @@ fn run_group(
     // نگاشت پایدار ویدیوی اصلی → مسیر staging، برای فاز Archive Extraction.
     // این کار پیش از اجرای CLI انجام می‌شود تا حتی در صورت خطا/لغو بعدی،
     // آرشیوهای دانلودشده قابل نسبت‌دادن به ویدیوی درست باشند. هیچ رازی در
-    // این ساختار نیست.
+    // این ساختار نیست. علاوه بر خروجی سریال‌شده، رکورد در رجیستری Provenance
+    // سمت سرور ثبت می‌شود تا پلن/اجرا نتوانند staging جعلی را بپذیرند.
     for placement in &group.placements {
         // فقط ویدیوهایی که واقعاً به staging لینک شدند (همهٔ placements در
         // جلسهٔ موفق لینک می‌شوند؛ بررسی وجود فایل یک گارد محافظ است).
@@ -494,16 +495,29 @@ fn run_group(
             continue;
         }
         let video_path = placement.source.to_string_lossy().to_string();
-        let entry = get_entry(state, &video_path);
-        result.archive_sources.push(ArchiveSource {
-            video_path,
-            video_file_name: placement.file_name.clone(),
-            staging_root: staging_root_str.clone(),
-            relative_video_path,
-            relative_video_dir: placement.rel_dir.to_string_lossy().to_string(),
-            season: entry.as_ref().and_then(|e| e.season),
-            episode: entry.as_ref().and_then(|e| e.episode),
-        });
+        let Some(entry) = get_entry(state, &video_path) else {
+            crate::logging::warn(
+                "subsource",
+                &format!(
+                    "provenance برای «{}» ثبت نشد: ویدیو در کتابخانه نیست",
+                    placement.file_name
+                ),
+            );
+            continue;
+        };
+        let rel_dir_str = placement.rel_dir.to_string_lossy().to_string();
+        match state.archive_provenance.lock().unwrap().register(
+            &entry,
+            session.root(),
+            &relative_video_path,
+            &rel_dir_str,
+        ) {
+            Ok(source) => result.archive_sources.push(source),
+            Err(e) => crate::logging::warn(
+                "subsource",
+                &format!("provenance برای «{}» ثبت نشد: {e}", placement.file_name),
+            ),
+        }
     }
 
     // اجرای SubSource روی staging این گروه — token همان پرچم رجیستری است
@@ -712,6 +726,9 @@ mod tests {
             scanning: AtomicBool::new(false),
             cancel_scan: AtomicBool::new(false),
             ops: Arc::new(Mutex::new(crate::state::OpsRegistry::default())),
+            archive_provenance: Mutex::new(
+                crate::archive::provenance::ProvenanceRegistry::default(),
+            ),
         }
     }
 

@@ -73,6 +73,9 @@ pub fn run() {
                 scanning: AtomicBool::new(false),
                 cancel_scan: AtomicBool::new(false),
                 ops: Arc::new(Mutex::new(state::OpsRegistry::default())),
+                archive_provenance: Mutex::new(
+                    crate::archive::provenance::ProvenanceRegistry::default(),
+                ),
             });
             app.manage(AppPaths { config_dir });
 

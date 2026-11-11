@@ -38,10 +38,19 @@ fn get_fake_exe() -> PathBuf {
         #[cfg(not(windows))]
         let exe_name = "fake_7z";
         let exe_path = target_dir.join(exe_name);
-        if !exe_path.exists() {
-            let source_path = PathBuf::from(manifest_dir)
-                .join("tests")
-                .join("fake_7z.rs");
+        let source_path = PathBuf::from(manifest_dir)
+            .join("tests")
+            .join("fake_7z.rs");
+        // اگر منبع تازه‌تر از executable است، دوباره بساز تا تست‌ها همیشه
+        // رفتار فعلی fake را ببینند (مهم برای اجرای محلی بعد از تغییر fake).
+        let stale = match (fs::metadata(&exe_path), fs::metadata(&source_path)) {
+            (Ok(exe), Ok(src)) => match (exe.modified(), src.modified()) {
+                (Ok(exe_time), Ok(src_time)) => src_time > exe_time,
+                _ => true,
+            },
+            _ => true,
+        };
+        if stale {
             let status = std::process::Command::new("rustc")
                 .arg(&source_path)
                 .arg("-o")
@@ -86,11 +95,15 @@ fn file_member(path: &str, content: &[u8]) -> String {
 }
 
 fn file_member_with(path: &str, content: &[u8], flags: &str) -> String {
+    file_member_declared(path, &content.len().to_string(), content, flags)
+}
+
+/// عضو با اندازهٔ اعلامی دلخواه (برای تست metadata غایب/نامعتبر/سرریز/بزرگ).
+fn file_member_declared(path: &str, declared: &str, content: &[u8], flags: &str) -> String {
     format!(
-        "F|{}|{}|{}|{}|{}|{}|{}|{}",
+        "F|{}|{}||{}|{}|{}|{}|{}",
         path,
-        content.len(),
-        "",
+        declared,
         "",
         "",
         "",
@@ -781,4 +794,151 @@ fn duplicate_requests_and_empty_source_are_rejected() {
     assert_eq!(result.placed, 1);
     assert_eq!(result.failed, 1);
     assert!(result.items[1].message.contains("تکراری"));
+}
+
+#[test]
+fn persian_member_paths_are_preserved_with_utf8_listing() {
+    let fake = get_fake_exe();
+    let fixture = Fixture::new("persian-member", "Show.S01E01.mkv", Some(1), Some(1));
+    let member_path = "فصل اول/زیرنویس فارسی/Show.S01E01.fa.srt";
+    fixture.archive("a.zip", ZIP, &[file_member(member_path, SRT_FA.as_bytes())]);
+
+    let plan = run_plan(&fake, &fixture);
+    assert_eq!(plan.ready, 1, "{:?}", plan.items);
+    assert_eq!(
+        plan.items[0].selection.as_ref().unwrap().member_path,
+        member_path
+    );
+
+    let result = run_execute(&fake, &fixture, None);
+    assert_eq!(statuses(&result), vec![ArchiveItemStatus::Placed]);
+    assert_eq!(fs::read(fixture.target("srt")).unwrap(), SRT_FA.as_bytes());
+    assert_no_extract_dirs(&fixture.staging);
+}
+
+#[test]
+fn invalid_utf8_listing_is_rejected_without_lossy_matching() {
+    let fake = get_fake_exe();
+    let fixture = Fixture::new("invalid-utf8", "Show.S01E01.mkv", Some(1), Some(1));
+    fixture.archive(
+        "a.zip",
+        ZIP,
+        &[file_member("Show.S01E01.fa.srt", SRT_FA.as_bytes())],
+    );
+    fixture.mode(&["invalid-utf8"]);
+
+    let plan = run_plan(&fake, &fixture);
+    assert_eq!(plan.no_match, 1, "{:?}", plan.items);
+    assert!(
+        plan.items[0].message.contains("UTF-8"),
+        "{}",
+        plan.items[0].message
+    );
+    assert!(!fixture.target("srt").exists());
+    assert_no_extract_dirs(&fixture.staging);
+}
+
+#[test]
+fn declared_member_sizes_are_fail_closed() {
+    let fake = get_fake_exe();
+    for (tag, declared, needle) in [
+        ("missing", "-", "اندازهٔ اعلام‌شده ندارد"),
+        ("malformed", "abc", "نامعتبر"),
+        ("overflow", "18446744073709551616", "نامعتبر"),
+        ("over-limit", "536870913", "حد مجاز"),
+    ] {
+        let fixture = Fixture::new(
+            &format!("declared-size-{tag}"),
+            "Show.S01E01.mkv",
+            Some(1),
+            Some(1),
+        );
+        fixture.archive(
+            "a.zip",
+            ZIP,
+            &[file_member_declared(
+                "Show.S01E01.fa.srt",
+                declared,
+                SRT_FA.as_bytes(),
+                "",
+            )],
+        );
+        let plan = run_plan(&fake, &fixture);
+        assert_eq!(plan.no_match, 1, "{tag}: {:?}", plan.items);
+        assert!(
+            plan.items[0].message.contains(needle),
+            "{tag}: {}",
+            plan.items[0].message
+        );
+        assert!(!fixture.target("srt").exists());
+        assert_no_extract_dirs(&fixture.staging);
+    }
+}
+
+#[test]
+fn actual_extracted_size_and_file_count_are_enforced() {
+    let fake = get_fake_exe();
+
+    // listing می‌گوید یک فایل کوچک است؛ دیسک بیش از 512 MiB واقعی دارد.
+    let inflated = Fixture::new("actual-size", "Show.S01E01.mkv", Some(1), Some(1));
+    inflated.archive(
+        "a.zip",
+        ZIP,
+        &[file_member("Show.S01E01.fa.srt", SRT_FA.as_bytes())],
+    );
+    inflated.mode(&["inflated"]);
+    let plan = run_plan(&fake, &inflated);
+    assert_eq!(plan.no_match, 1, "{:?}", plan.items);
+    assert!(
+        plan.items[0].message.contains("حجم واقعی"),
+        "{}",
+        plan.items[0].message
+    );
+    assert!(!inflated.target("srt").exists());
+    assert_no_extract_dirs(&inflated.staging);
+
+    // listing فقط یک عضو دارد؛ استخراج هزاران فایل اضافی می‌سازد.
+    let many = Fixture::new("actual-count", "Show.S01E01.mkv", Some(1), Some(1));
+    many.archive(
+        "a.zip",
+        ZIP,
+        &[file_member("Show.S01E01.fa.srt", SRT_FA.as_bytes())],
+    );
+    many.mode(&["many-files"]);
+    let plan = run_plan(&fake, &many);
+    assert_eq!(plan.no_match, 1, "{:?}", plan.items);
+    assert!(
+        plan.items[0].message.contains("تعداد فایل"),
+        "{}",
+        plan.items[0].message
+    );
+    assert!(!many.target("srt").exists());
+    assert_no_extract_dirs(&many.staging);
+}
+
+#[test]
+fn plan_can_be_cancelled_through_shared_flag_and_cleans_temp() {
+    let fake = get_fake_exe();
+    let fixture = Fixture::new("plan-cancel", "Show.S01E01.mkv", Some(1), Some(1));
+    fixture.archive(
+        "a.zip",
+        ZIP,
+        &[file_member("Show.S01E01.fa.srt", SRT_FA.as_bytes())],
+    );
+    fixture.mode(&["slow"]);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_thread = Arc::clone(&cancel);
+    let fake_thread = fake.clone();
+    let source = fixture.source();
+    let handle =
+        thread::spawn(move || plan_archives(&fake_thread, &[source], &cancel_thread, &mut |_p| {}));
+
+    thread::sleep(Duration::from_millis(250));
+    cancel.store(true, Ordering::SeqCst);
+    let plan = handle.join().unwrap();
+
+    assert!(plan.cancelled, "{plan:?}");
+    assert!(plan.ready == 0);
+    assert_no_extract_dirs(&fixture.staging);
 }

@@ -87,6 +87,9 @@ fn make_test_state(fake_exe: &Path, library: Vec<VideoEntry>) -> AppState {
         scanning: AtomicBool::new(false),
         cancel_scan: AtomicBool::new(false),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
+        archive_provenance: Mutex::new(
+            subsync_studio_lib::archive::provenance::ProvenanceRegistry::default(),
+        ),
     }
 }
 
@@ -184,6 +187,23 @@ fn test_successful_staging_and_batch_download_flow() {
         2,
         "Each staged video must have archive provenance"
     );
+    let library = state.library.lock().unwrap().clone();
+    let registry = state.archive_provenance.lock().unwrap();
+    for source in &result.archive_sources {
+        let canonical = registry
+            .validate(source, &library)
+            .expect("staging created by backend must validate");
+        assert_eq!(canonical.video_path, source.video_path);
+        assert_eq!(canonical.staging_root, source.staging_root);
+        assert_eq!((canonical.season, canonical.episode), (Some(1), Some(1)));
+    }
+    // season/episode فرانت قابل جعل نیست و با مقدار authoritative جایگزین می‌شود.
+    let mut forged = result.archive_sources[0].clone();
+    forged.season = Some(9);
+    forged.episode = Some(9);
+    let canonical = registry.validate(&forged, &library).unwrap();
+    assert_eq!((canonical.season, canonical.episode), (Some(1), Some(1)));
+    drop(registry);
     let provenance_v1 = result
         .archive_sources
         .iter()

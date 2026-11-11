@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::models::OpsProgress;
-use crate::scanner::naming::file_extension;
+use crate::scanner::naming::{file_extension, is_video_file};
 use crate::subtitle::validation::validate_bytes_for_extension;
 
 use super::detect::{discover_archives, DiscoveredArchive};
@@ -94,6 +94,12 @@ fn validate_source(source: &ArchiveSource) -> Result<ValidSource, String> {
         return Err(format!(
             "«{}» یک فایل ویدیویی معمولی نیست",
             source.video_path
+        ));
+    }
+    if !is_video_file(&source.video_file_name) {
+        return Err(format!(
+            "پسوند ویدیوی «{}» پشتیبانی نمی‌شود — منبع رد شد",
+            source.video_file_name
         ));
     }
     let actual_name = video

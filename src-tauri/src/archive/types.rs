@@ -14,6 +14,9 @@ pub const MAX_SUBTITLE_BYTES: u64 = 32 * 1024 * 1024;
 /// حداکثر مجموع اندازهٔ بازشدهٔ یک آرشیو پیش از استخراج.
 pub const MAX_ARCHIVE_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 
+/// حداکثر تعداد عضو/فایل در یک آرشیو (اعلامی و واقعی).
+pub const MAX_ARCHIVE_MEMBERS: usize = 10_000;
+
 /// یک آرشیو شناسایی‌شده با magic bytes داخل `sub/`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

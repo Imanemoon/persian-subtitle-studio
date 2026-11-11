@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use crate::archive::provenance::ProvenanceRegistry;
 use crate::models::{ScanSummary, VideoEntry};
 use crate::settings::Settings;
 
@@ -152,6 +153,8 @@ pub struct AppState {
     pub scanning: AtomicBool,
     pub cancel_scan: AtomicBool,
     pub ops: Arc<Mutex<OpsRegistry>>,
+    /// Provenance سمت سرور برای stagingهای ساخته‌شده توسط دانلود گروهی.
+    pub archive_provenance: Mutex<ProvenanceRegistry>,
 }
 
 /// مسیرهای دائمی برنامه (تنظیمات و لاگ).
