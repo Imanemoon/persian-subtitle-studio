@@ -21,8 +21,11 @@ export function SettingsPage() {
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [newExcluded, setNewExcluded] = useState("");
   // ---- SubSource API key — کاملاً مستقل از draft و دکمهٔ ذخیرهٔ تنظیمات؛
-  // مقدار کلید فقط در این input محلی می‌ماند و هرگز به Settings/draft نمی‌رود ----
-  const [keyStored, setKeyStored] = useState<boolean | null>(null); // null = در حال بررسی
+  // مقدار کلید فقط در این input محلی می‌ماند و هرگز به Settings/draft نمی‌رود.
+  // خطای خواندن Credential Manager = «نامشخص»، نه «ذخیره نشده» ----
+  const [keyStatus, setKeyStatus] = useState<"checking" | "stored" | "missing" | "unknown">(
+    "checking",
+  );
   const [keyInput, setKeyInput] = useState("");
   const [keyBusy, setKeyBusy] = useState<"save" | "delete" | null>(null);
   const [keyMessage, setKeyMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(
@@ -34,12 +37,16 @@ export function SettingsPage() {
     api
       .hasSubsourceApiKey()
       .then((stored) => {
-        if (!cancelled) setKeyStored(stored);
+        if (!cancelled) setKeyStatus(stored ? "stored" : "missing");
       })
       .catch((e) => {
         if (!cancelled) {
-          setKeyStored(false);
-          setKeyMessage({ tone: "danger", text: `بررسی وضعیت کلید ناموفق بود: ${String(e)}` });
+          // خطای زیرساخت هرگز به «ذخیره نشده» تبدیل نمی‌شود — وضعیت نامشخص می‌ماند
+          setKeyStatus("unknown");
+          setKeyMessage({
+            tone: "danger",
+            text: `خواندن وضعیت کلید از Credential Manager ناموفق بود — وضعیت نامشخص است: ${String(e)}`,
+          });
         }
       });
     return () => {
@@ -110,12 +117,16 @@ export function SettingsPage() {
 
   // ---- کنش‌های API key — مستقل از save عمومی تنظیمات ----
 
-  const refreshKeyStatus = async () => {
+  /** بازخوانی وضعیت کلید؛ verified=false یعنی خواندن ناموفق بود و وضعیت «نامشخص» می‌ماند.
+   * پیام را فراخواننده می‌سازد تا نتیجهٔ خودش (ذخیره/حذف موفق) با خطای refresh ترکیب شود. */
+  const refreshKeyStatus = async (): Promise<{ verified: boolean; error: string | null }> => {
     try {
-      setKeyStored(await api.hasSubsourceApiKey());
+      const stored = await api.hasSubsourceApiKey();
+      setKeyStatus(stored ? "stored" : "missing");
+      return { verified: true, error: null };
     } catch (e) {
-      setKeyStored(false);
-      setKeyMessage({ tone: "danger", text: `بررسی وضعیت کلید ناموفق بود: ${String(e)}` });
+      setKeyStatus("unknown");
+      return { verified: false, error: String(e) };
     }
   };
 
@@ -130,8 +141,17 @@ export function SettingsPage() {
     try {
       await api.setSubsourceApiKey(value);
       setKeyInput("");
-      await refreshKeyStatus();
-      setKeyMessage({ tone: "success", text: "API key در Credential Manager ذخیره شد." });
+      // نتیجهٔ خود ذخیره از بازخوانی وضعیت جدا گزارش می‌شود تا خطای بررسی
+      // هرگز با پیام موفقیت جایگزین نشود.
+      const { verified, error } = await refreshKeyStatus();
+      setKeyMessage(
+        verified
+          ? { tone: "success", text: "API key در Credential Manager ذخیره شد." }
+          : {
+              tone: "danger",
+              text: `ذخیرهٔ API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${error ?? ""}`,
+            },
+      );
     } catch (e) {
       setKeyMessage({ tone: "danger", text: `ذخیرهٔ API key ناموفق بود: ${String(e)}` });
     } finally {
@@ -150,8 +170,15 @@ export function SettingsPage() {
     try {
       await api.deleteSubsourceApiKey();
       setKeyInput("");
-      await refreshKeyStatus();
-      setKeyMessage({ tone: "success", text: "API key از Credential Manager حذف شد." });
+      const { verified, error } = await refreshKeyStatus();
+      setKeyMessage(
+        verified
+          ? { tone: "success", text: "API key از Credential Manager حذف شد." }
+          : {
+              tone: "danger",
+              text: `حذف API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${error ?? ""}`,
+            },
+      );
     } catch (e) {
       setKeyMessage({ tone: "danger", text: `حذف API key ناموفق بود: ${String(e)}` });
     } finally {
@@ -375,12 +402,14 @@ export function SettingsPage() {
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="w-40 shrink-0 text-sm text-ink-2">وضعیت کلید</span>
-            {keyStored === null ? (
+            {keyStatus === "checking" ? (
               <Badge tone="warn">در حال بررسی…</Badge>
-            ) : keyStored ? (
+            ) : keyStatus === "stored" ? (
               <Badge tone="success">ذخیره‌شده در Credential Manager</Badge>
-            ) : (
+            ) : keyStatus === "missing" ? (
               <Badge tone="warn">ذخیره نشده</Badge>
+            ) : (
+              <Badge tone="danger">نامشخص — خطا در خواندن وضعیت</Badge>
             )}
           </div>
           <p className="text-xs text-ink-3">
@@ -394,12 +423,13 @@ export function SettingsPage() {
               dir="ltr"
               autoComplete="new-password"
               value={keyInput}
+              disabled={keyBusy !== null}
               onChange={(e) => {
                 setKeyInput(e.target.value);
                 setKeyMessage(null);
               }}
               placeholder="API key را اینجا وارد کنید…"
-              className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-start font-mono text-xs outline-none focus:border-accent"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-start font-mono text-xs outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
           <div className="flex flex-wrap gap-2">
@@ -416,7 +446,7 @@ export function SettingsPage() {
               variant="danger"
               onClick={deleteKey}
               loading={keyBusy === "delete"}
-              disabled={keyBusy !== null || keyStored !== true}
+              disabled={keyBusy !== null || keyStatus !== "stored"}
               title="حذف کلید ذخیره‌شده"
             >
               <Trash2 className="size-4" />
