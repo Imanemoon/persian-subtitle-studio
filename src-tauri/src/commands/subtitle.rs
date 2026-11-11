@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -15,7 +16,7 @@ use crate::models::{
     AnalysisStatus, ExtractionOutcome, ExtractionPlan, ExtractionPlanItem, OpsProgress,
     SkippedExtraction, SubtitleKind, SubtitleValidation, TrackReview, VideoEntry,
 };
-use crate::state::{acquire_single_op, AppState};
+use crate::state::{acquire_batch_op, acquire_single_op, AppState};
 
 use super::media::{apply_entry, get_entry, now_ms, resolve_tool, set_status_core};
 
@@ -586,8 +587,9 @@ pub fn execute_extraction_plan(
         }
     }
 
-    // پرچم لغو تازه مخصوص این عملیات گروهی
-    let cancel = state.ops.lock().unwrap().start_batch()?;
+    // پرچم لغو تازه مخصوص این عملیات گروهی — گارد RAII با Drop ایمن
+    let guard = acquire_batch_op(&state.ops)?;
+    let cancel = Arc::clone(&guard.cancel);
     let total = items.len() as u64;
     crate::logging::info(
         "subtitle",
@@ -609,7 +611,8 @@ pub fn execute_extraction_plan(
                 let _ = app2.emit("library:entry", &updated);
             },
         );
-        st.ops.lock().unwrap().end_batch();
+        // پایان رزرو قبل از رویداد نهایی — همان ترتیب قبلی
+        drop(guard);
         crate::logging::info(
             "subtitle",
             &format!("پلن استخراج تمام شد: {success} موفق، {failed} ناموفق"),
@@ -629,10 +632,18 @@ pub fn execute_extraction_plan(
     Ok(total)
 }
 
-/// لغو همهٔ عملیات جاری (گروهی + استخراج‌های تکی). خروجی: آیا چیزی در جریان بود؟
+/// لغو همهٔ عملیات جاری پوشش‌داده‌شدهٔ قرارداد (گروهی + استخراج‌های تکی).
+/// خروجی: آیا چیزی در جریان بود؟
+///
+/// poison-safe: قفل مسموم با recovery بازیابی می‌شود تا لغو همیشه کار کند.
+/// رزرو اسکن عمداً لغو نمی‌شود — اسکن با عملیات‌های این قرارداد متقابلاً
+/// انحصاری است و لغو لغوِ اسکن فقط از مسیر اختصاصی `stop_scan` انجام می‌شود.
 #[tauri::command]
 pub fn cancel_subtitle_ops(state: State<'_, AppState>) -> bool {
-    let any = state.ops.lock().unwrap().cancel_all();
+    let any = match state.ops.lock() {
+        Ok(mut ops) => ops.cancel_all(),
+        Err(poisoned) => poisoned.into_inner().cancel_all(),
+    };
     if any {
         crate::logging::info("subtitle", "درخواست لغو عملیات ثبت شد");
     }

@@ -85,8 +85,6 @@ fn make_test_state(fake_exe: &Path, library: Vec<VideoEntry>) -> AppState {
         settings: Mutex::new(settings),
         library: Mutex::new(library),
         last_scan: Mutex::new(None),
-        scanning: AtomicBool::new(false),
-        cancel_scan: AtomicBool::new(false),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
         archive_provenance: Mutex::new(
             subsync_studio_lib::archive::provenance::ProvenanceRegistry::default(),
@@ -832,7 +830,7 @@ fn test_batch_operation_concurrency_lock() {
 
     // ۲) تلاش برای رزرو تکی یا گروهی دیگر باید رد شود
     assert!(acquire_single_op(&reg, "video-path").is_err());
-    assert!(reg.lock().unwrap().start_batch().is_err());
+    assert!(acquire_batch_op(&reg).is_err());
 
     // ۳) آزادسازی اسلات
     drop(guard);

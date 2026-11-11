@@ -746,7 +746,11 @@ pub fn execute_subsource_download(
 /// وضعیت عملیات دانلود برای UI — از State رجیستری می‌خواند.
 #[tauri::command]
 pub fn is_download_active(state: State<'_, AppState>) -> bool {
-    state.ops.lock().unwrap().batch_cancel.is_some()
+    // poison-safe: قفل مسموم با recovery بازیابی می‌شود
+    match state.ops.lock() {
+        Ok(ops) => ops.has_active_batch(),
+        Err(poisoned) => poisoned.into_inner().has_active_batch(),
+    }
 }
 
 /// مجموعه کوچک تست‌های هسته (بدون فرایند واقعی — برای اجرای فرایند واقعی
@@ -762,8 +766,6 @@ mod tests {
             settings: Mutex::new(Settings::default()),
             library: Mutex::new(Vec::new()),
             last_scan: Mutex::new(None),
-            scanning: AtomicBool::new(false),
-            cancel_scan: AtomicBool::new(false),
             ops: Arc::new(Mutex::new(crate::state::OpsRegistry::default())),
             archive_provenance: Mutex::new(
                 crate::archive::provenance::ProvenanceRegistry::default(),

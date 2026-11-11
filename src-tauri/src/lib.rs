@@ -14,7 +14,6 @@ pub mod tools;
 
 pub mod archive;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
@@ -71,8 +70,6 @@ pub fn run() {
                 settings: Mutex::new(app_settings),
                 library: Mutex::new(Vec::new()),
                 last_scan: Mutex::new(None),
-                scanning: AtomicBool::new(false),
-                cancel_scan: AtomicBool::new(false),
                 ops: Arc::new(Mutex::new(state::OpsRegistry::default())),
                 archive_provenance: Mutex::new(
                     crate::archive::provenance::ProvenanceRegistry::default(),
