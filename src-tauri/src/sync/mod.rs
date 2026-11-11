@@ -328,7 +328,7 @@ pub(crate) fn execute_in_workspace(
                 "کد خروج صفر بود اما marker آفست یافت نشد — نتیجهٔ سینک نامشخص است و خروجی دور ریخته می‌شود. {diagnostic_tail}"
             ),
         ),
-        cli::RunClassification::Synchronized => {
+        cli::RunClassification::Synchronized { offset_seconds } => {
             on_progress(SyncProgress {
                 stage: SyncStage::Verifying,
                 message: "اعتبارسنجی خروجی سینک‌شده…".into(),
@@ -355,7 +355,8 @@ pub(crate) fn execute_in_workspace(
             SyncOutcome {
                 status: SyncStatus::Synced,
                 output_path: Some(output),
-                offset_seconds: cli::extract_offset_seconds(&run.logs),
+                // آفستِ validated در طبقه‌بندی حمل شده — همیشه Some برای Synced
+                offset_seconds: Some(offset_seconds),
                 warnings: styling_loss_warning(input_ext).into_iter().collect(),
                 diagnostic: diagnostic_tail,
             }

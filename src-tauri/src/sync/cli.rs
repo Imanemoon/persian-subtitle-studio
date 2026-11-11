@@ -2,14 +2,16 @@
 //! طبقه‌بندی fail-closed و خاتمهٔ درخت فرایند.
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::types::{SyncRequest, CAPTURE_CAP_BYTES, LOW_QUALITY_MARKER, OFFSET_MARKER};
+use super::types::{
+    SyncRequest, CAPTURE_CAP_BYTES, LOG_TAIL_LIMIT_BYTES, LOW_QUALITY_MARKER, OFFSET_MARKER,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -71,42 +73,68 @@ pub fn build_cli_args(request: &SyncRequest, output: &Path, log_dir: &Path) -> V
 // ---------------------------------------------------------------------
 
 /// طبقه‌بندی خام یک run بر اساس کد خروج + متن لاگ‌ها — پیش از اعتبارسنجی فایل خروجی.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RunClassification {
     /// marker کیفیت پایین — بر کد خروج و marker آفست اولویت دارد؛ خروجی دور ریخته می‌شود.
     LowQuality,
-    /// کد خروج صفر + marker آفست — هنوز باید فایل خروجی اعتبارسنجی شود.
-    Synchronized,
+    /// کد خروج صفر + marker آفست با مقدار عددی متناهی — آفستِ validated حمل می‌شود
+    /// تا «سینک‌شده با آفست گمشده» هرگز ممکن نشود. هنوز فایل خروجی باید اعتبارسنجی شود.
+    Synchronized { offset_seconds: f64 },
     /// کد خروج غیرصفر (یا خاتمهٔ غیرعادی بدون کد).
     FailedExit(Option<i32>),
-    /// کد خروج صفر بدون marker آفست — هیچ ادعایی دربارهٔ سینک ممکن نیست.
+    /// کد خروج صفر بدون marker آفستِ معتبر — هیچ ادعایی دربارهٔ سینک ممکن نیست.
     Unknown,
 }
 
-/// marker کیفیت پایین بر همه‌چیز مقدم است (قانون ۱)، بعد کد خروج، بعد marker آفست.
+/// طبقه‌بندی صارم: موفقیت = کد خروج صفر **و** آفست عددی متناهیِ parse‌شده.
+/// مقدارهای NaN/±inf/گم‌شده/ناقص و حتی marker خرابِ اولین، fail-closed به Unknown
+/// می‌روند و marker معتبرِ بعدی‌شان جایگزین نمی‌شود (فرمت واقعی ffsubsync برای
+/// یک ورودی فقط یک `offset seconds:` می‌دهد؛ پس هیچ دلیل موجهی برای override نیست).
 pub(crate) fn classify_run(exit_code: Option<i32>, logs: &str) -> RunClassification {
     if logs.contains(LOW_QUALITY_MARKER) {
         return RunClassification::LowQuality;
     }
     match exit_code {
-        Some(0) => {
-            if logs.contains(OFFSET_MARKER) {
-                RunClassification::Synchronized
-            } else {
-                RunClassification::Unknown
-            }
-        }
+        Some(0) => match extract_offset_seconds(logs) {
+            Some(offset_seconds) => RunClassification::Synchronized { offset_seconds },
+            None => RunClassification::Unknown,
+        },
         Some(code) => RunClassification::FailedExit(Some(code)),
         None => RunClassification::FailedExit(None),
     }
 }
 
-/// استخراج آفست از marker `offset seconds: %.3f` — اولین مقدار معتبر.
+/// استخراج آفست از marker `offset seconds: %.3f` — فقط اولین رخداد، فقط عدد متناهی.
+/// NaN/±inf/مقدار گم‌شده یا ناقص → None (fail-closed؛ بدون هیچ leniency مثل trim کاما).
 pub(crate) fn extract_offset_seconds(logs: &str) -> Option<f64> {
     let idx = logs.find(OFFSET_MARKER)?;
     let rest = &logs[idx + OFFSET_MARKER.len()..];
     let token = rest.split_whitespace().next()?;
-    token.trim_end_matches(',').parse::<f64>().ok()
+    token
+        .parse::<f64>()
+        .ok()
+        .filter(|offset| offset.is_finite())
+}
+
+/// خواندن tail محدودشدهٔ ffsubsync.log — حداکثر ۱۲۸KiB از انتهای فایل، با seek؛
+/// فایل کامل هرگز به حافظه کشیده نمی‌شود. فایل ناموجود/ناخوانا/خالی → None.
+pub(crate) fn read_log_tail(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let start = len.saturating_sub(LOG_TAIL_LIMIT_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bounded = file.take(LOG_TAIL_LIMIT_BYTES);
+    let mut buffer = Vec::with_capacity(LOG_TAIL_LIMIT_BYTES as usize);
+    bounded.read_to_end(&mut buffer).ok()?;
+    let text = String::from_utf8_lossy(&buffer).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// tail محدودشدهٔ متن برای diagnostic — متن خام کامل هرگز به بیرون نمی‌رود.
@@ -341,14 +369,12 @@ pub(crate) fn run_process(
             logs.push('\n');
         }
         // لاگ فایل ffsubsync هم بررسی می‌شود (با --log-dir-path نگه داشته می‌شود)
+        // — فقط tail محدودشده؛ فایل کامل هرگز به حافظه کشیده نمی‌شود
         let log_path = log_dir.join("ffsubsync.log");
-        if let Ok(bytes) = std::fs::read(&log_path) {
-            let text = String::from_utf8_lossy(&bytes);
-            if !text.trim().is_empty() {
-                logs.push_str("[ffsubsync.log]\n");
-                logs.push_str(&text);
-                logs.push('\n');
-            }
+        if let Some(text) = read_log_tail(&log_path) {
+            logs.push_str("[ffsubsync.log]\n");
+            logs.push_str(&text);
+            logs.push('\n');
         }
     }
 
@@ -383,6 +409,18 @@ mod tests {
     use super::*;
     use crate::sync::SyncConfig;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "subsync-sync-clitest-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 
     fn request(config: SyncConfig, ffmpeg: Option<PathBuf>) -> SyncRequest {
         SyncRequest {
@@ -517,7 +555,44 @@ mod tests {
     #[test]
     fn offset_marker_with_zero_exit_is_synchronized() {
         let logs = "[stderr]\nscore: 5.0\noffset seconds: -12.345\n";
-        assert_eq!(classify_run(Some(0), logs), RunClassification::Synchronized);
+        assert_eq!(
+            classify_run(Some(0), logs),
+            RunClassification::Synchronized {
+                offset_seconds: -12.345
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_offset_marker_with_zero_exit_is_unknown() {
+        // هیچ‌کدام از این‌ها نباید «سینک‌شده» شوند — fail-closed به Unknown
+        let malformed = [
+            "offset seconds: not-a-number",
+            "offset seconds: NaN",
+            "offset seconds: nan",
+            "offset seconds: inf",
+            "offset seconds: -inf",
+            "offset seconds: Infinity",
+            "offset seconds:",    // مقدار گم‌شده
+            "offset seconds:   ", // مقدار خالی
+            "offset seconds:\n",  // marker پایان‌یافته
+        ];
+        for logs in malformed {
+            assert_eq!(
+                classify_run(Some(0), logs),
+                RunClassification::Unknown,
+                "{logs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_malformed_offset_marker_is_not_overridden_by_later_valid_one() {
+        // فرمت واقعی ffsubsync برای یک ورودی فقط یک marker می‌دهد؛ پس اولین
+        // مقدار خراب بدون هیچ override ای fail-closed می‌شود
+        let logs = "offset seconds: garbage\nscore: 5.0\noffset seconds: 1.500\n";
+        assert_eq!(classify_run(Some(0), logs), RunClassification::Unknown);
+        assert_eq!(extract_offset_seconds(logs), None);
     }
 
     #[test]
@@ -527,6 +602,106 @@ mod tests {
         assert_eq!(extract_offset_seconds("no marker here"), None);
         assert_eq!(extract_offset_seconds("offset seconds: not-a-number"), None);
         assert!((extract_offset_seconds("offset seconds: 0.000").unwrap()).abs() < 1e-9);
+        // فقط مقادیر عددی متناهی پذیرفته می‌شوند
+        assert_eq!(extract_offset_seconds("offset seconds: 12.5"), Some(12.5));
+        assert_eq!(extract_offset_seconds("offset seconds: NaN"), None);
+        assert_eq!(extract_offset_seconds("offset seconds: nan"), None);
+        assert_eq!(extract_offset_seconds("offset seconds: inf"), None);
+        assert_eq!(extract_offset_seconds("offset seconds: -inf"), None);
+        assert_eq!(extract_offset_seconds("offset seconds: Infinity"), None);
+    }
+
+    #[test]
+    fn log_tail_missing_or_empty_returns_none() {
+        let tmp = unique_temp_dir("logtail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // فایل ناموجود
+        assert_eq!(read_log_tail(&tmp.join("missing.log")), None);
+        // فایل خالی
+        let empty = tmp.join("empty.log");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(read_log_tail(&empty), None);
+        // فایل فقط whitespace
+        let blank = tmp.join("blank.log");
+        std::fs::write(&blank, b"\n\n  \n").unwrap();
+        assert_eq!(read_log_tail(&blank), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn log_tail_shorter_than_limit_returns_full_content() {
+        let tmp = unique_temp_dir("logtail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("short.log");
+        let content = "score: 5.0\noffset seconds: 1.234\n";
+        std::fs::write(&path, content).unwrap();
+        // متن trim می‌شود — newline انتهایی حذف می‌شود
+        assert_eq!(
+            read_log_tail(&path).as_deref(),
+            Some("score: 5.0\noffset seconds: 1.234")
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn log_tail_larger_than_limit_returns_only_final_bytes() {
+        let tmp = unique_temp_dir("logtail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("large.log");
+        // ۱۲۸KiB + ۵۰۰ بایت — فقط آخرین ۱۲۸KiB باید برگردد
+        let mut content = vec![b'x'; LOG_TAIL_LIMIT_BYTES as usize + 500];
+        content.extend_from_slice(b"offset seconds: 1.500");
+        std::fs::write(&path, &content).unwrap();
+
+        let tail = read_log_tail(&path).expect("tail");
+        assert_eq!(tail.len(), LOG_TAIL_LIMIT_BYTES as usize);
+        // دقیقاً انتهای فایل — نه از ابتدای آن
+        let expected_suffix = &content[content.len() - LOG_TAIL_LIMIT_BYTES as usize..];
+        assert_eq!(tail.as_bytes(), expected_suffix);
+        assert!(tail.ends_with("offset seconds: 1.500"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn marker_inside_retained_tail_is_detected() {
+        let tmp = unique_temp_dir("logtail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("in-tail.log");
+        // marker در انتهای فایل بزرگ — داخل tail نگه داشته می‌شود
+        let mut content = vec![b'x'; LOG_TAIL_LIMIT_BYTES as usize + 500];
+        content.extend_from_slice(b"offset seconds: 1.500");
+        std::fs::write(&path, &content).unwrap();
+
+        let tail = read_log_tail(&path).unwrap();
+        assert_eq!(
+            classify_run(Some(0), &tail),
+            RunClassification::Synchronized {
+                offset_seconds: 1.500
+            }
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn marker_outside_retained_tail_does_not_create_false_success() {
+        let tmp = unique_temp_dir("logtail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("out-of-tail.log");
+        // marker فقط در ابتدای فایل — بیرون از tail؛ نباید false success بدهد
+        let mut content = b"offset seconds: 1.500\n".to_vec();
+        content.extend(std::iter::repeat_n(
+            b'x',
+            LOG_TAIL_LIMIT_BYTES as usize + 500,
+        ));
+        std::fs::write(&path, &content).unwrap();
+
+        let tail = read_log_tail(&path).unwrap();
+        assert!(
+            !tail.contains("offset seconds"),
+            "tail نباید marker بیرونی را داشته باشد"
+        );
+        assert_eq!(classify_run(Some(0), &tail), RunClassification::Unknown);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

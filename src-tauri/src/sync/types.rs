@@ -23,6 +23,9 @@ pub const DIAGNOSTIC_TAIL_CHARS: usize = 2000;
 /// سقف بایت‌های ثبت‌شده از هر pipe (آخرین بخش نگه داشته می‌شود).
 pub(crate) const CAPTURE_CAP_BYTES: usize = 128 * 1024;
 
+/// سقف خواندن tail فایل لاگ ffsubsync — فایل کامل هرگز به حافظه کشیده نمی‌شود.
+pub(crate) const LOG_TAIL_LIMIT_BYTES: u64 = 128 * 1024;
+
 /// تنظیمات اجرای سینک — قرینهٔ `ProcessingSettings`.
 /// (`sync_workers` در این سطح معنا ندارد؛ تعداد فرایندهای موازی را
 /// pipeline آینده کنترل می‌کند و هر فرایند همیشه `--parallel-workers 1` می‌گیرد.)
