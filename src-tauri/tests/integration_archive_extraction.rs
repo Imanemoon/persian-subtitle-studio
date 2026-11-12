@@ -716,7 +716,12 @@ fn existing_target_is_never_overwritten_and_race_has_one_winner() {
     let archive_before = fs::read(&archive_path).unwrap();
     fs::write(existing.target("srt"), b"OLD SUBTITLE").unwrap();
     let result = run_execute(&fake, &existing, None);
-    assert_eq!(statuses(&result), vec![ArchiveItemStatus::Failed]);
+    // تعارض حالا تایپ‌شده است: Conflict — مقصد حفظ شده و هیچ بازنویسی‌ای رخ نداده
+    assert_eq!(statuses(&result), vec![ArchiveItemStatus::Conflict]);
+    assert_eq!(
+        result.items[0].output_path.as_deref(),
+        Some(existing.target("srt").to_str().unwrap())
+    );
     assert_eq!(
         fs::read(existing.target("srt")).unwrap(),
         b"OLD SUBTITLE".to_vec()
@@ -748,9 +753,10 @@ fn existing_target_is_never_overwritten_and_race_has_one_winner() {
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     let placed = results.iter().filter(|r| r.placed == 1).count();
-    let failed = results.iter().filter(|r| r.failed == 1).count();
+    // بازندهٔ مسابقه حالا Conflict تایپ‌شده می‌دهد — نه Failed
+    let conflicts = results.iter().filter(|r| r.conflicts == 1).count();
     assert_eq!(placed, 1, "{results:?}");
-    assert_eq!(failed, 1, "{results:?}");
+    assert_eq!(conflicts, 1, "{results:?}");
     assert_eq!(fs::read(race.target("srt")).unwrap(), SRT_FA.as_bytes());
     assert_no_extract_dirs(&race.staging);
 }

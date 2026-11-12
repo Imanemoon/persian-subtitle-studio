@@ -47,6 +47,9 @@ fn is_plain_file(path: &Path) -> bool {
 }
 
 /// اعتبارسنجی کامل درخواست قبل از هر اجرا — خروجی: (پسوند زیرنویس، stem ویدیو).
+// SyncOutcome عمداً به‌صورت مقدار در Err حمل می‌شود (سراسری fail-closed)؛
+// اندازهٔ آن آگاهانه پذیرفته شده است.
+#[allow(clippy::result_large_err)]
 fn validate_request(request: &SyncRequest) -> Result<(String, String), SyncOutcome> {
     if !is_plain_file(&request.ffsubsync_path) {
         return Err(SyncOutcome::bare(
@@ -200,12 +203,67 @@ impl SyncWorkspace {
     }
 }
 
+/// مالکیت workspace موقتِ یک اجرای موفق — opaque و backend-only.
+///
+/// فقط `run_sync` روی `Synced` می‌سازد (سازنده private همین ماژول)؛
+/// Serialize/Deserialize/Clone ندارد؛ فقط نمایش مسیر و حذف مصرف‌کننده.
+pub struct SyncWorkspaceHandle {
+    workspace: SyncWorkspace,
+}
+
+impl std::fmt::Debug for SyncWorkspaceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // مسیر موقت هرگز در لاگ/رویدادها لو نمی‌رود
+        f.write_str("SyncWorkspaceHandle(<owned temporary workspace>)")
+    }
+}
+
+impl SyncWorkspaceHandle {
+    /// مسیر برای نمایش/گزارش — فقط خواندنی؛ هیچ توان حذفی از این مسیر نیست.
+    pub fn display_root(&self) -> &Path {
+        &self.workspace.root
+    }
+
+    /// حذف مصرف‌کننده (by-value → دوباره‌کاری type-level ناممکن).
+    /// گاردهای دفاعی: مطلق + پیشوند خود adapter + بدون symlink/reparse.
+    /// خطاها warning برمی‌گردند؛ هرگز panic نمی‌کند.
+    pub fn discard(self) -> Vec<String> {
+        let root = &self.workspace.root;
+        let safe = root.is_absolute()
+            && root
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with(WORKSPACE_PREFIX))
+                .unwrap_or(false)
+            && std::fs::symlink_metadata(root)
+                .map(|meta| meta.is_dir() && !crate::archive::listing::is_link_or_reparse(&meta))
+                .unwrap_or(false);
+        if !safe {
+            return vec![format!(
+                "مسیر workspace برای پاک‌سازی معتبر نیست: {}",
+                root.display()
+            )];
+        }
+        self.workspace.remove()
+    }
+}
+
+/// سازندهٔ خصوصی — تنها نقطهٔ ساخت handle در کل crate.
+fn from_workspace(workspace: SyncWorkspace) -> SyncWorkspaceHandle {
+    SyncWorkspaceHandle { workspace }
+}
+
+/// شناسهٔ یکتای run برای pipeline — wrapper باریک روی توکن یکتا.
+pub(crate) fn new_pipeline_run_id() -> String {
+    cli::unique_token()
+}
+
 /// اجرای کامل سینک برای یک درخواست — ورودی‌ها را اعتبارسنجی، در workspace یکتا
 /// اجرا و طبق قواعد fail-closed طبقه‌بندی می‌کند.
 ///
 /// قرارداد خروجی:
-/// - `Synced`: workspace و کاندیدا **نگه داشته می‌شوند** و مسیر خروجی برای
-///   مرحلهٔ جانمایی بعدی برگردانده می‌شود (مالکیت به فراخواننده منتقل می‌شود).
+/// - `Synced`: workspace و کاندیدا **نگه داشته می‌شوند**، مالکیت workspace با
+///   `attach_workspace` به outcome منتقل و برای مرحلهٔ جانمایی بعدی با
+///   `take_workspace` تحویل می‌شود.
 /// - هر وضعیت دیگر: workspace و خروجی جزئی پاک می‌شوند؛ ورودی‌ها همیشه دست‌نخورده‌اند.
 pub fn run_sync<F: FnMut(SyncProgress)>(
     request: &SyncRequest,
@@ -239,8 +297,11 @@ pub fn run_sync<F: FnMut(SyncProgress)>(
         on_progress,
     );
 
-    // هر وضعیتی غیر از موفقیت، هیچ کاندیدایی نمی‌تواند نگه دارد
-    if outcome.status != SyncStatus::Synced {
+    // فقط موفقیت workspace را نگه می‌دارد (مالکیت به فراخواننده منتقل می‌شود)؛
+    // هر وضعیت دیگر، هیچ کاندیدایی نمی‌تواند نگه دارد
+    if outcome.status == SyncStatus::Synced {
+        outcome.attach_workspace(from_workspace(workspace));
+    } else {
         for note in workspace.remove() {
             if note.is_empty() {
                 continue;
@@ -352,14 +413,15 @@ pub(crate) fn execute_in_workspace(
                     format!("{reason} — خروجی دور ریخته می‌شود. {diagnostic_tail}"),
                 );
             }
-            SyncOutcome {
-                status: SyncStatus::Synced,
-                output_path: Some(output),
-                // آفستِ validated در طبقه‌بندی حمل شده — همیشه Some برای Synced
-                offset_seconds: Some(offset_seconds),
-                warnings: styling_loss_warning(input_ext).into_iter().collect(),
-                diagnostic: diagnostic_tail,
-            }
+            let mut outcome = SyncOutcome::bare(
+                SyncStatus::Synced,
+                diagnostic_tail,
+            );
+            outcome.output_path = Some(output);
+            // آفستِ validated در طبقه‌بندی حمل شده — همیشه Some برای Synced
+            outcome.offset_seconds = Some(offset_seconds);
+            outcome.warnings = styling_loss_warning(input_ext).into_iter().collect();
+            outcome
         }
     }
 }

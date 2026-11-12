@@ -322,15 +322,14 @@ pub async fn extract_track_for_review(
     Ok(review)
 }
 
-/// هسته تبدیل فایل بررسی تأییدشده به `<base>.fa.srt` — مستقل از Tauri.
-pub fn run_promote_blocking(
+/// هسته تبدیل فایل بررسی تأییدشده به `<base>.fa.srt` — مستقل از Tauri و
+/// **بدون رزرو اسلات** تا pipeline (مالک گارد گروهی) هم بتواند مستقیماً
+/// صدا بزند؛ رزرو در wrapper `run_promote_blocking` انجام می‌شود.
+pub fn promote_review_core(
     state: &AppState,
     path: &str,
     stream_index: u32,
 ) -> Result<VideoEntry, String> {
-    // رزرو اتمیک اسلات از ابتدا تا پایان (RAII — در همهٔ مسیرها آزاد می‌شود)
-    let guard = acquire_single_op(&state.ops, path)?;
-
     let Some(entry) = get_entry(state, path) else {
         return Err("این ویدیو در کتابخانه نیست.".into());
     };
@@ -414,8 +413,20 @@ pub fn run_promote_blocking(
     a.analyzed_at_ms = now_ms();
     refresh_siblings(&mut updated);
     apply_entry(state, updated.clone());
-    drop(guard);
     Ok(updated)
+}
+
+/// wrapper سازگاری: رزرو اتمیک اسلات تکی + فراخوانی هستهٔ slot-free.
+pub fn run_promote_blocking(
+    state: &AppState,
+    path: &str,
+    stream_index: u32,
+) -> Result<VideoEntry, String> {
+    // رزرو اتمیک اسلات از ابتدا تا پایان (RAII — در همهٔ مسیرها آزاد می‌شود)
+    let guard = acquire_single_op(&state.ops, path)?;
+    let result = promote_review_core(state, path, stream_index);
+    drop(guard);
+    result
 }
 
 #[tauri::command]
@@ -638,12 +649,16 @@ pub fn execute_extraction_plan(
 /// poison-safe: قفل مسموم با recovery بازیابی می‌شود تا لغو همیشه کار کند.
 /// رزرو اسکن عمداً لغو نمی‌شود — اسکن با عملیات‌های این قرارداد متقابلاً
 /// انحصاری است و لغو لغوِ اسکن فقط از مسیر اختصاصی `stop_scan` انجام می‌شود.
+/// اگر pipeline فعال باشد و cancel_all پرچم آن را ست کند، waiter آن بیدار
+/// می‌شود (notify پس از رهایی قفل registry).
 #[tauri::command]
 pub fn cancel_subtitle_ops(state: State<'_, AppState>) -> bool {
     let any = match state.ops.lock() {
         Ok(mut ops) => ops.cancel_all(),
         Err(poisoned) => poisoned.into_inner().cancel_all(),
     };
+    // رهایی قفل registry پیش از notify — هیچ قفل دیگری هم‌زمان نگه داشته نمی‌شود
+    crate::pipeline::notify_cancelled_waiter(&state);
     if any {
         crate::logging::info("subtitle", "درخواست لغو عملیات ثبت شد");
     }

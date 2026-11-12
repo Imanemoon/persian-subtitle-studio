@@ -5,7 +5,7 @@
 //! جانمایی کنار ویدیو، هیچ worker pool و هیچ وابستگی به AppHandle/State
 //! اینجا وجود ندارد.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,8 @@ pub enum SyncStatus {
 }
 
 /// نتیجهٔ ساختاریافتهٔ یک اجرا — برای pipeline/رویدادها قابل serialize.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `Clone`/`PartialEq` ندارد: مالکیت workspace یکتاست و handle قابل تکثیر نیست.
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncOutcome {
     pub status: SyncStatus,
@@ -112,6 +113,10 @@ pub struct SyncOutcome {
     pub warnings: Vec<String>,
     /// تشخیص کوتاه و محدودشده (tail لاگ) — برای لاگ/عیب‌یابی، نه نمایش کامل.
     pub diagnostic: String,
+    /// مالکیت workspace فقط روی `Synced` — opaque، غیر-serialize، از فرانت
+    /// قابل ساخت نیست؛ انتقال با `take_workspace` و حذف با `discard`.
+    #[serde(skip)]
+    workspace: Option<super::SyncWorkspaceHandle>,
 }
 
 impl SyncOutcome {
@@ -122,7 +127,24 @@ impl SyncOutcome {
             offset_seconds: None,
             warnings: Vec::new(),
             diagnostic: diagnostic.into(),
+            workspace: None,
         }
+    }
+
+    /// فقط `run_sync` (والد) پس از موفقیت مالکیت workspace را ضمیمه می‌کند.
+    pub(super) fn attach_workspace(&mut self, handle: super::SyncWorkspaceHandle) {
+        debug_assert!(self.workspace.is_none());
+        self.workspace = Some(handle);
+    }
+
+    /// انتقال یک‌بارهٔ مالکیت به pipeline — دومین فراخوانی None می‌دهد.
+    pub(crate) fn take_workspace(&mut self) -> Option<super::SyncWorkspaceHandle> {
+        self.workspace.take()
+    }
+
+    /// مسیر workspace فقط برای نمایش/گزارش — هیچ توان حذفی از این مسیر نیست.
+    pub(crate) fn workspace_display_root(&self) -> Option<&Path> {
+        self.workspace.as_ref().map(|h| h.display_root())
     }
 }
 

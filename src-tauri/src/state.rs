@@ -301,6 +301,8 @@ pub struct AppState {
     pub ops: Arc<Mutex<OpsRegistry>>,
     /// Provenance سمت سرور برای stagingهای ساخته‌شده توسط دانلود گروهی.
     pub archive_provenance: Mutex<ProvenanceRegistry>,
+    /// pipeline فعال (در صورت وجود) — admission از طریق ops registry انجام می‌شود.
+    pub pipeline: Mutex<Option<Arc<crate::pipeline::PipelineControl>>>,
 }
 
 /// مسیرهای دائمی برنامه (تنظیمات و لاگ).

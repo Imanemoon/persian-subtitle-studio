@@ -159,6 +159,7 @@ fn make_state() -> Arc<AppState> {
         library: Mutex::new(Vec::new()),
         last_scan: Mutex::new(None),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
+        pipeline: Mutex::new(None),
         archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
     })
 }

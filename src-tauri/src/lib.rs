@@ -4,6 +4,7 @@ pub mod commands;
 pub mod logging;
 pub mod media;
 pub mod models;
+pub mod pipeline;
 pub mod scanner;
 pub mod settings;
 pub mod state;
@@ -74,6 +75,7 @@ pub fn run() {
                 archive_provenance: Mutex::new(
                     crate::archive::provenance::ProvenanceRegistry::default(),
                 ),
+                pipeline: Mutex::new(None),
             });
             app.manage(AppPaths { config_dir });
 
@@ -87,6 +89,11 @@ pub fn run() {
             commands::scan::is_scanning,
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::pipeline::start_pipeline,
+            commands::pipeline::resolve_pipeline_decision,
+            commands::pipeline::cancel_pipeline,
+            commands::pipeline::get_pipeline_state,
+            commands::pipeline::is_pipeline_active,
             commands::secrets::set_subsource_api_key,
             commands::secrets::has_subsource_api_key,
             commands::secrets::delete_subsource_api_key,

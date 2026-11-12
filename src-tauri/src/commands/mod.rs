@@ -2,6 +2,7 @@
 
 pub mod logs;
 pub mod media;
+pub mod pipeline;
 pub mod scan;
 pub mod secrets;
 pub mod settings;
