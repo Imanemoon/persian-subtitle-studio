@@ -255,6 +255,7 @@ impl PipelineControl {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum WaitExit {
     Cancelled,
     Resolved(DecisionOptionPayload),
@@ -336,7 +337,8 @@ pub(crate) fn enter_worker(
         }
     };
     let cleanup = WorkerCleanup::new(state, run_id, guard);
-    engine::run_worker(state, &control, cleanup, input, &sink);
+    let io = engine::PipelineIo::production();
+    engine::run_worker(state, &control, cleanup, input, &sink, &io);
 }
 
 /// لغو pipeline فعال — فقط control منتشرشده را هدف می‌گیرد؛ هرگز
@@ -409,3 +411,6 @@ pub fn resolve_decision_core(
     control.gate.notify_all();
     Ok(payload)
 }
+
+#[cfg(test)]
+mod tests;

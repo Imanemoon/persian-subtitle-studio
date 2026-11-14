@@ -128,6 +128,77 @@ fn write_archives(root: &Path) -> usize {
     written
 }
 
+const ZIP_MAGIC: &[u8] = &[0x50, 0x4B, 0x03, 0x04];
+
+/// زیرنویس فارسی معتبر داخل آرشیو — UTF-8 با محتوای فارسی واقعی
+const SRT_FA_MEMBER: &str =
+    "1\n00:00:01,000 --> 00:00:04,000\nسلام دنیا\n\n2\n00:00:05,000 --> 00:00:08,000\nخط دوم فارسی\n";
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// عضو fake_7z سازگار: `F|path|size|attrs|symlink|hardlink|reparse|hex|flags`
+fn manifest_member(path: &str, content: &[u8]) -> String {
+    format!(
+        "F|{}|{}||{}|{}|{}|{}|",
+        path,
+        content.len(),
+        "",
+        "",
+        "",
+        hex(content)
+    )
+}
+
+/// آرشیو سازگار با fake_7z: magic واقعی ZIP + manifest متنی اعضا.
+/// `ambiguous` = دو عضو منطبق فارسی برای سناریوی تصمیم کاربر.
+fn write_manifest_archive(path: &Path, stem: &str, ambiguous: bool) -> bool {
+    let mut data = ZIP_MAGIC.to_vec();
+    let primary = manifest_member(&format!("{stem}.fa.srt"), SRT_FA_MEMBER.as_bytes());
+    data.extend_from_slice(primary.as_bytes());
+    data.push(b'\n');
+    if ambiguous {
+        let second = manifest_member(&format!("{stem}.fa.2.srt"), SRT_FA_MEMBER.as_bytes());
+        data.extend_from_slice(second.as_bytes());
+        data.push(b'\n');
+    }
+    fs::write(path, &data).is_ok()
+}
+
+/// دانلود شبیه‌سازی‌شده با آرشیوهای manifestدار — برای تست انتها-به-انتهای
+/// pipeline که پس از دانلود، آرشیو را با fake 7-Zip باز می‌کند.
+fn write_manifest_archives(root: &Path, ambiguous: bool) -> usize {
+    let mut videos = Vec::new();
+    collect_videos(root, &mut videos);
+    let mut written = 0;
+    for video in &videos {
+        let Some(parent) = video.parent() else {
+            continue;
+        };
+        let Some(stem) = video.file_stem() else {
+            continue;
+        };
+        let sub_dir = parent.join("sub");
+        if fs::create_dir_all(&sub_dir).is_err() {
+            continue;
+        }
+        let archive = sub_dir.join(format!(
+            "{}_sub_{}.zip",
+            stem.to_string_lossy(),
+            written + 1
+        ));
+        if write_manifest_archive(&archive, &stem.to_string_lossy(), ambiguous) {
+            written += 1;
+        }
+    }
+    written
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -232,6 +303,20 @@ fn main() {
             println!("Progress: {}%", i * 5);
             thread::sleep(Duration::from_millis(500));
         }
+        process::exit(0);
+    }
+
+    // آرشیوهای manifestدار (سازگار با fake 7-Zip) — یک عضو منطبق
+    if mode.as_deref() == Some("write-manifest-archives") {
+        let n = write_manifest_archives(&target, false);
+        println!("Downloaded {n} subtitles successfully");
+        process::exit(0);
+    }
+
+    // آرشیوهای manifestدار با دو عضو منطبق — سناریوی ابهام
+    if mode.as_deref() == Some("write-manifest-archives-ambiguous") {
+        let n = write_manifest_archives(&target, true);
+        println!("Downloaded {n} subtitles successfully");
         process::exit(0);
     }
 

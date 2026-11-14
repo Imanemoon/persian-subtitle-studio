@@ -30,15 +30,35 @@ pub(crate) enum PipelineError {
 }
 
 /// پایان lifecycle worker — خلاصهٔ نهایی داخل boundary؛ پاک‌سازی بیرون آن.
+/// وابستگی‌های بیرونی pipeline — در تولید مقدار واقعی، در تست تزریق‌شدنی.
+/// هیچ رفتار شاخه‌ای جدیدی به تولید اضافه نمی‌کند؛ فقط جای درز برای آزمون.
+pub(crate) struct PipelineIo<'a> {
+    /// بازیابی API key از مخزن کلید (همان `retrieve_api_key` در تولید).
+    pub key_provider: &'a (dyn Fn() -> Result<Option<String>, String> + Send + Sync),
+    /// ریشهٔ staging دانلود — `None` = ریشهٔ volume (رفتار تولید).
+    pub staging_base: Option<&'a std::path::Path>,
+}
+
+impl PipelineIo<'static> {
+    /// مقدار تولید: کلید از Credential Manager، staging روی ریشهٔ volume.
+    pub(crate) fn production() -> Self {
+        PipelineIo {
+            key_provider: &crate::subsource::retrieve_api_key,
+            staging_base: None,
+        }
+    }
+}
+
 pub(crate) fn run_worker(
     state: &AppState,
     control: &Arc<PipelineControl>,
     cleanup: super::WorkerCleanup<'_>,
     input: PipelineInput,
     sink: &super::SinkStore,
+    io: &PipelineIo<'_>,
 ) {
     let lifecycle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        match run_pipeline_body(state, control, input, sink) {
+        match run_pipeline_body(state, control, input, sink, io) {
             Ok(summary) => summary, // ۱) موفق
             Err(PipelineError::Cancelled) => {
                 // ۲) لغو
@@ -133,6 +153,7 @@ pub(crate) fn run_pipeline_body(
     control: &Arc<PipelineControl>,
     input: PipelineInput,
     sink: &super::SinkStore,
+    io: &PipelineIo<'_>,
 ) -> Result<PipelineSummary, PipelineError> {
     let started = Instant::now();
     let cancel = control.cancel_flag().clone();
@@ -529,7 +550,7 @@ pub(crate) fn run_pipeline_body(
         .collect();
 
     if !needer_idxs.is_empty() {
-        match crate::subsource::retrieve_api_key() {
+        match (io.key_provider)() {
             Err(err) => {
                 // خطای مخزن کلید ≠ «کلید تنظیم نشده» — جدا و صادقانه گزارش می‌شود
                 control.set_key_store_error(Some(err.clone()));
@@ -585,7 +606,7 @@ pub(crate) fn run_pipeline_body(
                             state,
                             &plan.items,
                             Some(key),
-                            None,
+                            io.staging_base,
                             &cancel,
                             &mut |p| {
                                 control.set_message(p.message.clone());
