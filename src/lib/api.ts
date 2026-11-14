@@ -11,6 +11,7 @@ import type {
   TrackReview,
   VideoEntry,
 } from "../types";
+import type { PipelineSnapshot } from "../types/pipeline";
 
 export const api = {
   getLibrary: () => invoke<VideoEntry[]>("get_library"),
@@ -79,4 +80,16 @@ export const api = {
     });
     return typeof picked === "string" ? picked : null;
   },
+
+  // ---- Pipeline انتها-به-انتها — فرانت فقط شناسه‌های مات بک‌اند را می‌فرستد ----
+  startPipeline: (paths: string[]) =>
+    invoke<PipelineSnapshot>("start_pipeline", {
+      input: { kind: "files", paths },
+    }),
+  resolvePipelineDecision: (decisionId: string, optionId: string) =>
+    invoke<void>("resolve_pipeline_decision", { decisionId, optionId }),
+  cancelPipeline: () => invoke<boolean>("cancel_pipeline"),
+  getPipelineState: () =>
+    invoke<PipelineSnapshot | null>("get_pipeline_state"),
+  isPipelineActive: () => invoke<boolean>("is_pipeline_active"),
 };

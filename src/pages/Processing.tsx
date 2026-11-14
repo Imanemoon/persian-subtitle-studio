@@ -1,28 +1,17 @@
 import { useState } from "react";
-import { AlertTriangle, Cpu, FolderOpen, Play, RefreshCw, Square } from "lucide-react";
+import { AlertTriangle, FolderOpen, RefreshCw, Square } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
-import { Badge, Button, Card, ProgressBar, SectionTitle, StatCard } from "../components/ui";
+import { usePipeline } from "../hooks/usePipeline";
+import { PipelinePanel } from "../components/pipeline/PipelinePanel";
+import { Badge, Button, Card, ProgressBar, SectionTitle } from "../components/ui";
 import { api } from "../lib/api";
 import { faNum, formatDuration } from "../lib/format";
-import type { VideoEntry } from "../types";
+import type { PageId } from "../types";
 
-/** برچسب صادقانه برای فاز فعلی: فقط «وضعیت آینده» بر اساس داده موجود */
-function futureStatus(v: VideoEntry) {
-  if (v.siblingSubtitles.some((s) => s.nameSuggestsFa))
-    return { tone: "success" as const, label: "آماده سینک (فاز ۴)" };
-  if (v.siblingSubtitles.length > 0)
-    return { tone: "info" as const, label: "بررسی مجوز سینک (فاز ۴)" };
-  return { tone: "warn" as const, label: "نیازمند دانلود (فاز ۳)" };
-}
-
-export function Processing() {
+export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const { scanning, progress, lastScan, library, stopScan, startScan } = useAppData();
+  const { runActive, snapshot } = usePipeline();
   const [scanRoot, setScanRoot] = useState<string | null>(null);
-
-  const needsDownload = library.filter((v) => v.siblingSubtitles.length === 0).length;
-  const readyForSync = library.filter((v) =>
-    v.siblingSubtitles.some((s) => s.nameSuggestsFa),
-  ).length;
 
   const pickAndScan = async () => {
     if (scanRoot) {
@@ -40,13 +29,18 @@ export function Processing() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold">پردازش</h1>
-          <p className="mt-1 text-sm text-ink-3">صف پردازش و وضعیت هر فایل</p>
+          <p className="mt-1 text-sm text-ink-3">
+            pipeline کامل و وضعیت هر فایل — سینک از صفحهٔ خانه شروع می‌شود
+          </p>
         </div>
-        <Button variant="primary" disabled title="در فازهای بعدی (دانلود و سینک) فعال می‌شود">
-          <Play className="size-4" />
-          شروع پردازش
-        </Button>
       </div>
+
+      {/* pipeline فعال — همان نمای صفحهٔ خانه؛ بازیابی از snapshot/رویدادها */}
+      {runActive && snapshot && (
+        <div className="flex justify-center">
+          <PipelinePanel onNavigate={onNavigate} />
+        </div>
+      )}
 
       {/* اسکن کتابخانه — قابلیت پیشرفته (از داشبورد قبلی به اینجا منتقل شده) */}
       <Card className="flex flex-wrap items-center gap-3 p-4">
@@ -75,15 +69,6 @@ export function Processing() {
         </Button>
       </Card>
 
-      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <span>
-          در این نسخه اسکن، تحلیل و استخراج زیرنویس داخلی فعال است. دانلود از
-          SubSource و همگام‌سازی با FFsubsync در فازهای بعدی از همین صفحه کنترل
-          می‌شوند. هیچ پردازشی به‌صورت خودکار شروع نمی‌شود.
-        </span>
-      </div>
-
       {scanning && (
         <Card className="space-y-3 p-4">
           <div className="flex items-center justify-between gap-3">
@@ -110,24 +95,18 @@ export function Processing() {
       )}
 
       {lastScan && (
-        <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard icon={Cpu} label="کل صف" value={faNum(lastScan.videoCount)} />
-            <StatCard icon={Square} label="نیازمند دانلود (فاز ۳)" value={faNum(needsDownload)} tone="warn" />
-            <StatCard icon={Play} label="آماده سینک (فاز ۴)" value={faNum(readyForSync)} tone="success" />
-            <StatCard icon={RefreshCw} label="مدت آخرین اسکن" value={formatDuration(lastScan.durationMs)} />
-          </div>
-          <div className="text-xs text-ink-3">
-            ریشه آخرین اسکن: <span dir="ltr" className="font-mono">{lastScan.root}</span>
-          </div>
-        </>
+        <div className="text-xs text-ink-3">
+          ریشه آخرین اسکن: <span dir="ltr" className="font-mono">{lastScan.root}</span>
+          {" · "}مدت: {formatDuration(lastScan.durationMs)}
+        </div>
       )}
 
       <div>
-        <SectionTitle title="صف پردازش" />
+        <SectionTitle title="کتابخانه" />
         {library.length === 0 ? (
           <Card className="px-4 py-10 text-center text-sm text-ink-3">
-            صف خالی است — با «انتخاب پوشه و اسکن» در همین صفحه کتابخانه را بسازید.
+            کتابخانه خالی است — با «انتخاب پوشه و اسکن» در همین صفحه بسازید؛
+            برای سینک خودکار، فایل‌ها را از صفحهٔ خانه انتخاب کنید.
           </Card>
         ) : (
           <div className="max-h-[480px] overflow-y-auto rounded-xl border border-line bg-surface-1">
@@ -137,12 +116,12 @@ export function Processing() {
                   <th className="px-4 py-3 text-start font-medium">فایل</th>
                   <th className="px-4 py-3 text-start font-medium">سریال</th>
                   <th className="px-4 py-3 text-start font-medium">S/E</th>
-                  <th className="px-4 py-3 text-start font-medium">مرحله بعدی</th>
+                  <th className="px-4 py-3 text-start font-medium">وضعیت زیرنویس کناری</th>
                 </tr>
               </thead>
               <tbody>
                 {library.slice(0, 300).map((v) => {
-                  const st = futureStatus(v);
+                  const st = sidecarStatus(v.siblingSubtitles.some((s) => s.nameSuggestsFa), v.siblingSubtitles.length);
                   return (
                     <tr key={v.id} className="border-b border-line/60 last:border-0">
                       <td dir="ltr" className="max-w-80 px-4 py-2.5 text-start">
@@ -167,6 +146,25 @@ export function Processing() {
           </div>
         )}
       </div>
+
+      <div className="flex items-start gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-300">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+        <span>
+          سینک کامل (دانلود، استخراج، همگام‌سازی) با انتخاب دقیق فایل‌ها از
+          صفحهٔ خانه شروع می‌شود و نتیجهٔ هر فایل همان‌جا و همین‌جا دیده
+          می‌شود. هیچ فایل اصلی یا زیرنویس موجود بازنویسی نمی‌شود.
+        </span>
+      </div>
     </div>
   );
+}
+
+/** وضعیت صادقانهٔ sidecar کنار هر ویدیو — فقط دادهٔ واقعی اسکن */
+function sidecarStatus(hasFa: boolean, count: number): {
+  tone: "success" | "info" | "neutral";
+  label: string;
+} {
+  if (hasFa) return { tone: "success", label: "زیرنویس فارسی کنار فایل" };
+  if (count > 0) return { tone: "info", label: "زیرنویس غیرفارسی/نامشخص" };
+  return { tone: "neutral", label: "بدون زیرنویس کناری" };
 }
