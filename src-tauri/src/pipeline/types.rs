@@ -186,6 +186,11 @@ pub struct PipelineSnapshot {
     pub current_file: Option<String>,
     pub counts: PipelineCounts,
     pub message: String,
+    /// تصمیم باز در صورت انتظار — رویداد `pipeline:decision` فقط یک‌بار منتشر
+    /// می‌شود؛ بدون این فیلد، بازگشایی UI حین انتظار تصمیم نمی‌تواند دیالوگ را
+    /// بازیابی کند و کاربر راهی برای پاسخ ندارد.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_decision: Option<PendingDecision>,
 }
 
 /// گزینهٔ ثبت‌شدهٔ backend-owned برای یک تصمیم — شناسه مات؛ فرانت هرگز

@@ -230,4 +230,11 @@ fn snapshot_counts_only_terminal_outcomes() {
     assert_eq!(snapshot.completed, 1);
     assert_eq!(snapshot.counts.decisions_pending, 1);
     assert_eq!(snapshot.status, PipelineStatus::AwaitingDecision);
+    // بازیابی UI حین انتظار تصمیم فقط از طریق snapshot ممکن است
+    let pending = snapshot
+        .pending_decision
+        .expect("تصمیم باز باید در snapshot باشد");
+    assert_eq!(pending.decision_id, "dec-s");
+    assert_eq!(pending.options.len(), 1);
+    assert_eq!(pending.options[0].option_id, "dec-s-opt-0");
 }

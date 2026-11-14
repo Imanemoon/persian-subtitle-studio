@@ -127,6 +127,7 @@ impl PipelineControl {
             completed,
             current_file: g.current_file.clone(),
             counts: g.counts,
+            pending_decision: g.pending.as_ref().map(|p| p.decision.clone()),
             message: g.message.clone(),
         }
     }
