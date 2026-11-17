@@ -523,6 +523,15 @@ pub(crate) fn run_pipeline_body(
             }
             AnalysisStatus::Extracted => {
                 rt.has_sidecar = true;
+                // ورودی سینک از استخراجِ همین اجرا — بدون این، ویدیو بدون
+                // outcome از مرحلهٔ سینک عبور می‌کند
+                if let Some(extraction) = entry
+                    .analysis
+                    .as_ref()
+                    .and_then(|a| a.last_extraction.as_ref())
+                {
+                    rt.artifacts.sync_input_path = Some(extraction.target_path.clone());
+                }
                 rt.stage_status = StageStatus::Done;
                 emit_item(control, sink, rt);
             }
@@ -559,6 +568,7 @@ pub(crate) fn run_pipeline_body(
                     items[i].outcome = Some(ItemOutcome::KeyStoreUnavailable {
                         reason: err.clone(),
                     });
+                    items[i].stage_status = StageStatus::Done;
                     counts.key_store_unavailable += 1;
                 }
             }
@@ -566,6 +576,7 @@ pub(crate) fn run_pipeline_body(
                 for &i in &needer_idxs {
                     items[i].stage = PipelineStage::Downloading;
                     items[i].outcome = Some(ItemOutcome::NeedsApiKey);
+                    items[i].stage_status = StageStatus::Done;
                     counts.needs_api_key += 1;
                 }
             }
@@ -573,6 +584,7 @@ pub(crate) fn run_pipeline_body(
                 for &i in &needer_idxs {
                     items[i].stage = PipelineStage::Downloading;
                     items[i].outcome = Some(ItemOutcome::NeedsApiKey);
+                    items[i].stage_status = StageStatus::Done;
                     counts.needs_api_key += 1;
                 }
             }
@@ -638,11 +650,59 @@ pub(crate) fn run_pipeline_body(
                                 rt.stage_status = StageStatus::Done;
                             }
                         }
+                        // صداقت گزارش: آیتم‌های پلن‌شده که بعد از دانلود بدون
+                        // نتیجه ماندند — دلیل واقعی دانلود را حمل می‌کنند، نه
+                        // یک پیام گیج‌کننده از فاز آرشیو.
+                        if !result.cancelled {
+                            for item in &plan.items {
+                                let Some(rt) =
+                                    items.iter_mut().find(|rt| rt.video_path == item.video_path)
+                                else {
+                                    continue;
+                                };
+                                if rt.outcome.is_some() {
+                                    continue;
+                                }
+                                let has_real_output =
+                                    rt.archive_sources.iter().any(archive_output_dir_exists);
+                                if !result.success && !has_real_output {
+                                    // دانلود شکست خورده و هیچ خروجی واقعی نداشته —
+                                    // فاز آرشیو برایش بی‌معناست؛ دلیل اصلی حفظ می‌شود
+                                    rt.outcome = Some(ItemOutcome::Failed {
+                                        reason: format!(
+                                            "دانلود ناموفق بود: {} (کد خروج: {})",
+                                            result.message,
+                                            result
+                                                .exit_code
+                                                .map(|c| c.to_string())
+                                                .unwrap_or_else(|| "—".into()),
+                                        ),
+                                    });
+                                    counts.failed += 1;
+                                    rt.archive_sources.clear();
+                                } else if result.success && !has_real_output {
+                                    rt.outcome = Some(ItemOutcome::Skipped {
+                                        reason:
+                                            "دانلود انجام شد اما زیرنویسی برای این ویدیو یافت نشد."
+                                                .into(),
+                                    });
+                                    counts.skipped += 1;
+                                }
+                                rt.stage_status = StageStatus::Done;
+                            }
+                            if !result.success {
+                                control.push_warning(format!(
+                                    "دانلود با خطا مواجه شد: {}",
+                                    result.message
+                                ));
+                            }
+                        }
                     }
                 }
-                sync_all(control, sink, &items);
             }
         }
+        // emit همهٔ شاخه‌ها — outcomeهای ست‌شدهٔ این مرحله باید به snapshot/خلاصه برسند
+        sync_all(control, sink, &items);
         if cancel.load(Ordering::SeqCst) {
             mark_all_cancelled(control);
             return Err(PipelineError::Cancelled);
@@ -813,19 +873,27 @@ pub(crate) fn run_pipeline_body(
                         counts.conflicts += 1;
                     }
                     AIS::Ambiguous => {
-                        items[pos].stage_status = StageStatus::Skipped {
+                        // نتیجهٔ پایانی صادقانه — نه Skipped عمومی از مرحلهٔ بعد
+                        items[pos].outcome = Some(ItemOutcome::Skipped {
                             reason: "کاندیداهای آرشیو همچنان مبهم‌اند".into(),
-                        };
+                        });
+                        items[pos].stage_status = StageStatus::Done;
+                        counts.skipped += 1;
                     }
                     AIS::NoMatch => {
-                        items[pos].stage_status = StageStatus::Skipped {
+                        items[pos].outcome = Some(ItemOutcome::Skipped {
                             reason: "منطبقی یافت نشد".into(),
-                        };
+                        });
+                        items[pos].stage_status = StageStatus::Done;
+                        counts.skipped += 1;
                     }
                     AIS::Failed => {
-                        items[pos].stage_status = StageStatus::Failed {
+                        // شکست استخراج آرشیو = شکست واقعی آیتم؛ دلیل اصلی حفظ می‌شود
+                        items[pos].outcome = Some(ItemOutcome::Failed {
                             reason: item.message.clone(),
-                        };
+                        });
+                        items[pos].stage_status = StageStatus::Done;
+                        counts.failed += 1;
                     }
                     AIS::Cancelled => {}
                 }
@@ -1194,6 +1262,16 @@ fn set_counts_snapshot(control: &PipelineControl, counts: &mut PipelineCounts) {
     control.set_counts(*counts);
 }
 
+/// آیا خروجی دانلود برای این منبع واقعاً روی دیسک هست؟ ثبت provenance پیش
+/// از اجرای CLI انجام می‌شود؛ پس وجود «پوشهٔ sub» در staging تنها نشانهٔ
+/// خروجی واقعی است — نه خود رکورد provenance.
+fn archive_output_dir_exists(source: &crate::subsource::plan::ArchiveSource) -> bool {
+    let dir = Path::new(&source.staging_root)
+        .join(&source.relative_video_dir)
+        .join("sub");
+    dir.is_dir()
+}
+
 fn is_synced_name(file_name: &str) -> bool {
     let lower = file_name.to_lowercase();
     lower.contains(".fa.synced.") || lower.ends_with(".fa.synced.srt")
@@ -1240,7 +1318,12 @@ fn refresh_sidecar_flags(
     sink: &super::SinkStore,
 ) {
     for rt in items.iter_mut() {
-        if rt.has_sidecar || rt.outcome.is_some() {
+        if rt.outcome.is_some() {
+            continue;
+        }
+        // آیتم‌های has_sidecar بدون ورودی سینک هم باید ورودی‌شان از
+        // last_extraction پر شود (نه فقط آیتم‌های بدون sidecar)
+        if rt.has_sidecar && rt.artifacts.sync_input_path.is_some() {
             continue;
         }
         let Some(entry) = crate::commands::media::get_entry(state, &rt.video_path) else {
@@ -1441,3 +1524,6 @@ fn next_decision_id() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
+
+#[cfg(test)]
+mod engine_tests;

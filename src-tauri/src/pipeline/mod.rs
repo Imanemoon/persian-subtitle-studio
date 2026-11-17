@@ -415,3 +415,6 @@ pub fn resolve_decision_core(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod e2e;

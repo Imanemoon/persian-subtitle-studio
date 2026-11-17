@@ -320,6 +320,12 @@ fn main() {
         process::exit(0);
     }
 
+    // شکست دانلود بدون هیچ خروجی — برای تست گزارش صادقانهٔ شکست
+    if mode.as_deref() == Some("fail-only") {
+        eprintln!("Error: network unreachable (simulated)");
+        process::exit(1);
+    }
+
     // موفقیت پیش‌فرض
     println!("Downloaded 3 subtitles successfully");
     println!("Processing completed in 2.5 seconds");
