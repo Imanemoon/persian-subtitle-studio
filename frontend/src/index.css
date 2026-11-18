@@ -17,6 +17,7 @@
   --color-accent-dim: rgba(16, 185, 129, 0.1);
 
   --animate-progress: progress 1.4s ease-in-out infinite;
+  --animate-kenburns: kenburns 48s ease-in-out infinite alternate;
 }
 
 @keyframes progress {
@@ -25,6 +26,22 @@
   }
   100% {
     transform: translateX(-360%);
+  }
+}
+
+/* حرکت آرام بک‌گراند سینمایی — با prefers-reduced-motion غیرفعال می‌شود */
+@keyframes kenburns {
+  from {
+    transform: scale(1.06) translateY(0);
+  }
+  to {
+    transform: scale(1.16) translateY(-1.5%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-kenburns {
+    animation: none;
   }
 }
 

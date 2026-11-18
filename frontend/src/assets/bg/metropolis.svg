@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- الهام از متروپلیس (۱۹۲۷) — شهر آینده با پرتوهای نور؛ اثر اصلی مالک عمومی است -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#04060a"/>
+      <stop offset="0.55" stop-color="#081015"/>
+      <stop offset="1" stop-color="#0a1418"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#34d399" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="haze" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.6" stop-color="#0a1418" stop-opacity="0"/>
+      <stop offset="1" stop-color="#050a0d" stop-opacity="0.9"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#10b981" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#sky)"/>
+  <circle cx="800" cy="330" r="420" fill="url(#halo)"/>
+  <!-- پرتوهای جست‌وجو -->
+  <polygon points="360,900 250,900 620,180 700,180" fill="url(#beam)"/>
+  <polygon points="700,900 590,900 1010,120 1100,120" fill="url(#beam)" opacity="0.8"/>
+  <polygon points="1180,900 1080,900 1400,260 1480,260" fill="url(#beam)" opacity="0.6"/>
+  <!-- لایه‌های شهر -->
+  <g fill="#05090c">
+    <rect x="80"   y="620" width="120" height="280"/>
+    <rect x="220"  y="540" width="90"  height="360"/>
+    <rect x="330"  y="660" width="150" height="240"/>
+    <rect x="500"  y="500" width="110" height="400"/>
+    <rect x="630"  y="600" width="80"  height="300"/>
+    <rect x="730"  y="430" width="140" height="470"/>
+    <rect x="890"  y="560" width="100" height="340"/>
+    <rect x="1010" y="640" width="160" height="260"/>
+    <rect x="1190" y="480" width="110" height="420"/>
+    <rect x="1320" y="590" width="90"  height="310"/>
+    <rect x="1430" y="660" width="130" height="240"/>
+  </g>
+  <g fill="#070d11">
+    <rect x="150"  y="700" width="60"  height="200"/>
+    <rect x="420"  y="720" width="70"  height="180"/>
+    <rect x="960"  y="690" width="70"  height="210"/>
+    <rect x="1260" y="720" width="60"  height="180"/>
+  </g>
+  <!-- برج مرکزی متروپلیس -->
+  <g fill="#060b0f">
+    <rect x="770" y="330" width="60" height="570"/>
+    <rect x="785" y="240" width="30" height="100"/>
+    <rect x="795" y="150" width="10" height="95"/>
+  </g>
+  <rect width="1600" height="900" fill="url(#haze)"/>
+</svg>

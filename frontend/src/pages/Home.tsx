@@ -21,6 +21,49 @@ import {
 import { api } from "../lib/api";
 import { faNum } from "../lib/format";
 import type { PageId, ScanSummary, VideoEntry } from "../types";
+import metropolisBg from "../assets/bg/metropolis.svg";
+import projectorBg from "../assets/bg/projector.svg";
+import noirBg from "../assets/bg/noir.svg";
+import deepSpaceBg from "../assets/bg/deepSpace.svg";
+
+/** صحنه‌های سینمایی باندل‌شده — برداری و سبک؛ در هر اجرا یکی تصادفی انتخاب
+ * و هر ۴۵ ثانیه با crossfade عوض می‌شود. همه به‌شدت تار و تیره رندر می‌شوند
+ * تا متن کاملاً خوانا بماند. */
+const BG_SCENES = [metropolisBg, projectorBg, noirBg, deepSpaceBg];
+
+/** لایهٔ پس‌زمینهٔ سینمایی نمای انتخاب — زیر همهٔ محتوا با z منفی. */
+function CinematicBackground() {
+  const [index, setIndex] = useState(() =>
+    Math.floor(Math.random() * BG_SCENES.length),
+  );
+  useEffect(() => {
+    const timer = setInterval(
+      () => setIndex((i) => (i + 1) % BG_SCENES.length),
+      45_000,
+    );
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="fixed inset-0 -z-10 overflow-hidden" aria-hidden>
+      {BG_SCENES.map((src, i) => (
+        <img
+          key={src}
+          src={src}
+          alt=""
+          className={`animate-kenburns motion-reduce:animate-none absolute inset-0 h-full w-full object-cover transition-opacity duration-[1500ms] ${
+            i === index ? "opacity-100" : "opacity-0"
+          }`}
+          style={{
+            filter: "blur(10px) brightness(0.62) saturate(0.95)",
+            willChange: "transform, opacity",
+          }}
+        />
+      ))}
+      {/* پردهٔ تیره برای خوانایی متن */}
+      <div className="absolute inset-0 bg-gradient-to-b from-surface-0/25 via-surface-0/40 to-surface-0/85" />
+    </div>
+  );
+}
 
 /**
  * وضعیت شناسایی ویدیوهای پوشه — از اسکن واقعی همان پوشه می‌آید.
@@ -133,6 +176,8 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     );
   }
 
+  // نمای انتخاب — روی بک‌گراند سینمایی با پنل شیشه‌ای بزرگ‌تر از قبل
+
   const folderSelected = selection?.kind === "folder" ? selection.path : null;
   const fileSelection = selection?.kind === "files" ? selection.paths : null;
   const folderDetection = resolveFolderDetection({
@@ -174,128 +219,133 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
               : undefined;
 
   return (
-    <div className="flex h-full flex-col items-center justify-center overflow-y-auto px-6 pb-10">
-      <div className="w-full max-w-lg space-y-7 py-8">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-ink-1">زیرنویس فارسی، بدون دردسر.</h1>
-          <p className="mt-2 text-sm text-ink-2">
-            فایل‌هایت را انتخاب کن؛ بقیه کار با SubSync.
-          </p>
-        </div>
+    <div className="relative z-0 flex h-full flex-col items-center justify-center overflow-y-auto px-6 pb-10">
+      <CinematicBackground />
+      <div className="w-full max-w-2xl space-y-8 py-10">
+        <div className="rounded-3xl border border-white/5 bg-zinc-900/55 p-8 shadow-2xl backdrop-blur-md sm:p-10">
+          <div className="text-center">
+            <h1 className="text-3xl font-bold text-ink-1 sm:text-4xl">
+              زیرنویس فارسی، بدون دردسر.
+            </h1>
+            <p className="mt-3 text-base text-ink-2 sm:text-lg">
+              فایل‌هایت را انتخاب کن؛ بقیه کار با SubSync.
+            </p>
+          </div>
 
-        {/* انتخاب ورودی */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <OptionCard
-            icon={<Folder className="size-5" />}
-            label="انتخاب پوشه"
-            description="همهٔ ویدیوهای پوشه را پیدا و سینک کن"
-            selected={folderSelected !== null}
-            disabled={scanning}
-            onClick={chooseFolder}
-          />
-          <OptionCard
-            icon={<FileVideo className="size-5" />}
-            label="انتخاب فایل"
-            description="برای سینک خودکار یک یا چند فیلم"
-            selected={fileSelection !== null}
-            disabled={scanning}
-            onClick={chooseFiles}
-          />
-        </div>
+          {/* انتخاب ورودی */}
+          <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <OptionCard
+              icon={<Folder className="size-6" />}
+              label="انتخاب پوشه"
+              description="همهٔ ویدیوهای پوشه را پیدا و سینک کن"
+              selected={folderSelected !== null}
+              disabled={scanning}
+              onClick={chooseFolder}
+            />
+            <OptionCard
+              icon={<FileVideo className="size-6" />}
+              label="انتخاب فایل"
+              description="برای سینک خودکار یک یا چند فیلم"
+              selected={fileSelection !== null}
+              disabled={scanning}
+              onClick={chooseFiles}
+            />
+          </div>
 
-        {/* بازخورد انتخاب و شناسایی */}
-        {selection && (
-          <div className="rounded-xl border border-line bg-surface-1 px-4 py-3">
-            <div className="flex items-start gap-3">
-              <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent-dim text-accent-strong">
-                <Check className="size-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                {folderSelected !== null && (
-                  <>
-                    <div
-                      className="truncate text-sm font-semibold text-ink-1"
-                      title={folderBaseName(folderSelected)}
-                    >
-                      {folderBaseName(folderSelected)}
-                    </div>
-                    <div
-                      dir="ltr"
-                      className="truncate text-start font-mono text-[11px] text-ink-3"
-                      title={folderSelected}
-                    >
-                      {folderSelected}
-                    </div>
-                    <FolderDetectionStatus
-                      detection={folderDetection}
-                      videosFound={progress?.videosFound ?? null}
-                      onStop={() => void stopScan()}
-                    />
-                  </>
-                )}
-                {fileSelection !== null && (
-                  <>
-                    <div className="text-sm font-semibold text-ink-1">
-                      {faNum(fileSelection.length)} ویدیو انتخاب شد
-                    </div>
-                    <div
-                      dir="ltr"
-                      className="truncate text-start font-mono text-[11px] text-ink-3"
-                      title={fileSelection.map(fileBaseName).join(" · ")}
-                    >
-                      {compactPreview(fileSelection)}
-                    </div>
-                  </>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  onClick={folderSelected !== null ? chooseFolder : chooseFiles}
-                  disabled={scanning}
-                  className="rounded-lg px-2.5 py-1.5 text-xs text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  تغییر
-                </button>
-                <button
-                  onClick={() => {
-                    clearSelection();
-                    setNotice(null);
-                  }}
-                  disabled={scanning}
-                  title="حذف انتخاب"
-                  className="flex size-7 items-center justify-center rounded-lg text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <X className="size-3.5" />
-                </button>
+          {/* بازخورد انتخاب و شناسایی */}
+          {selection && (
+            <div className="mt-6 rounded-xl border border-white/10 bg-surface-1/80 px-5 py-4">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent-dim text-accent-strong">
+                  <Check className="size-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  {folderSelected !== null && (
+                    <>
+                      <div
+                        className="truncate text-sm font-semibold text-ink-1"
+                        title={folderBaseName(folderSelected)}
+                      >
+                        {folderBaseName(folderSelected)}
+                      </div>
+                      <div
+                        dir="ltr"
+                        className="truncate text-start font-mono text-[11px] text-ink-3"
+                        title={folderSelected}
+                      >
+                        {folderSelected}
+                      </div>
+                      <FolderDetectionStatus
+                        detection={folderDetection}
+                        videosFound={progress?.videosFound ?? null}
+                        onStop={() => void stopScan()}
+                      />
+                    </>
+                  )}
+                  {fileSelection !== null && (
+                    <>
+                      <div className="text-sm font-semibold text-ink-1">
+                        {faNum(fileSelection.length)} ویدیو انتخاب شد
+                      </div>
+                      <div
+                        dir="ltr"
+                        className="truncate text-start font-mono text-[11px] text-ink-3"
+                        title={fileSelection.map(fileBaseName).join(" · ")}
+                      >
+                        {compactPreview(fileSelection)}
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={folderSelected !== null ? chooseFolder : chooseFiles}
+                    disabled={scanning}
+                    className="rounded-lg px-2.5 py-1.5 text-xs text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    تغییر
+                  </button>
+                  <button
+                    onClick={() => {
+                      clearSelection();
+                      setNotice(null);
+                    }}
+                    disabled={scanning}
+                    title="حذف انتخاب"
+                    className="flex size-7 items-center justify-center rounded-lg text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {actionError && (
-          <p className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span>{actionError}</span>
-          </p>
-        )}
+          {actionError && (
+            <p className="mt-4 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <span>{actionError}</span>
+            </p>
+          )}
 
-        {notice && (
-          <p className="text-center text-xs text-amber-400/90">{notice}</p>
-        )}
+          {notice && (
+            <p className="mt-4 text-center text-sm text-amber-400/90">{notice}</p>
+          )}
 
-        {/* کنش اصلی — pipeline فقط با فایل‌های واقعی شروع می‌شود */}
-        <button
-          onClick={handleStartSync}
-          disabled={!canStart}
-          title={startTitle}
-          className="h-12 w-full rounded-xl bg-accent text-base font-bold text-zinc-950 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {folderDetection.status === "scanning"
-            ? "در حال شناسایی ویدیوها…"
-            : scanning
-              ? "اسکن در جریان است…"
-              : "شروع سینک"}
-        </button>
+          {/* کنش اصلی — pipeline فقط با فایل‌های واقعی شروع می‌شود */}
+          <button
+            onClick={handleStartSync}
+            disabled={!canStart}
+            title={startTitle}
+            className="mt-8 h-14 w-full rounded-xl bg-accent text-lg font-bold text-zinc-950 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {folderDetection.status === "scanning"
+              ? "در حال شناسایی ویدیوها…"
+              : scanning
+                ? "اسکن در جریان است…"
+                : "شروع سینک"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -444,21 +494,21 @@ function OptionCard({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`group flex w-full flex-col items-start gap-1.5 rounded-xl border p-4 text-start transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`group flex w-full flex-col items-start gap-2 rounded-2xl border p-6 text-start transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
         selected
           ? "border-accent bg-accent-dim"
-          : "border-line bg-surface-1 hover:border-ink-3 hover:bg-surface-2"
+          : "border-white/10 bg-surface-1/80 hover:border-ink-3 hover:bg-surface-2/90"
       }`}
     >
       <span
-        className={`flex size-10 items-center justify-center rounded-lg transition-colors ${
+        className={`flex size-12 items-center justify-center rounded-xl transition-colors ${
           selected ? "bg-accent text-zinc-950" : "bg-surface-2 text-ink-2 group-hover:text-ink-1"
         }`}
       >
         {icon}
       </span>
-      <span className="text-sm font-semibold text-ink-1">{label}</span>
-      <span className="text-xs leading-5 text-ink-3">{description}</span>
+      <span className="mt-1 text-base font-semibold text-ink-1">{label}</span>
+      <span className="text-sm leading-6 text-ink-3">{description}</span>
     </button>
   );
 }

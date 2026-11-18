@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- نور پروژکتور و غبار سالن سینما -->
+  <defs>
+    <linearGradient id="hall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#030507"/>
+      <stop offset="1" stop-color="#060a0d"/>
+    </linearGradient>
+    <linearGradient id="cone" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#e2f5ec" stop-opacity="0.44"/>
+      <stop offset="0.5" stop-color="#cfe9dd" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#cfe9dd" stop-opacity="0.02"/>
+    </linearGradient>
+    <radialGradient id="screenGlow" cx="0.78" cy="0.45" r="0.45">
+      <stop offset="0" stop-color="#e8fff5" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#e8fff5" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lens" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="0.4" stop-color="#bfe8d8" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#bfe8d8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="dust" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.9  0 0 0 0 1  0 0 0 0 0.92  0 0 0 1.6 -1.15"/>
+    </filter>
+    <radialGradient id="vignette" cx="0.5" cy="0.45" r="0.75">
+      <stop offset="0.45" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.85"/>
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#hall)"/>
+  <rect width="1600" height="900" fill="url(#screenGlow)"/>
+  <polygon points="120,40 240,40 1160,560 1040,620" fill="url(#cone)"/>
+  <circle cx="180" cy="40" r="46" fill="url(#lens)"/>
+  <rect width="1600" height="900" filter="url(#dust)" opacity="0.5"/>
+  <rect width="1600" height="900" fill="url(#vignette)"/>
+</svg>

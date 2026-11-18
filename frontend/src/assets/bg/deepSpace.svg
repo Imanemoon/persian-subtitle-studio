@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- فضای عمیق: سیاره در افق و ستاره‌ها -->
+  <defs>
+    <linearGradient id="space" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#010306"/>
+      <stop offset="1" stop-color="#04070c"/>
+    </linearGradient>
+    <radialGradient id="planet" cx="0.5" cy="0.28" r="0.9">
+      <stop offset="0" stop-color="#0a1a16"/>
+      <stop offset="0.7" stop-color="#050b09"/>
+      <stop offset="1" stop-color="#020504"/>
+    </radialGradient>
+    <radialGradient id="rim" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.86" stop-color="#5eead4" stop-opacity="0"/>
+      <stop offset="0.965" stop-color="#5eead4" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#5eead4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#10b981" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="stars" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.11" numOctaves="2" seed="23" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 3 -2.55"/>
+    </filter>
+    <radialGradient id="svig" cx="0.5" cy="0.5" r="0.75">
+      <stop offset="0.5" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.8"/>
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#space)"/>
+  <rect width="1600" height="900" filter="url(#stars)" opacity="0.95"/>
+  <!-- سیاره -->
+  <circle cx="1050" cy="760" r="500" fill="url(#glow)"/>
+  <circle cx="1050" cy="760" r="420" fill="url(#planet)"/>
+  <circle cx="1050" cy="760" r="420" fill="url(#rim)"/>
+  <rect width="1600" height="900" fill="url(#svig)"/>
+</svg>
