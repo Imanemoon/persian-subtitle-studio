@@ -7,7 +7,8 @@
 ```bash
 git clone https://github.com/Imanemoon/persian-subtitle-studio.git
 cd persian-subtitle-studio
-npm install
+cd frontend && npm install   # وابستگی‌های فرانت‌اند (یک‌بار)
+cd ..
 npm run tauri dev        # اجرای توسعه
 cd src-tauri && cargo test   # تست‌ها (بدون نیاز به شبکه/کلید)
 ```

@@ -94,7 +94,8 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 پیش‌نیاز: Node 20+، Rust stable (MSVC) — NSIS به‌صورت خودکار توسط tauri-cli دانلود می‌شود.
 
 ```bash
-npm install
+cd frontend && npm install   # وابستگی‌های فرانت‌اند (یک‌بار)
+cd ..
 npm run tauri dev     # اجرای توسعه
 npm run tauri build   # نصاب ریلیز → src-tauri/target/release/bundle/nsis/
 ```

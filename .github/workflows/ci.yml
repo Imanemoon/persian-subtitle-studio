@@ -26,9 +26,11 @@ jobs:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
+        working-directory: frontend
         run: npm ci
 
       - name: Build frontend
+        working-directory: frontend
         run: npm run build
 
       - name: Rust fmt

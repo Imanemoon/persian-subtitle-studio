@@ -80,7 +80,7 @@ Import-Certificate -FilePath <...cer> -CertStoreLocation Cert:\CurrentUser\Trust
 
 ## ۴) ریلیز در گیت‌هاب — چک‌لیست
 
-1. `npm run tauri build` → نصاب در `src-tauri/target/release/bundle/nsis/`
+1. `cd frontend && npm install` (یک‌بار) و سپس از ریشه: `npm run tauri build` → نصاب در `src-tauri/target/release/bundle/nsis/`
 2. امضا با `scripts/sign-release.ps1`
 3. یک Release در گیت‌هاب بسازید و نصاب را به‌عنوان artifact پیوست کنید
 4. در README: بج Download، اسکرین‌شات، پیش‌نیاز (Windows 10+)، توضیح صفحهٔ راه‌اندازی اول
