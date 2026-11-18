@@ -106,7 +106,7 @@ export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void 
         {library.length === 0 ? (
           <Card className="px-4 py-10 text-center text-sm text-ink-3">
             کتابخانه خالی است — با «انتخاب پوشه و اسکن» در همین صفحه بسازید؛
-            برای سینک خودکار، فایل‌ها را از صفحهٔ خانه انتخاب کنید.
+            برای سینک خودکار، فایل‌ها یا پوشه را از صفحهٔ خانه انتخاب کنید.
           </Card>
         ) : (
           <div className="max-h-[480px] overflow-y-auto rounded-xl border border-line bg-surface-1">
@@ -150,7 +150,7 @@ export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void 
       <div className="flex items-start gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-300">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <span>
-          سینک کامل (دانلود، استخراج، همگام‌سازی) با انتخاب دقیق فایل‌ها از
+          سینک کامل (دانلود، استخراج، همگام‌سازی) با انتخاب فایل‌ها یا پوشه از
           صفحهٔ خانه شروع می‌شود و نتیجهٔ هر فایل همان‌جا و همین‌جا دیده
           می‌شود. هیچ فایل اصلی یا زیرنویس موجود بازنویسی نمی‌شود.
         </span>

@@ -262,10 +262,20 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       );
       unlisteners.push(
         await listen<ScanSummary>("scan:done", (event) => {
-          setScanning(false);
-          setProgress(null);
-          setLastScan(event.payload);
-          void api.getLibrary().then(setLibrary);
+          // ابتدا library هم‌نسل را می‌گیریم، بعد «پایان اسکن» را اعلام می‌کنیم؛
+          // وگرنه یک فریم، lastScan تازه با library قبلی جفت می‌شود و شمارش
+          // ویدیوهای پوشه اشتباه/خالی دیده می‌شود.
+          void (async () => {
+            const fresh = await api.getLibrary().catch(() => null);
+            setScanning(false);
+            setProgress(null);
+            // بدون library هم‌نسل، lastScan تازه را اعلام نمی‌کنیم تا UI
+            // هرگز شمارش ویدیوهای پوشه را از دادهٔ کهنه نسازد.
+            if (fresh) {
+              setLastScan(event.payload);
+              setLibrary(fresh);
+            }
+          })();
         }),
       );
       unlisteners.push(
