@@ -364,6 +364,14 @@ pub(crate) fn run_pipeline_body(
             &extraction_plan.items,
             &cancel,
             |p| {
+                // بازخورد آیتم‌محور: ردیف همان فایل «در حال پردازش» می‌شود
+                if let Some(rt) = items.iter().find(|rt| rt.video_path == p.video_path) {
+                    let mut snap = rt.snapshot();
+                    snap.stage = PipelineStage::Extracting;
+                    snap.stage_status = StageStatus::InProgress;
+                    control.put_item_snapshot(snap.clone());
+                    super::emit_to(sink, PipelineEvent::Item { item: snap });
+                }
                 control.set_current_file(Some(p.video_path.clone()));
                 // ارقام فارسی + جداکنندهٔ صریح — ترکیب ارقام لاتین با مسیر،
                 // متن را در RTL به‌هم می‌ریزد
@@ -382,7 +390,28 @@ pub(crate) fn run_pipeline_body(
                     },
                 );
             },
-            |updated| super::emit_to(sink, PipelineEvent::LibraryEntry { entry: updated }),
+            |updated| {
+                // پایان استخراج همان فایل — نتیجهٔ واقعی روی ردیف می‌نشیند
+                if let Some(rt) = items.iter().find(|rt| rt.video_path == updated.path) {
+                    let mut snap = rt.snapshot();
+                    snap.stage = PipelineStage::Extracting;
+                    snap.stage_status = if updated
+                        .analysis
+                        .as_ref()
+                        .and_then(|a| a.last_extraction.as_ref())
+                        .is_some()
+                    {
+                        StageStatus::Done
+                    } else {
+                        StageStatus::Failed {
+                            reason: "استخراج موفق نشد — جزئیات در پیام مرحله".into(),
+                        }
+                    };
+                    control.put_item_snapshot(snap.clone());
+                    super::emit_to(sink, PipelineEvent::Item { item: snap });
+                }
+                super::emit_to(sink, PipelineEvent::LibraryEntry { entry: updated });
+            },
         );
         counts.extracted += success;
         control.set_stage_progress(total as u32, total as u32);
@@ -1157,7 +1186,7 @@ pub(crate) fn run_pipeline_body(
                     let outcome = crate::sync::run_sync(&request, &cancel, &mut |p| {
                         ui.progress(idx, &p);
                     });
-                    ui.finished(idx);
+                    ui.finished(idx, &outcome);
                     outcomes
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -1338,11 +1367,28 @@ fn set_counts_snapshot(control: &PipelineControl, counts: &mut PipelineCounts) {
     control.set_counts(*counts);
 }
 
+/// نتیجهٔ نمایشی فوری یک job سینک — صادقانه و بدون ادعای جانمایی.
+/// Cancelled نتیجه نمی‌گیرد (mark_all_cancelled پس از pool می‌گذارد).
+fn interim_outcome(outcome: &crate::sync::SyncOutcome) -> Option<ItemOutcome> {
+    use crate::sync::SyncStatus as SS;
+    match outcome.status {
+        SS::Synced => outcome.output_path.as_ref().map(|p| ItemOutcome::Synced {
+            output_path: p.to_string_lossy().into_owned(),
+        }),
+        SS::UnchangedLowQuality => Some(ItemOutcome::UnchangedLowQuality),
+        SS::Cancelled => None,
+        _ => Some(ItemOutcome::Failed {
+            reason: outcome.diagnostic.clone(),
+        }),
+    }
+}
+
 /// پل پیشرفت stage سینک بین workerهای موازی و UI.
 ///
 /// - فقط رویدادهای واقعی: شروع/پایان هر فایل و پیام‌های خود FFsubsync.
 /// - رویداد State با throttle منتشر می‌شود تا Tauri/React زیر بار نرود.
-/// - `completed` را دست نمی‌زند؛ outcome نهایی فقط در Finalizing ست می‌شود.
+/// - پایان هر job نتیجهٔ واقعی آن را روی ردیف می‌نشیند؛ جانمایی نهایی در
+///   Finalizing همان outcome را refine می‌کند.
 struct SyncUi {
     control: Arc<PipelineControl>,
     sink: super::SinkStore,
@@ -1432,7 +1478,7 @@ impl SyncUi {
         self.emit_state(false);
     }
 
-    fn finished(&self, idx: usize) {
+    fn finished(&self, idx: usize, outcome: &crate::sync::SyncOutcome) {
         let name = self.name_of(idx);
         self.active
             .lock()
@@ -1441,6 +1487,9 @@ impl SyncUi {
         if let Some(mut snap) = self.base.get(&idx).cloned() {
             snap.stage = PipelineStage::Syncing;
             snap.stage_status = StageStatus::Done;
+            // نتیجهٔ واقعی این job بلافاصله روی ردیف می‌نشیند — پیش از
+            // جانمایی نهایی S10؛ جانمایی بعداً همان outcome را refine می‌کند
+            snap.outcome = interim_outcome(outcome);
             self.control.put_item_snapshot(snap.clone());
             super::emit_to(&self.sink, PipelineEvent::Item { item: snap });
         }

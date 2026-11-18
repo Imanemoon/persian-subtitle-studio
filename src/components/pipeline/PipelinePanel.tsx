@@ -73,14 +73,14 @@ export function PipelinePanel({
   const waiting = status === "awaitingDecision" || decision !== null;
 
   return (
-    <div className="w-full max-w-2xl space-y-4">
+    <div className="w-full max-w-4xl space-y-5">
       {/* ---- وضعیت اصلی: الان چه کار می‌کند؟ ---- */}
-      <Card className="space-y-4 p-5">
+      <Card className="space-y-4 p-6">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <StatusIcon status={status} cancelling={cancelling} />
             <div className="min-w-0">
-              <div className="text-sm font-bold text-ink-1">
+              <div className="text-base font-bold text-ink-1">
                 {cancelling
                   ? "در حال توقف…"
                   : status
@@ -88,7 +88,7 @@ export function PipelinePanel({
                     : ""}
               </div>
               {runActive && (
-                <div className="mt-0.5 text-[11px] text-ink-3">
+                <div className="mt-0.5 text-xs text-ink-3">
                   {cancelling
                     ? "درخواست توقف ثبت شد؛ فایل‌های اصلی دست‌نخورده می‌مانند."
                     : waiting
@@ -113,10 +113,10 @@ export function PipelinePanel({
         </div>
 
         {message && !summary && (
-          <p className="text-sm leading-6 text-ink-2">{message}</p>
+          <p className="text-sm leading-7 text-ink-2">{message}</p>
         )}
         {summary && (
-          <p className="text-sm leading-6 text-ink-2">
+          <p className="text-sm leading-7 text-ink-2">
             {summary.status === "cancelled"
               ? "اجرا با درخواست شما متوقف شد؛ ورودی‌ها دست‌نخورده ماندند."
               : summary.status === "failed"
@@ -126,17 +126,17 @@ export function PipelinePanel({
         )}
 
         {currentFile && !summary && (
-          <div className="flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-2">
-            <span className="shrink-0 text-[11px] text-ink-3">فایل جاری</span>
+          <div className="flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-2.5">
+            <span className="shrink-0 text-xs text-ink-3">فایل جاری</span>
             <span
               dir="ltr"
-              className="min-w-0 flex-1 truncate text-start font-mono text-[11px] text-ink-1"
+              className="min-w-0 flex-1 truncate text-start font-mono text-xs text-ink-1"
               title={currentFile}
             >
               {fileBaseName(currentFile)}
             </span>
             {active > 1 && (
-              <span className="shrink-0 text-[11px] text-ink-3">
+              <span className="shrink-0 text-xs text-ink-3">
                 {faNum(active)} فایل هم‌زمان
               </span>
             )}
@@ -145,8 +145,8 @@ export function PipelinePanel({
 
         {/* ریل فشردهٔ مراحل — فقط یک نگاه، بدون ادعای تکمیل نتیجه */}
         {stage && !summary && (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
               <span className="font-semibold text-ink-1">
                 {PIPELINE_STAGE_LABELS[stage]}
               </span>
@@ -154,12 +154,12 @@ export function PipelinePanel({
                 مرحلهٔ {faNum(stageIndex + 1)} از {faNum(PIPELINE_STAGES.length)}
               </span>
             </div>
-            <div className="flex gap-1" role="img" aria-label="مراحل اجرا">
+            <div className="flex gap-1.5" role="img" aria-label="مراحل اجرا">
               {PIPELINE_STAGES.map((s, index) => (
                 <span
                   key={s}
                   title={PIPELINE_STAGE_LABELS[s]}
-                  className={`h-1.5 flex-1 rounded-full ${
+                  className={`h-2 flex-1 rounded-full ${
                     index < stageIndex
                       ? "bg-emerald-500/70"
                       : index === stageIndex
@@ -195,7 +195,7 @@ export function PipelinePanel({
                 />
               </div>
             )}
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-ink-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-sm text-ink-3">
               {status === "cancelled" ? (
                 <span>
                   {faNum(completed)} از {faNum(total)} فایل بسته شد — اجرا پیش از
@@ -221,7 +221,7 @@ export function PipelinePanel({
             {runActive && !waiting && (
               <div className="space-y-1 pt-0.5">
                 <ProgressBar active={!cancelling} />
-                <p className="text-[11px] leading-5 text-ink-3">
+                <p className="text-xs leading-5 text-ink-3">
                   {cancelling
                     ? "در حال خاتمهٔ امن عملیات جاری…"
                     : stage === "syncing"
@@ -304,9 +304,9 @@ export function PipelinePanel({
       {/* ---- فایل‌ها: خلاصه در یک نگاه، جزئیات فقط در صورت نیاز ---- */}
       {items.length > 0 && (
         <Card className="overflow-hidden">
-          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-            <span className="text-xs font-semibold text-ink-1">فایل‌های این اجرا</span>
-            <span className="text-[11px] text-ink-3">
+          <div className="flex items-center justify-between border-b border-line px-5 py-3">
+            <span className="text-sm font-semibold text-ink-1">فایل‌های این اجرا</span>
+            <span className="text-xs text-ink-3">
               {faNum(items.length)} فایل
             </span>
           </div>
@@ -320,9 +320,9 @@ export function PipelinePanel({
 
       {/* ---- خلاصهٔ پایان: شمارش واقعی + موارد نیازمند بررسی ---- */}
       {summary && !runActive && counts && (
-        <Card className="space-y-4 p-5">
+        <Card className="space-y-4 p-6">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-semibold text-ink-1">
+            <span className="text-base font-semibold text-ink-1">
               خلاصهٔ اجرا ({formatDuration(summary.durationMs)})
             </span>
             <Badge
@@ -401,13 +401,13 @@ function StageProgressBar({
   const percent = Math.round((clamped / total) * 100);
   return (
     <div className="space-y-1">
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
         <div
           className="h-full rounded-full bg-emerald-500/60 transition-all"
           style={{ width: `${percent}%` }}
         />
       </div>
-      <div className="text-[11px] text-ink-3">
+      <div className="text-xs text-ink-3">
         در این مرحله: {faNum(clamped)} از {faNum(total)} فایل
       </div>
     </div>
@@ -484,6 +484,10 @@ function itemRowState(item: PipelineItemSnapshot): {
     case "skipped":
       return { label: "از این مرحله رد شد", tone: "neutral" };
     case "done":
+      // نتیجهٔ واقعی همین مرحله — نه «بدون نتیجهٔ نهایی» بی‌معنا
+      if (item.stage === "extracting") return { label: "استخراج شد", tone: "info" };
+      if (item.stage === "analyzing") return { label: "تحلیل شد", tone: "info" };
+      if (item.stage === "syncing") return { label: "ورودی سینک پردازش شد", tone: "info" };
       return { label: "بدون نتیجهٔ نهایی", tone: "neutral" };
     default:
       return { label: "در انتظار", tone: "neutral" };
@@ -506,17 +510,17 @@ function ItemRow({ item }: { item: PipelineItemSnapshot }) {
 
   return (
     <details className="group border-b border-line/60 last:border-0">
-      <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-surface-2/40">
-        <span className={`size-2 shrink-0 rounded-full ${ROW_DOT[state.tone]}`} />
+      <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-3 transition-colors hover:bg-surface-2/40">
+        <span className={`size-2.5 shrink-0 rounded-full ${ROW_DOT[state.tone]}`} />
         <span
           dir="ltr"
-          className="min-w-0 flex-1 truncate text-start font-mono text-xs text-ink-1"
+          className="min-w-0 flex-1 truncate text-start font-mono text-sm text-ink-1"
           title={item.videoPath}
         >
           {item.videoFileName}
         </span>
         <span
-          className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] ${ROW_CHIP[state.tone]}`}
+          className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${ROW_CHIP[state.tone]}`}
         >
           {state.label}
         </span>
@@ -524,7 +528,7 @@ function ItemRow({ item }: { item: PipelineItemSnapshot }) {
           <ChevronDown className="size-3.5 shrink-0 text-ink-3 transition-transform group-open:rotate-180" />
         )}
       </summary>
-      <div className="space-y-1 px-4 pb-3 ps-8 text-[11px] leading-5 text-ink-3">
+      <div className="space-y-1 px-5 pb-3 ps-9 text-xs leading-6 text-ink-3">
         <div>مرحله: {PIPELINE_STAGE_LABELS[item.stage]}</div>
         {detail && <div>{detail}</div>}
         {reason && <div>{reason}</div>}
