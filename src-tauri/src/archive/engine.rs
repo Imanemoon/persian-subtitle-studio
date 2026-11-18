@@ -603,6 +603,8 @@ fn choose_candidate(
 
 enum PlaceFailure {
     Cancelled,
+    /// مقصد از قبل موجود است — مسیر مقصد حمل می‌شود؛ هرگز بازنویسی نمی‌شود
+    TargetExists(PathBuf),
     Failed(String),
 }
 
@@ -724,7 +726,12 @@ fn place_selected(
         let extracted = canonical_root.join(member.relative_path());
         let target = output_path(Path::new(&source.video_path), &candidate.subtitle_extension)
             .map_err(|e| PlaceFailure::Failed(e.to_string()))?;
-        place_subtitle(&extracted, &target).map_err(|e| PlaceFailure::Failed(e.to_string()))?;
+        place_subtitle(&extracted, &target).map_err(|e| match e {
+            crate::archive::placement::PlacementError::TargetExists(existing) => {
+                PlaceFailure::TargetExists(existing)
+            }
+            other => PlaceFailure::Failed(other.to_string()),
+        })?;
         Ok(target)
     })();
 
@@ -876,6 +883,14 @@ pub fn execute_archive_extraction(
                 result.cancelled = true;
                 canceled_with_warnings(source, attempt.warnings)
             }
+            Err(PlaceFailure::TargetExists(preserved)) => ArchiveExecuteItemResult {
+                video_path: source.video_path.clone(),
+                video_file_name: source.video_file_name.clone(),
+                status: ArchiveItemStatus::Conflict,
+                output_path: Some(preserved.to_string_lossy().to_string()),
+                warnings: attempt.warnings,
+                message: "زیرنویس مقصد از قبل موجود است — هیچ فایلی بازنویسی نشد؛ کاندیدا در workspace موقت حفظ شد.".into(),
+            },
             Err(PlaceFailure::Failed(message)) => ArchiveExecuteItemResult {
                 video_path: source.video_path.clone(),
                 video_file_name: source.video_file_name.clone(),

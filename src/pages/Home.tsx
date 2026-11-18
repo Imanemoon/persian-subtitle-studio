@@ -1,95 +1,22 @@
 import { useEffect, useState } from "react";
-import {
-  Check,
-  FileVideo,
-  Folder,
-  Info,
-  Square,
-  X,
-} from "lucide-react";
+import { Check, FileVideo, Folder, X } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
-import { SYNC_STAGE_LABELS, type SyncRunState, type SyncStage } from "../lib/pipeline";
+import { usePipeline } from "../hooks/usePipeline";
+import { PipelinePanel } from "../components/pipeline/PipelinePanel";
 import { fileBaseName, folderBaseName, isSupportedVideoFile } from "../lib/videoFiles";
 import { api } from "../lib/api";
 import { faNum } from "../lib/format";
 import type { PageId } from "../types";
 
-// ---------------------------------------------------------------------------
-// نمای پردازش خانه — طراحی برای اتصال به orchestrator آینده.
-// فقط وقتی syncRun واقعی وجود داشته باشد رندر می‌شود؛ تا آن زمان هیچ
-// مسیری آن را تولید نمی‌کند و هیچ پیشرفت جعلی‌ای نشان داده نمی‌شود.
-// ---------------------------------------------------------------------------
-
-function SyncProcessingView({
-  run,
-  onStop,
-  onDetails,
-}: {
-  run: SyncRunState;
-  onStop: () => void;
-  onDetails: () => void;
-}) {
-  const percent = run.total > 0 ? Math.round((run.completed / run.total) * 100) : 0;
-  const stageLabel: string = SYNC_STAGE_LABELS[run.stage as SyncStage];
-  return (
-    <div className="flex h-full flex-col items-center justify-center px-6">
-      <div className="w-full max-w-md space-y-5 text-center">
-        <div className="text-sm font-semibold text-accent-strong">
-          {stageLabel}
-          {run.stage !== "done" && (
-            <span className="ms-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-accent align-middle" />
-          )}
-        </div>
-        {run.currentFile && (
-          <div dir="ltr" className="truncate font-mono text-xs text-ink-2" title={run.currentFile}>
-            {run.currentFile}
-          </div>
-        )}
-        <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
-          <div
-            className="h-full rounded-full bg-accent transition-all"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <div className="flex items-center justify-between text-xs text-ink-3">
-          <span>{faNum(percent)}٪</span>
-          <span>
-            {faNum(run.completed)} از {faNum(run.total)} فایل
-          </span>
-        </div>
-        <div className="flex items-center justify-center gap-2 pt-2">
-          <button
-            onClick={onStop}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 text-xs text-red-300 transition-colors hover:bg-red-500/20"
-          >
-            <Square className="size-3.5" />
-            توقف
-          </button>
-          <button
-            onClick={onDetails}
-            className="inline-flex h-9 items-center rounded-lg px-3 text-xs text-ink-3 transition-colors hover:text-ink-1"
-          >
-            مشاهده جزئیات
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// صفحهٔ خانه مینیمال
-// ---------------------------------------------------------------------------
-
+/**
+ * صفحهٔ خانه — نقطهٔ شروع pipeline واقعی بک‌اند.
+ * وقتی run فعالی جریان دارد (یا خلاصهٔ تازه‌ای هست) نمای pipeline نشان داده
+ * می‌شود؛ در غیر این صورت نمای انتخاب. هیچ پیشرفت جعلی‌ای وجود ندارد.
+ */
 export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const {
-    selection,
-    setFolderSelection,
-    setFileSelection,
-    clearSelection,
-    syncRun,
-  } = useAppData();
-  const [syncHintShown, setSyncHintShown] = useState(false);
+  const { selection, setFolderSelection, setFileSelection, clearSelection } =
+    useAppData();
+  const { runActive, summary, busy, startPipeline } = usePipeline();
   const [notice, setNotice] = useState<string | null>(null);
 
   // هوک فقط توسعه (DEV) برای اعتبارسنجی واقعی وضعیت‌ها از طریق CDP —
@@ -100,16 +27,16 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         setFolderSelection,
         setFileSelection,
         clearSelection,
+        startPipeline,
       };
     }
-  }, [setFolderSelection, setFileSelection, clearSelection]);
+  }, [setFolderSelection, setFileSelection, clearSelection, startPipeline]);
 
   const chooseFolder = async () => {
     setNotice(null);
     const picked = await api.pickFolder();
     if (!picked) return; // لغو دیالوگ — انتخاب فعلی می‌ماند
     setFolderSelection(picked);
-    setSyncHintShown(false); // اشارهٔ سینک مربوط به انتخاب قبلی است
   };
 
   const chooseFiles = async () => {
@@ -123,25 +50,23 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     const skipped = picked.length - supported.length;
     setFileSelection(supported);
-    setSyncHintShown(false); // اشارهٔ سینک مربوط به انتخاب قبلی است
     if (skipped > 0) {
       setNotice(`${faNum(skipped)} فایل غیر ویدیویی نادیده گرفته شد.`);
     }
   };
 
-  // کنش اصلی برنامه — تا اتصال orchestrator واقعی فقط توضیح صادقانه نشان می‌دهد
+  // شروع pipeline با دقیقاً همان فایل‌های انتخاب‌شده — هیچ اسکن والد انجام نمی‌شود
   const handleStartSync = () => {
-    if (!selection) return;
-    setSyncHintShown(true);
+    if (!selection || selection.kind !== "files") return;
+    void startPipeline(selection.paths);
   };
 
-  if (syncRun) {
+  // نمای pipeline — run فعال یا خلاصهٔ پایان (تا «بستن خلاصه»)
+  if (runActive || summary) {
     return (
-      <SyncProcessingView
-        run={syncRun}
-        onStop={() => undefined}
-        onDetails={() => onNavigate("processing")}
-      />
+      <div className="flex h-full flex-col items-center overflow-y-auto px-6 py-8">
+        <PipelinePanel onNavigate={onNavigate} />
+      </div>
     );
   }
 
@@ -154,7 +79,7 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         <div className="text-center">
           <h1 className="text-2xl font-bold text-ink-1">زیرنویس فارسی، بدون دردسر.</h1>
           <p className="mt-2 text-sm text-ink-2">
-            پوشه یا فایل‌هایت را انتخاب کن؛ بقیه کار با SubSync.
+            فایل‌هایت را انتخاب کن؛ بقیه کار با SubSync.
           </p>
         </div>
 
@@ -163,14 +88,14 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           <OptionCard
             icon={<Folder className="size-5" />}
             label="انتخاب پوشه"
-            description="برای سریال، فصل یا مجموعه‌ای از ویدیوها"
+            description="برای ساخت کتابخانه از سریال یا فصل"
             selected={folderSelected !== null}
             onClick={chooseFolder}
           />
           <OptionCard
             icon={<FileVideo className="size-5" />}
             label="انتخاب فایل"
-            description="برای یک فیلم یا چند فایل ویدیویی"
+            description="برای سینک خودکار یک یا چند فیلم"
             selected={fileSelection !== null}
             onClick={chooseFiles}
           />
@@ -223,7 +148,7 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 <button
                   onClick={() => {
                     clearSelection();
-                    setSyncHintShown(false);
+                    setNotice(null);
                   }}
                   title="حذف انتخاب"
                   className="flex size-7 items-center justify-center rounded-lg text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-1"
@@ -239,21 +164,24 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           <p className="text-center text-xs text-amber-400/90">{notice}</p>
         )}
 
-        {/* کنش اصلی برنامه */}
+        {/* کنش اصلی — pipeline فقط با انتخاب دقیق فایل‌ها شروع می‌شود */}
         <button
           onClick={handleStartSync}
-          disabled={!selection}
+          disabled={fileSelection === null || busy}
+          title={
+            fileSelection === null
+              ? "برای شروع، فایل‌های ویدیویی را انتخاب کنید"
+              : undefined
+          }
           className="h-12 w-full rounded-xl bg-accent text-base font-bold text-zinc-950 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
         >
           شروع سینک
         </button>
 
-        {syncHintShown && (
-          <p className="flex items-start justify-center gap-1.5 text-center text-[11px] leading-5 text-ink-3">
-            <Info className="mt-0.5 size-3.5 shrink-0" />
-            موتور کامل سینک (دانلود و هماهنگ‌سازی خودکار) در نسخه‌های بعدی فعال
-            می‌شود. فعلاً از بخش پیشرفته می‌توانید کتابخانه را بسازید و زیرنویس
-            داخلی را تحلیل و استخراج کنید.
+        {folderSelected !== null && (
+          <p className="text-center text-[11px] leading-5 text-ink-3">
+            در این نسخه سینک خودکار با انتخاب دقیق فایل‌ها شروع می‌شود؛ برای
+            پردازش کل پوشه، از صفحهٔ «پردازش» کتابخانه را بسازید.
           </p>
         )}
       </div>

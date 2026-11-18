@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, FolderOpen, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { Check, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
@@ -13,12 +14,49 @@ const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }
   { key: "ffsubsync", label: "FFsubsync (ffs.exe)", hint: "همگام‌سازی (فاز ۴)" },
 ];
 
+/** نتیجهٔ بازخوانی وضعیت کلید — همان چیزی که واقعاً دیده شد، نه صرفاً «درخواست موفق بود».
+ * خواندنِ موفقِ متناقض هم stored/missing برمی‌گرداند، نه unknown. */
+type KeyStatusRefresh = { state: "stored" | "missing" | "unknown"; error: string | null };
+
 export function SettingsPage() {
   const { settings, reloadSettings, tools, refreshTools, toolsLoading } = useAppData();
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [newExcluded, setNewExcluded] = useState("");
+  // ---- SubSource API key — کاملاً مستقل از draft و دکمهٔ ذخیرهٔ تنظیمات؛
+  // مقدار کلید فقط در این input محلی می‌ماند و هرگز به Settings/draft نمی‌رود.
+  // خطای خواندن Credential Manager = «نامشخص»، نه «ذخیره نشده» ----
+  const [keyStatus, setKeyStatus] = useState<"checking" | "stored" | "missing" | "unknown">(
+    "checking",
+  );
+  const [keyInput, setKeyInput] = useState("");
+  const [keyBusy, setKeyBusy] = useState<"save" | "delete" | null>(null);
+  const [keyMessage, setKeyMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .hasSubsourceApiKey()
+      .then((stored) => {
+        if (!cancelled) setKeyStatus(stored ? "stored" : "missing");
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          // خطای زیرساخت هرگز به «ذخیره نشده» تبدیل نمی‌شود — وضعیت نامشخص می‌ماند
+          setKeyStatus("unknown");
+          setKeyMessage({
+            tone: "danger",
+            text: `خواندن وضعیت کلید از Credential Manager ناموفق بود — وضعیت نامشخص است: ${String(e)}`,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (settings && draft === null) {
@@ -79,6 +117,89 @@ export function SettingsPage() {
   const toolStatus = (key: keyof ToolPathOverrides) => {
     const id = key === "sevenZip" ? "sevenZip" : key;
     return tools.find((t) => t.id === id)?.status ?? null;
+  };
+
+  // ---- کنش‌های API key — مستقل از save عمومی تنظیمات ----
+
+  /** بازخوانی وضعیت کلید — خروجی همان وضعیت مشاهده‌شده است:
+   * «stored»/«missing» پس از خواندن موفق (هرچه بود، حتی اگر با کنش قبلی متناقض باشد)،
+   * «unknown» فقط پس از خطای خواندن. بج از همین نتیجه پیروی می‌کند. */
+  const refreshKeyStatus = async (): Promise<KeyStatusRefresh> => {
+    try {
+      const stored = await api.hasSubsourceApiKey();
+      const state = stored ? "stored" : "missing";
+      setKeyStatus(state);
+      return { state, error: null };
+    } catch (e) {
+      setKeyStatus("unknown");
+      return { state: "unknown", error: String(e) };
+    }
+  };
+
+  const saveKey = async () => {
+    const value = keyInput.trim();
+    if (!value) {
+      setKeyMessage({ tone: "danger", text: "مقدار API key خالی است." });
+      return;
+    }
+    setKeyBusy("save");
+    setKeyMessage(null);
+    try {
+      await api.setSubsourceApiKey(value);
+      setKeyInput("");
+      // نتیجهٔ خود ذخیره از بازخوانی وضعیت جدا گزارش می‌شود — حتی خواندنِ
+      // موفقِ متناقض، پیام موفقیت بی‌قید نمی‌سازد.
+      const refresh = await refreshKeyStatus();
+      if (refresh.state === "stored") {
+        setKeyMessage({ tone: "success", text: "API key در Credential Manager ذخیره شد." });
+      } else if (refresh.state === "missing") {
+        setKeyMessage({
+          tone: "danger",
+          text: "ذخیرهٔ API key انجام شد، اما بررسی بلافاصلهٔ وضعیت نشان می‌دهد کلید ذخیره نشده است — لطفاً دوباره تلاش کنید.",
+        });
+      } else {
+        setKeyMessage({
+          tone: "danger",
+          text: `ذخیرهٔ API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${refresh.error ?? ""}`,
+        });
+      }
+    } catch (e) {
+      setKeyMessage({ tone: "danger", text: `ذخیرهٔ API key ناموفق بود: ${String(e)}` });
+    } finally {
+      setKeyBusy(null);
+    }
+  };
+
+  const deleteKey = async () => {
+    const ok = await ask(
+      "کلید ذخیره‌شدهٔ SubSource حذف شود؟\n\nبرای دانلود بعدی باید دوباره کلید وارد کنید. خود کلید هرگز نمایش داده نمی‌شود.",
+      { title: "حذف SubSource API key", kind: "warning" },
+    );
+    if (!ok) return;
+    setKeyBusy("delete");
+    setKeyMessage(null);
+    try {
+      await api.deleteSubsourceApiKey();
+      setKeyInput("");
+      const refresh = await refreshKeyStatus();
+      if (refresh.state === "missing") {
+        setKeyMessage({ tone: "success", text: "API key از Credential Manager حذف شد." });
+      } else if (refresh.state === "stored") {
+        setKeyMessage({
+          tone: "danger",
+          text: "حذف API key انجام شد، اما بررسی بلافاصلهٔ وضعیت همچنان کلید ذخیره‌شده‌ای می‌بیند — ظاهراً حذف کامل نشده است.",
+        });
+      } else {
+        setKeyMessage({
+          tone: "danger",
+          text: `حذف API key انجام شد، اما خواندن مجدد وضعیت ناموفق بود — وضعیت کلید فعلاً نامشخص است: ${refresh.error ?? ""}`,
+        });
+      }
+    } catch (e) {
+      setKeyMessage({ tone: "danger", text: `حذف API key ناموفق بود: ${String(e)}` });
+    } finally {
+      setKeyBusy(null);
+    }
   };
 
   return (
@@ -289,6 +410,77 @@ export function SettingsPage() {
             در شروع اجرا و با دکمهٔ «بررسی دوباره»، سلامت ابزارها آزموده می‌شود (اجرای
             <span dir="ltr" className="mx-1 font-mono">--version/--help</span>).
           </p>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={KeyRound} title="SubSource API Key" />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-40 shrink-0 text-sm text-ink-2">وضعیت کلید</span>
+            {keyStatus === "checking" ? (
+              <Badge tone="warn">در حال بررسی…</Badge>
+            ) : keyStatus === "stored" ? (
+              <Badge tone="success">ذخیره‌شده در Credential Manager</Badge>
+            ) : keyStatus === "missing" ? (
+              <Badge tone="warn">ذخیره نشده</Badge>
+            ) : (
+              <Badge tone="danger">نامشخص — خطا در خواندن وضعیت</Badge>
+            )}
+          </div>
+          <p className="text-xs text-ink-3">
+            این وضعیت فقط یعنی کلیدی روی همین سیستم ذخیره شده است؛ معتبر بودن آن هنگام دانلود توسط
+            SubSource بررسی می‌شود. خود کلید هرگز نمایش داده نمی‌شود و در settings.json نوشته نمی‌شود.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-40 shrink-0 text-sm text-ink-2">کلید جدید</span>
+            <input
+              type="password"
+              dir="ltr"
+              autoComplete="new-password"
+              value={keyInput}
+              disabled={keyBusy !== null}
+              onChange={(e) => {
+                setKeyInput(e.target.value);
+                setKeyMessage(null);
+              }}
+              placeholder="API key را اینجا وارد کنید…"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-start font-mono text-xs outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              onClick={saveKey}
+              loading={keyBusy === "save"}
+              disabled={keyBusy !== null || !keyInput.trim()}
+            >
+              <Save className="size-4" />
+              ذخیره کلید
+            </Button>
+            <Button
+              variant="danger"
+              onClick={deleteKey}
+              loading={keyBusy === "delete"}
+              disabled={keyBusy !== null || keyStatus !== "stored"}
+              title="حذف کلید ذخیره‌شده"
+            >
+              <Trash2 className="size-4" />
+              حذف کلید
+            </Button>
+          </div>
+          {keyMessage && (
+            <div
+              className={`flex items-center justify-between gap-3 rounded-lg px-4 py-3 text-sm ${
+                keyMessage.tone === "success"
+                  ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border border-red-500/30 bg-red-500/10 text-red-300"
+              }`}
+            >
+              <span>{keyMessage.text}</span>
+              <button onClick={() => setKeyMessage(null)}>✕</button>
+            </div>
+          )}
         </div>
       </Card>
 

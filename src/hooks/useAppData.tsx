@@ -8,7 +8,6 @@ import {
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/api";
-import type { SyncRunState } from "../lib/pipeline";
 import type {
   ExtractionPlan,
   ExtractionPlanItem,
@@ -40,11 +39,6 @@ interface AppDataState {
   setFolderSelection: (path: string) => void;
   setFileSelection: (paths: string[]) => void;
   clearSelection: () => void;
-  /**
-   * وضعیت اجرای سینک — فقط موتور واقعی pipeline آن را پر می‌کند.
-   * تا آن زمان همیشه null است تا هیچ پیشرفت جعلی‌ای نمایش داده نشود.
-   */
-  syncRun: SyncRunState | null;
   setError: (message: string | null) => void;
   applyEntry: (entry: VideoEntry) => void;
   refreshLibrary: () => Promise<void>;
@@ -81,8 +75,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [opsProgress, setOpsProgress] = useState<OpsProgress | null>(null);
   const [opsSummary, setOpsSummary] = useState<string | null>(null);
   const [selection, setSelection] = useState<HomeSelection | null>(null);
-  // تا اتصال orchestrator واقعی همیشه null می‌ماند (بدون پیشرفت جعلی)
-  const [syncRun] = useState<SyncRunState | null>(null);
 
   // انتخاب پوشه و فایل با هم جمع‌ناپذیرند — هر setter انتخاب قبلی را جایگزین می‌کند
   const setFolderSelection = useCallback((path: string) => {
@@ -281,6 +273,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           applyEntry(event.payload);
         }),
       );
+      // pipeline پس از اسکن انتخاب‌شده، کل کتابخانه را جایگزین می‌کند
+      unlisteners.push(
+        await listen<VideoEntry[]>("library:replaced", (event) => {
+          setLibrary(event.payload);
+        }),
+      );
       unlisteners.push(
         await listen<OpsProgress>("ops:progress", (event) => {
           setOpsProgress(event.payload);
@@ -327,7 +325,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setFolderSelection,
     setFileSelection,
     clearSelection,
-    syncRun,
     setError,
     applyEntry,
     refreshLibrary,

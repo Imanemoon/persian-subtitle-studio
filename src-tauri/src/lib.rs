@@ -4,16 +4,17 @@ pub mod commands;
 pub mod logging;
 pub mod media;
 pub mod models;
+pub mod pipeline;
 pub mod scanner;
 pub mod settings;
 pub mod state;
 pub mod subsource;
 pub mod subtitle;
+pub mod sync;
 pub mod tools;
 
 pub mod archive;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
@@ -70,12 +71,11 @@ pub fn run() {
                 settings: Mutex::new(app_settings),
                 library: Mutex::new(Vec::new()),
                 last_scan: Mutex::new(None),
-                scanning: AtomicBool::new(false),
-                cancel_scan: AtomicBool::new(false),
                 ops: Arc::new(Mutex::new(state::OpsRegistry::default())),
                 archive_provenance: Mutex::new(
                     crate::archive::provenance::ProvenanceRegistry::default(),
                 ),
+                pipeline: Mutex::new(None),
             });
             app.manage(AppPaths { config_dir });
 
@@ -89,6 +89,14 @@ pub fn run() {
             commands::scan::is_scanning,
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::pipeline::start_pipeline,
+            commands::pipeline::resolve_pipeline_decision,
+            commands::pipeline::cancel_pipeline,
+            commands::pipeline::get_pipeline_state,
+            commands::pipeline::is_pipeline_active,
+            commands::secrets::set_subsource_api_key,
+            commands::secrets::has_subsource_api_key,
+            commands::secrets::delete_subsource_api_key,
             commands::subsource::plan_subsource_download,
             commands::subsource::execute_subsource_download,
             commands::subsource::is_download_active,

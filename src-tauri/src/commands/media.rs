@@ -5,10 +5,12 @@
 
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::models::{AnalysisStatus, OpsProgress, VideoAnalysis, VideoEntry};
-use crate::state::AppState;
+use crate::state::{acquire_batch_op, AppState};
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -201,8 +203,9 @@ pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, St
         return Err("کتابخانه خالی است — ابتدا اسکن کنید.".into());
     }
 
-    // پرچم لغو تازه مخصوص این عملیات گروهی
-    let cancel = state.ops.lock().unwrap().start_batch()?;
+    // پرچم لغو تازه مخصوص این عملیات گروهی — گارد RAII با Drop ایمن
+    let guard = acquire_batch_op(&state.ops)?;
+    let cancel = Arc::clone(&guard.cancel);
     let total = paths.len() as u64;
     crate::logging::info("media", &format!("تحلیل گروهی {total} ویدیو شروع شد"));
 
@@ -237,8 +240,8 @@ pub fn analyze_all(app: AppHandle, state: State<'_, AppState>) -> Result<u64, St
                 }
             }
         }
-        let st = app2.state::<AppState>();
-        st.ops.lock().unwrap().end_batch();
+        // پایان رزرو قبل از رویداد نهایی — همان ترتیب قبلی
+        drop(guard);
         crate::logging::info("media", "تحلیل گروهی پایان یافت");
         let _ = app2.emit(
             "ops:done",

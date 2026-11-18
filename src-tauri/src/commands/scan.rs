@@ -1,20 +1,20 @@
 //! دستورات اسکن و دسترسی به کتابخانه.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::models::{ScanProgress, ScanSummary, VideoEntry};
 use crate::scanner;
-use crate::state::AppState;
+use crate::state::{acquire_scan_op, request_scan_cancel, AppState};
 
 #[tauri::command]
 pub fn start_scan(app: AppHandle, state: State<'_, AppState>, root: String) -> Result<(), String> {
-    if state.scanning.load(Ordering::SeqCst) {
-        return Err("یک اسکن در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
-    }
+    // admission اتمیک — تعارض با اسکن دیگر، عملیات گروهی و عملیات تکی‌ها
+    // زیر همان قفل Registry رد می‌شود. گارد RAII است: هر Err بعدی (اعتبارسنجی
+    // مسیر/مستثناها) با Drop فوری گارد، رزرو را آزاد می‌کند.
+    let scan_guard = acquire_scan_op(&state.ops)?;
 
     let root_path = PathBuf::from(root.trim().trim_matches('"'));
     if root_path.as_os_str().is_empty() || !root_path.is_dir() {
@@ -28,8 +28,6 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, root: String) -> R
         ));
     }
 
-    state.cancel_scan.store(false, Ordering::SeqCst);
-    state.scanning.store(true, Ordering::SeqCst);
     crate::logging::info("scan", &format!("شروع اسکن: {}", root_path.display()));
 
     let app2 = app.clone();
@@ -43,10 +41,11 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, root: String) -> R
         };
 
         let st = app2.state::<AppState>();
+        // پرچم لغو مخصوص همین نسل اسکن — از گارد رزرو می‌آید
         let out = scanner::scan_folder(
             &root_path,
             &settings.excluded_folders,
-            &st.cancel_scan,
+            &scan_guard.cancel,
             &mut throttle,
         );
 
@@ -54,8 +53,10 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, root: String) -> R
             let mut lib = st.library.lock().unwrap();
             *lib = out.entries;
             *st.last_scan.lock().unwrap() = Some(out.summary.clone());
-            st.scanning.store(false, Ordering::SeqCst);
         }
+        // پایان عمر رزرو: رزرو همین‌جا آزاد می‌شود تا رویداد scan:done به UI برسد
+        // و شروع اسکن جدید بلافاصله ممکن باشد.
+        drop(scan_guard);
 
         if out.summary.cancelled {
             crate::logging::warn(
@@ -86,12 +87,21 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, root: String) -> R
 
 #[tauri::command]
 pub fn stop_scan(state: State<'_, AppState>) -> bool {
-    let was_scanning = state.scanning.load(Ordering::SeqCst);
-    state.cancel_scan.store(true, Ordering::SeqCst);
-    if was_scanning {
-        crate::logging::info("scan", "درخواست توقف اسکن ثبت شد");
+    // اتمیک زیر قفل Registry: چک رزرو فعال + ست پرچمِ «همان نسل» یکجا.
+    // بدون اسکن فعال → false و هیچ پرچمی ست نمی‌شود؛ هر نسل اسکن پرچم تازه
+    // دارد، پس درخواست قدیمی هرگز اسکن بعدی را لغو نمی‌کند.
+    match request_scan_cancel(&state.ops) {
+        Ok(was_scanning) => {
+            if was_scanning {
+                crate::logging::info("scan", "درخواست توقف اسکن ثبت شد");
+            }
+            was_scanning
+        }
+        Err(err) => {
+            crate::logging::warn("scan", &format!("درخواست توقف اسکن ناموفق بود: {err}"));
+            false
+        }
     }
-    was_scanning
 }
 
 #[tauri::command]
@@ -106,5 +116,7 @@ pub fn get_last_scan(state: State<'_, AppState>) -> Option<ScanSummary> {
 
 #[tauri::command]
 pub fn is_scanning(state: State<'_, AppState>) -> bool {
-    state.scanning.load(Ordering::SeqCst)
+    // از Registry می‌خواند — منبع حقیقت یکتا برای وضعیت اسکن
+    // قفل مسموم: وضعیت نامشخص → false (بدون panic در مرز command)
+    crate::state::is_scan_active(&state.ops).unwrap_or(false)
 }

@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::logging;
-use crate::subsource::plan::{DownloadPlanItem, SkippedDownload};
+use crate::subsource::plan::{DownloadPlanItem, SkipReasonCode, SkippedDownload};
 
 /// پیشوند ریشه staging — باید با `STAGING_PREFIX` در Scanner هم‌خوان بماند.
 pub const STAGING_DIR_PREFIX: &str = "_subsource_batch_";
@@ -106,11 +106,12 @@ pub fn group_by_volume(
     for item in items {
         let video = PathBuf::from(&item.video_path);
         let Some(root) = volume_root_of(&video) else {
-            skipped.push(SkippedDownload {
-                video_path: item.video_path.clone(),
-                video_file_name: item.video_file_name.clone(),
-                reason: "مسیر نسبی برای staging پشتیبانی نمی‌شود".into(),
-            });
+            skipped.push(SkippedDownload::with_code(
+                item.video_path.clone(),
+                item.video_file_name.clone(),
+                SkipReasonCode::StagingVolumeUnavailable,
+                "مسیر نسبی برای staging پشتیبانی نمی‌شود",
+            ));
             continue;
         };
         let key = root.to_string_lossy().to_uppercase();
@@ -141,11 +142,12 @@ pub fn group_by_volume(
             let staged_dir = PathBuf::from(&key).join(rel);
             let target = staged_dir.join(&item.video_file_name);
             if let Some(owner) = used.get(&target) {
-                skipped.push(SkippedDownload {
-                    video_path: item.video_path.clone(),
-                    video_file_name: item.video_file_name.clone(),
-                    reason: format!("مسیر staging با «{owner}» تصادم می‌کند"),
-                });
+                skipped.push(SkippedDownload::with_code(
+                    item.video_path.clone(),
+                    item.video_file_name.clone(),
+                    SkipReasonCode::StagingPathCollision,
+                    format!("مسیر staging با «{owner}» تصادم می‌کند"),
+                ));
                 continue;
             }
             used.insert(target, item.video_file_name.clone());

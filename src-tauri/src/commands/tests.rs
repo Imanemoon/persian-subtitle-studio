@@ -18,7 +18,7 @@ use super::subtitle::{
 };
 use crate::models::{AnalysisStatus, OpsProgress, SubtitleKind, VideoEntry};
 use crate::settings::Settings;
-use crate::state::{acquire_single_op, AppState, OpsRegistry};
+use crate::state::{acquire_batch_op, acquire_single_op, AppState, OpsRegistry};
 use crate::tools::resolve_tool_path;
 
 #[cfg(windows)]
@@ -158,9 +158,8 @@ fn make_state() -> Arc<AppState> {
         settings: Mutex::new(Settings::default()),
         library: Mutex::new(Vec::new()),
         last_scan: Mutex::new(None),
-        scanning: std::sync::atomic::AtomicBool::new(false),
-        cancel_scan: std::sync::atomic::AtomicBool::new(false),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
+        pipeline: Mutex::new(None),
         archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
     })
 }
@@ -351,8 +350,9 @@ fn video_without_subs_and_extract_all_plan() {
     assert_eq!(plan.items[0].video_path, path2);
     assert!(plan.skipped.iter().any(|s| s.video_path == path));
 
-    // اجرای پلن با پرچم گروهی واقعی از registry
-    let cancel = state.ops.lock().unwrap().start_batch().unwrap();
+    // اجرای پلن با گارد گروهی واقعی از registry (RAII)
+    let batch_guard = acquire_batch_op(&state.ops).unwrap();
+    let cancel = Arc::clone(&batch_guard.cancel);
     let (success, failed) = execute_plan_items(
         &state,
         plan.items.len() as u64,
@@ -361,7 +361,7 @@ fn video_without_subs_and_extract_all_plan() {
         |_p: OpsProgress| {},
         |_e: VideoEntry| {},
     );
-    state.ops.lock().unwrap().end_batch();
+    drop(batch_guard);
     assert_eq!((success, failed), (1, 0));
 
     let updated = get_entry(&state, &path2).unwrap();
@@ -417,14 +417,15 @@ fn batch_and_single_mutually_exclusive_live() {
     let guard = acquire_single_op(&state.ops, &path).unwrap();
 
     // ۲) Batch باید رد شود
-    let err = state.ops.lock().unwrap().start_batch().unwrap_err();
+    let err = acquire_batch_op(&state.ops).unwrap_err();
     assert!(err.contains("تکی"), "{err}");
 
     // ۳) آزادسازی Single
     drop(guard);
 
     // ۴) Batch اکنون موفق است
-    let batch = state.ops.lock().unwrap().start_batch().unwrap();
+    let batch_guard = acquire_batch_op(&state.ops).unwrap();
+    let batch = Arc::clone(&batch_guard.cancel);
 
     // ۵) در حالت Batch فعال → Single رد (بک‌اند، نه فقط UI)
     let err = extract_single(&state, &path, 2).unwrap_err();
@@ -433,7 +434,7 @@ fn batch_and_single_mutually_exclusive_live() {
     // لغو گروهی → پرچم true؛ پایان گروهی → تکی دوباره مجاز و موفق
     assert!(state.ops.lock().unwrap().cancel_all());
     assert!(batch.load(Ordering::SeqCst));
-    state.ops.lock().unwrap().end_batch();
+    drop(batch_guard);
     let outcome = extract_single(&state, &path, 2).expect("پس از پایان گروهی باید موفق شود");
     assert!(outcome.persian_confirmed);
 
@@ -483,7 +484,7 @@ fn active_extract_blocks_analyze_review_and_promote_on_same_video() {
     let err = run_promote_blocking(&state, &path, 2).unwrap_err();
     assert!(err.contains("همین ویدیو"), "{err}");
     // Batch هم حین Single رد می‌شود
-    let err = state.ops.lock().unwrap().start_batch().unwrap_err();
+    let err = acquire_batch_op(&state.ops).unwrap_err();
     assert!(err.contains("تکی"), "{err}");
 
     // اجازهٔ ادامه → استخراج کامل و موفق؛ اسلات آزاد
@@ -825,9 +826,9 @@ fn batch_cancel_aborts_current_file_analysis() {
     );
     state.settings.lock().unwrap().tool_paths.ffprobe = Some(fake.to_string_lossy().to_string());
 
-    // عملیات گروهی ثبت می‌شود (همان کاری که analyze_all انجام می‌دهد)
-    let batch = state.ops.lock().unwrap().start_batch().unwrap();
-    let t_batch = batch.clone();
+    // عملیات گروهی ثبت می‌شود (همان کاری که analyze_all انجام می‌دهد) — گارد RAII
+    let batch_guard = acquire_batch_op(&state.ops).unwrap();
+    let t_batch = Arc::clone(&batch_guard.cancel);
     let t_state = state.clone();
     let t_path = path.clone();
     let worker =
@@ -841,7 +842,7 @@ fn batch_cancel_aborts_current_file_analysis() {
     ));
 
     // لغو گروهی → فایل جاری هم متوقف می‌شود
-    batch.store(true, Ordering::SeqCst);
+    batch_guard.cancel.store(true, Ordering::SeqCst);
     let res = worker.join().unwrap();
     let err = res.unwrap_err();
     assert!(err.contains("لغو"), "{err}");
@@ -853,7 +854,7 @@ fn batch_cancel_aborts_current_file_analysis() {
     );
 
     // پایان گروهی → اسلات تکی مجاز و پرچمش تازه
-    state.ops.lock().unwrap().end_batch();
+    drop(batch_guard);
     let guard = acquire_single_op(&state.ops, &path).unwrap();
     assert!(!guard.cancel.load(Ordering::SeqCst));
 

@@ -171,7 +171,11 @@ pub fn is_archive_active(state: State<'_, AppState>) -> bool {
 
 /// آیا یک عملیات گروهی (دانلود، پلن آرشیو یا اجرای آرشیو) در جریان است؟
 pub fn archive_ops_active(ops: &Arc<Mutex<OpsRegistry>>) -> bool {
-    ops.lock().unwrap().batch_cancel.is_some()
+    // poison-safe: قفل مسموم با recovery بازیابی می‌شود
+    match ops.lock() {
+        Ok(ops) => ops.has_active_batch(),
+        Err(poisoned) => poisoned.into_inner().has_active_batch(),
+    }
 }
 
 #[cfg(test)]

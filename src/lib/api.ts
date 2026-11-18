@@ -11,6 +11,7 @@ import type {
   TrackReview,
   VideoEntry,
 } from "../types";
+import type { PipelineSnapshot } from "../types/pipeline";
 
 export const api = {
   getLibrary: () => invoke<VideoEntry[]>("get_library"),
@@ -22,6 +23,13 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
     invoke<Settings>("save_settings", { settings }),
+
+  // ---- مدیریت امن SubSource API key — فقط Credential Manager؛
+  // مقدار واقعی کلید هرگز به فرانت برگردانده نمی‌شود، فقط وضعیت boolean ----
+  setSubsourceApiKey: (apiKey: string) =>
+    invoke<void>("set_subsource_api_key", { apiKey }),
+  hasSubsourceApiKey: () => invoke<boolean>("has_subsource_api_key"),
+  deleteSubsourceApiKey: () => invoke<void>("delete_subsource_api_key"),
 
   detectTools: () => invoke<ToolInfo[]>("detect_tools"),
   getLogs: (limit = 300) => invoke<LogEntry[]>("get_logs", { limit }),
@@ -72,4 +80,16 @@ export const api = {
     });
     return typeof picked === "string" ? picked : null;
   },
+
+  // ---- Pipeline انتها-به-انتها — فرانت فقط شناسه‌های مات بک‌اند را می‌فرستد ----
+  startPipeline: (paths: string[]) =>
+    invoke<PipelineSnapshot>("start_pipeline", {
+      input: { kind: "files", paths },
+    }),
+  resolvePipelineDecision: (decisionId: string, optionId: string) =>
+    invoke<void>("resolve_pipeline_decision", { decisionId, optionId }),
+  cancelPipeline: () => invoke<boolean>("cancel_pipeline"),
+  getPipelineState: () =>
+    invoke<PipelineSnapshot | null>("get_pipeline_state"),
+  isPipelineActive: () => invoke<boolean>("is_pipeline_active"),
 };

@@ -125,6 +125,8 @@ pub enum ArchiveItemStatus {
     Placed,
     Ambiguous,
     NoMatch,
+    /// مقصد از قبل موجود بود — حفظ شده؛ هیچ بازنویسی‌ای رخ نداده
+    Conflict,
     Failed,
     Cancelled,
 }
@@ -150,6 +152,7 @@ pub struct ArchiveExecuteResult {
     pub placed: usize,
     pub ambiguous: usize,
     pub no_match: usize,
+    pub conflicts: usize,
     pub failed: usize,
     pub cancelled: bool,
     pub success: bool,
@@ -178,6 +181,11 @@ impl ArchiveExecuteResult {
             .iter()
             .filter(|i| i.status == ArchiveItemStatus::NoMatch)
             .count();
+        self.conflicts = self
+            .items
+            .iter()
+            .filter(|i| i.status == ArchiveItemStatus::Conflict)
+            .count();
         self.failed = self
             .items
             .iter()
@@ -185,6 +193,7 @@ impl ArchiveExecuteResult {
             .count();
         self.success = !self.cancelled
             && self.failed == 0
+            && self.conflicts == 0
             && self.ambiguous == 0
             && self.placed > 0
             && self.cleanup_warnings.is_empty();
