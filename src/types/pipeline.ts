@@ -139,6 +139,8 @@ export interface PipelineSnapshot {
   currentFile: string | null;
   counts: PipelineCounts;
   message: string;
+  /** پیشرفت واقعی مرحلهٔ جاری — فقط وقتی مرحله شمارش آیتمی معتبر دارد */
+  stageProgress?: { completed: number; total: number } | null;
   /** فقط حین انتظار تصمیم حاضر است (skip_serializing_if) */
   pendingDecision?: PendingDecision;
 }

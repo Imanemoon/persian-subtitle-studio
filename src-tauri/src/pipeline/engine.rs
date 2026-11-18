@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -305,6 +305,12 @@ pub(crate) fn run_pipeline_body(
     // ---- S3: Analyzing ----
     control.set_stage(PipelineStage::Analyzing);
     push_state!("تحلیل زیرنویس‌های داخلی…");
+    let analyze_total = items
+        .iter()
+        .filter(|rt| rt.outcome.is_none() && !rt.inspection_failed && rt.sidecar_valid.is_empty())
+        .count() as u32;
+    let mut analyze_done = 0u32;
+    control.set_stage_progress(0, analyze_total);
     for rt in items.iter_mut() {
         if rt.outcome.is_some() || rt.inspection_failed || !rt.sidecar_valid.is_empty() {
             continue; // این‌ها نیازی به تحلیل ندارند
@@ -337,6 +343,8 @@ pub(crate) fn run_pipeline_body(
             }
         }
         emit_item(control, sink, rt);
+        analyze_done += 1;
+        control.set_stage_progress(analyze_done, analyze_total);
     }
     set_counts_snapshot(control, &mut counts);
     ensure_running()?;
@@ -349,6 +357,7 @@ pub(crate) fn run_pipeline_body(
     // آماده‌ها (دقیقاً یک Track فارسی) — هستهٔ موجود execute_plan_items
     if !extraction_plan.items.is_empty() {
         let total = extraction_plan.items.len() as u64;
+        control.set_stage_progress(0, total as u32);
         let (success, _failed) = crate::commands::subtitle::execute_plan_items(
             state,
             total,
@@ -356,10 +365,16 @@ pub(crate) fn run_pipeline_body(
             &cancel,
             |p| {
                 control.set_current_file(Some(p.video_path.clone()));
+                // ارقام فارسی + جداکنندهٔ صریح — ترکیب ارقام لاتین با مسیر،
+                // متن را در RTL به‌هم می‌ریزد
                 control.set_message(format!(
-                    "استخراج {}/{}: {}",
-                    p.current, p.total, p.video_path
+                    "استخراج فایل {} از {} — {}",
+                    fa_num(p.current),
+                    fa_num(p.total),
+                    p.video_path
                 ));
+                // callback در شروع مورد n-اُم می‌آید؛ n-1 مورد تمام شده است
+                control.set_stage_progress(p.current.saturating_sub(1) as u32, p.total as u32);
                 super::emit_to(
                     sink,
                     PipelineEvent::State {
@@ -370,12 +385,15 @@ pub(crate) fn run_pipeline_body(
             |updated| super::emit_to(sink, PipelineEvent::LibraryEntry { entry: updated }),
         );
         counts.extracted += success;
+        control.set_stage_progress(total as u32, total as u32);
         if cancel.load(Ordering::SeqCst) {
             mark_all_cancelled(control);
             return Err(PipelineError::Cancelled);
         }
     }
     // وضعیت‌های باقی بر اساس AnalysisStatus تایپ‌شده — تصمیم‌های صریح کاربر
+    // (شمارندهٔ خطی دستهٔ پلن اینجا معنا ندارد — پاک می‌شود)
+    control.clear_stage_progress();
     for rt in items.iter_mut() {
         if rt.outcome.is_some() || rt.has_sidecar {
             continue;
@@ -1095,7 +1113,9 @@ pub(crate) fn run_pipeline_body(
                         })
                     })
                     .collect(),
+                jobs.len() as u32,
             ));
+            control.set_stage_progress(0, jobs.len() as u32);
             let mut pool = Vec::new();
             let _ = (&ffs_res, &ffmpeg_res);
             for _ in 0..workers {
@@ -1291,6 +1311,20 @@ pub(crate) fn run_pipeline_body(
 // helperها
 // ---------------------------------------------------------------------
 
+/// ارقام فارسی برای پیام‌ها — ارقام لاتین در متن RTL کنار مسیر، ترتیب نمایش
+/// را به‌هم می‌ریزند (bidi)؛ ارقام فارسی جهت‌خنثی‌اند و متن را سالم نگه می‌دارند.
+fn fa_num(value: u64) -> String {
+    let fa: &[char; 10] = &['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    value
+        .to_string()
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => fa[c as usize - '0' as usize],
+            other => other,
+        })
+        .collect()
+}
+
 fn resolve_all_tools(state: &AppState) -> HashMap<&'static str, Option<PathBuf>> {
     let mut map = HashMap::new();
     for id in ["ffprobe", "ffmpeg", "subsource", "sevenZip", "ffsubsync"] {
@@ -1315,6 +1349,9 @@ struct SyncUi {
     base: HashMap<usize, PipelineItemSnapshot>,
     active: Mutex<BTreeMap<usize, String>>,
     last_emit: Mutex<Instant>,
+    /// شمارندهٔ واقعی jobهای تمام‌شدهٔ سینک — مبنای stage_progress
+    sync_done: AtomicU32,
+    sync_total: u32,
 }
 
 impl SyncUi {
@@ -1322,6 +1359,7 @@ impl SyncUi {
         control: Arc<PipelineControl>,
         sink: super::SinkStore,
         base: HashMap<usize, PipelineItemSnapshot>,
+        sync_total: u32,
     ) -> Self {
         SyncUi {
             control,
@@ -1329,6 +1367,8 @@ impl SyncUi {
             base,
             active: Mutex::new(BTreeMap::new()),
             last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
+            sync_done: AtomicU32::new(0),
+            sync_total,
         }
     }
 
@@ -1416,6 +1456,8 @@ impl SyncUi {
         self.control.set_current_file(next);
         self.control
             .set_message(format!("همگام‌سازی انجام شد: {name}"));
+        let done = self.sync_done.fetch_add(1, Ordering::SeqCst) + 1;
+        self.control.set_stage_progress(done, self.sync_total);
         self.emit_state(true);
     }
 

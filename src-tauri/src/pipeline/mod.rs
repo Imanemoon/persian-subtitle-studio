@@ -14,7 +14,7 @@ pub mod types;
 pub use types::{
     DecisionKind, DecisionOptionPayload, ItemArtifacts, ItemOutcome, PendingDecision,
     PipelineCounts, PipelineEvent, PipelineInput, PipelineItemSnapshot, PipelineSnapshot,
-    PipelineStage, PipelineStatus, PipelineSummary, RegisteredOption, StageStatus,
+    PipelineStage, PipelineStatus, PipelineSummary, RegisteredOption, StageProgress, StageStatus,
 };
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,6 +45,8 @@ pub(crate) struct ControlState {
     pub active: usize,
     pub cancelling: bool,
     pub message: String,
+    /// پیشرفت مرحلهٔ جاری — با هر set_stage صفر می‌شود؛ فقط شمارش واقعی.
+    pub stage_progress: Option<StageProgress>,
     pub invalid_selections: Vec<crate::scanner::SelectionIssue>,
     pub staged_paths: Vec<String>,
     pub warnings: Vec<String>,
@@ -90,6 +92,7 @@ impl PipelineControl {
                 active: 0,
                 cancelling: false,
                 message: message.into(),
+                stage_progress: None,
                 invalid_selections: Vec::new(),
                 staged_paths: Vec::new(),
                 warnings: Vec::new(),
@@ -138,6 +141,7 @@ impl PipelineControl {
             cancelling: g.cancelling,
             current_file: g.current_file.clone(),
             counts: g.counts,
+            stage_progress: g.stage_progress,
             pending_decision: g.pending.as_ref().map(|p| p.decision.clone()),
             message: g.message.clone(),
         }
@@ -158,7 +162,21 @@ impl PipelineControl {
     }
 
     pub(crate) fn set_stage(&self, stage: PipelineStage) {
-        self.lock_inner().stage = stage;
+        let mut g = self.lock_inner();
+        g.stage = stage;
+        // شمارندهٔ مرحلهٔ قبلی به مرحلهٔ جدید سرایت نمی‌کند
+        g.stage_progress = None;
+    }
+
+    /// ثبت پیشرفت مرحلهٔ جاری — فقط شمارش واقعی آیتم‌های تمام‌شده؛
+    /// هر مرحله ابتدا total را اعلام می‌کند و پس از هر آیتم completed را بالا می‌برد.
+    pub(crate) fn set_stage_progress(&self, completed: u32, total: u32) {
+        self.lock_inner().stage_progress = Some(StageProgress { completed, total });
+    }
+
+    /// پاک‌سازی شمارنده — وقتی شمارش خطی مرحله دیگر معنا ندارد.
+    pub(crate) fn clear_stage_progress(&self) {
+        self.lock_inner().stage_progress = None;
     }
 
     pub(crate) fn set_message(&self, message: impl Into<String>) {

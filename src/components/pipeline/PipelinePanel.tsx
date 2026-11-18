@@ -171,6 +171,16 @@ export function PipelinePanel({
                 />
               ))}
             </div>
+            {/* شمارش واقعی آیتم‌های مرحلهٔ جاری — بک‌اند منبع حقیقت است */}
+            {runActive &&
+              !waiting &&
+              snapshot?.stageProgress &&
+              snapshot.stageProgress.total > 0 && (
+                <StageProgressBar
+                  completed={snapshot.stageProgress.completed}
+                  total={snapshot.stageProgress.total}
+                />
+              )}
           </div>
         )}
 
@@ -375,6 +385,31 @@ export function PipelinePanel({
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+/** نوار پیشرفت مرحلهٔ جاری — فقط از شمارش واقعی بک‌اند؛ هیچ درصدی ساختگی نیست. */
+function StageProgressBar({
+  completed,
+  total,
+}: {
+  completed: number;
+  total: number;
+}) {
+  const clamped = Math.min(completed, total);
+  const percent = Math.round((clamped / total) * 100);
+  return (
+    <div className="space-y-1">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+        <div
+          className="h-full rounded-full bg-emerald-500/60 transition-all"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <div className="text-[11px] text-ink-3">
+        در این مرحله: {faNum(clamped)} از {faNum(total)} فایل
+      </div>
     </div>
   );
 }
