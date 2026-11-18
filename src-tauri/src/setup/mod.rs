@@ -678,7 +678,7 @@ pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<Strin
     }
     let link = Path::new(&desktop).join(format!("{link_name}.lnk"));
     let script = format!(
-        r#"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.Description = 'SubSync Studio (Run as administrator)'; $s.Save(); $b = [System.IO.File]::ReadAllBytes({}); $b[21] = $b[21] -bor 0x20; [System.IO.File]::WriteAllBytes({}, $b); exit 0"#,
+        r#"$ErrorActionPreference = 'Stop'; $ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.Description = 'SubSync Studio (Run as administrator)'; $s.Save(); if (-not (Test-Path {})) {{ throw 'lnk not created' }}; $b = [System.IO.File]::ReadAllBytes({}); $b[21] = $b[21] -bor 0x20; [System.IO.File]::WriteAllBytes({}, $b); if (-not (Test-Path {})) {{ throw 'lnk missing after write' }}; exit 0"#,
         ps_quote_single(&link.display().to_string()),
         ps_quote_single(&target_exe.display().to_string()),
         ps_quote_single(
@@ -689,8 +689,16 @@ pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<Strin
         ),
         ps_quote_single(&link.display().to_string()),
         ps_quote_single(&link.display().to_string()),
+        ps_quote_single(&link.display().to_string()),
+        ps_quote_single(&link.display().to_string()),
     );
     run_powershell(&script).map_err(|e| format!("ساخت میان‌بر ناموفق: {e}"))?;
+    if !link.is_file() {
+        return Err(format!(
+            "میان‌بر با وجود موفقیت PowerShell ساخته نشد: {}",
+            link.display()
+        ));
+    }
     Ok(link.display().to_string())
 }
 
