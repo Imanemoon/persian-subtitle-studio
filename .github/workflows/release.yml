@@ -56,7 +56,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "SubSync Studio ${{ github.ref_name }}"
-          body_path: null
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
           files: |
