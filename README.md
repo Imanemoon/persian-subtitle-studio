@@ -1,241 +1,147 @@
-# SubSync Studio
+<div align="center">
 
-**مدیریت خودکار زیرنویس فارسی سریال‌ها و فیلم‌ها** — جایگزین گرافیکی و مدرن برای خط لوله
-PowerShell + FFmpeg + SubSource CLI + 7-Zip + FFsubsync.
+# 🎬 SubSync Studio
 
-> نرم‌افزار دسکتاپ ویندوزی ساخته‌شده با **Tauri 2 + Rust + React + TypeScript + Tailwind CSS**.
-> ریپو **خصوصی** است؛ هیچ رسانه واقعی، توکن یا اطلاعات شخصی داخل آن commit نمی‌شود.
+**زیرنویس فارسی، بدون دردسر — استخراج، دانلود و همگام‌سازی خودکار زیرنویس فارسی برای سریال‌ها و فیلم‌های شما**
+
+*Automatic Persian subtitle extraction, downloading and syncing for your movies & series — on Windows, with zero manual work.*
+
+[![Release](https://img.shields.io/github/v/release/Imanemoon/persian-subtitle-studio?label=%D8%AF%D8%A7%D9%86%D9%84%D9%88%D8%AF&color=10b981)](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
+[![CI](https://github.com/Imanemoon/persian-subtitle-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Imanemoon/persian-subtitle-studio/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey)](#نصب)
+
+</div>
 
 ---
 
-## وضعیت توسعه
+SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل چرخهٔ زیرنویس فارسی را خودکار می‌کند:
+زیرنویس داخلی ویدیو را استخراج می‌کند، اگر نبود از **SubSource** دانلود می‌کند، آرشیوهای
+زیرنویس را با قسمت تطبیق داده و استخراج می‌کند، و در نهایت زیرنویس را با **FFsubsync** روی
+صدای ویدیو **همگام‌سازی** و کنار فیلم جانمایی می‌کند — همه‌چیز با چند کلیک و با جایگزینی
+مدرن و گرافیکی برای خط لولهٔ دستی PowerShell + FFmpeg + SubSource + 7-Zip + FFsubsync.
 
-| فاز | شرح | وضعیت |
-| --- | --- | --- |
-| ۱ | Foundation — اسکن واقعی پوشه‌ها، تشخیص S/E، داشبورد، تشخیص ابزارها، تنظیمات | ✅ تکمیل |
-| ۲ | Subtitle Engine — FFprobe، استخراج زیرنویس داخلی، تشخیص محتوای فارسی | ✅ تکمیل |
-| ۳ | Download & Archive — SubSource، Staging با Hard Link، ZIP/RAR با 7-Zip | ✅ تکمیل |
-| ۴ | Sync Engine — FFsubsync، Workerها، Stop/Retry | ⏳ بعدی |
-| ۵ | Packaging — Installer ویندوز، مستندات توزیع | 🟡 نصب‌کننده آماده |
+> **English:** A Windows desktop app that automates the whole Persian-subtitle workflow:
+> extract embedded tracks, download from SubSource, match & extract subtitle archives,
+> sync timing with FFsubsync, and place the final `<name>.fa.synced.srt` next to your videos.
 
-## امکانات فعلی (فاز ۲)
+| راه‌اندازی اولین اجرا (پیش‌نیازها خودکار نصب می‌شوند) | نتیجهٔ اجرا |
+| :---: | :---: |
+| ![معاونت راه‌اندازی](docs/img/setup.png) | ![pipeline](docs/img/pipeline.png) |
 
-- **اسکن بازگشتی واقعی** پوشه ریشه با ۱۴ پسوند ویدیویی، مستثناکردن پوشه‌های تعریف‌شده
-  (پیش‌فرض: `Ted Lasso` و `Better Call Saul` — قابل تغییر در تنظیمات)، پوشه‌های مخفی و
-  پوشه‌های کاری `_SubSource_*`
-- **تشخیص سریال/فصل/قسمت** از نام فایل (`S04E01`، `2x05`) و ساختار پوشه (`Season 02`، `فصل 1`)
-- گارد ضد خطای تطبیق: `E010` هرگز `E01` حساب نمی‌شود
-- **تشخیص زیرنویس کناری** هر ویدیو با نشانه‌های فارسی (fa/fas/per/farsi/persian/فارسی)
-- **داشبورد RTL فارسی** با کارت‌های آماری، فیلتر جدول، لاگ زنده، صفحه پردازش
-- **تشخیص ابزارهای خارجی** با پروب واقعی (`--version`/`--help`): FFmpeg، FFprobe، 7-Zip،
-  SubSource CLI، FFsubsync — با امکان تعیین مسیر دستی
-- **تنظیمات ماندگار** (JSON در پوشه config) با ذخیره امن (نوشتن موقت + rename)
-- لغو اسکن در هر لحظه بدون خراب کردن هیچ فایلی
+![صفحهٔ خانه](docs/img/home.png)
 
-### موتور زیرنویس داخلی (فاز ۲)
+## ✨ قابلیت‌ها
 
-- **تحلیل با FFprobe**: مشخصات کامل هر Subtitle Stream (Global Index، کدک، زبان،
-  عنوان، Disposition پیش‌فرض/Forced) با پارس JSON و گارد خطا
-- **دسته‌بندی کدک‌ها**: متنی (subrip/ass/ssa/webvtt/mov_text)، تصویری
-  (PGS/VobSub/Xsub/DVB — با پیام صریح نیاز به OCR)، ناشناخته
-- **تشخیص فارسی دو لایه**: اول Language Tag/عنوان Track (fa/fas/per/farsi/persian/فارسی)،
-  بعد **تأیید محتوا** با رنج‌های یونیکد فارسی — Tag فارسی با متن لاتین «فارسی تأییدشده» حساب نمی‌شود
-- **استخراج امن با FFmpeg**: خروجی اول فایل موقت → اعتبارسنجی (غیرخالی + ساختار cue معتبر +
-  شمارش فارسی) → انتقال اتمیک به `<base>.fa.srt` **بدون هیچ بازنویسی**
-- **پیش‌به‌جویی فایل‌های موجود**: `.fa.srt`، `.fa.synced.srt` و `.srt` فارسیِ موجود → Skip با دلیل
-- **Extract All دو مرحله‌ای**: پلن خلاصه (آماده‌ها + ردشده‌ها با دلیل) → تأیید صریح کاربر → اجرا
-- چند Track فارسی = `NeedsTrackSelection`؛ انتخاب دستی از UI — انتخاب تصادفی ممنوع
-- لغو عملیات فرایند FFmpeg را می‌کشد و فایل موقت همان عملیات را پاک می‌کند
+### معاونت راه‌اندازی خودکار
+- ffmpeg، Python و FFsubsync با یک کلیک دانلود و نصب می‌شوند — per-user، بدون admin،
+  با **تأیید SHA256 پین‌شده** و progress واقعی؛ هیچ نصب دستی لازم نیست
+- 7-Zip و کلاینت SubSource داخل نصاب باندل شده‌اند
+- افزودن یک‌کلیکی پوشه‌ها به استثناهای Windows Defender (شتاب واقعی روی هارد) و
+  ساخت میان‌بر «Run as administrator»
 
-## پیش‌نیازها
+### استخراج زیرنویس داخلی
+- تحلیل با FFprobe: کدک، زبان، عنوان و Disposition هر Subtitle Stream
+- تشخیص فارسی دو لایه: اول tag/عنوان Track (fa/fas/per/farsi/persian/فارسی)، بعد
+  **تأیید محتوای واقعی** با رنج‌های یونیکد فارسی — tag فارسی با متن لاتین حساب نمی‌شود
+- چند Track فارسی → انتخاب صریح کاربر؛ Track بدون برچسب → بررسی آزمایشی محتوا؛
+  زیرنویس تصویری (PGS/VobSub/DVB) → پیام صریح نیاز به OCR
+- استخراج امن: فایل موقت → اعتبارسنجی (ساختار cue + شمارش فارسی) → انتقال اتمیک به
+  `<base>.fa.srt` — **بدون هیچ بازنویسی**
+- زیرنویس‌های موجود skip می‌شوند (با دلیل)، لغو، فرایند FFmpeg را می‌کشد و فایل موقتش را پاک می‌کند
 
-### برای استفاده از نسخه نصب‌شده (کاربر نهایی)
+### دانلود از SubSource و آرشیوها
+- کلید API فقط در **Credential Manager ویندوز** — هرگز در فایل تنظیمات یا کد
+- Staging امن با Hard Link، بازبینی تازهٔ فایل‌سیستم، کدهای skip تایپ‌شده
+- پلن آرشیو دو مرحله‌ای: بازرسی امن همهٔ اعضا → استخراج → تطبیق اپیزود → جانمایی؛
+  تعارض = هر دو فایل حفظ می‌شوند
 
-- Windows 10/11 (64-bit)
-- Microsoft Edge WebView2 Runtime — روی Windows 11 از قبل نصب است؛ روی Windows 10 هم
-  معمولاً همراه Edge وجود دارد. اگر نصب نباشد، نصب‌کننده به اینترنت نیاز دارد تا Bootstrapper
-  رسمی مایکروسافت را دانلود و نصب کند.
-- ابزارهای خارجی زیر **داخل نصب‌کننده نیستند** و باید جداگانه نصب شوند (بخش «ابزارهای خارجی»).
+### همگام‌سازی با ffsubsync
+- فراخوانی multi-segment با skip-intro-outro و محافظت کیفیت پایین (`--skip-sync-on-low-quality`)
+- کد خروج 0 همیشه «موفق» نیست — طبقه‌بندی fail-closed روی marker آفست؛ آفست اعتبارسنجی‌شده در UI نمایش داده می‌شود
+- workspace موقت مقیدشده (بدون فرار از ریشه، بدون بازنویسی ورودی‌ها)
 
-### برای توسعه و ساخت installer
+### pipeline یک‌پارچه با شفافیت کامل
+- ۱۲ مرحله با موانع (barrier) — هرجا ابهام باشد، برنامه می‌ایستد و با دیالوگ از شما می‌پرسد
+- هر پیشرفت، شمارش و نتیجه از دادهٔ واقعی بک‌اند می‌آید — **هیچ درصد یا موفقیتی ساختگی نیست**
+- لغو امن در هر لحظه، بازیابی کامل وضعیت پس از بستن/reload برنامه، تعارض‌ها و خطاها
+  با دلیل صادقانه
 
-- [Node.js](https://nodejs.org) ≥ 22 و npm
-- [Rust](https://rustup.rs) (toolchain `stable-msvc`) + MSVC Build Tools
-- WebView2 (برای اجرای Tauri روی دستگاه توسعه)
-- ابزارهای خارجی فقط برای تست دستی pipeline لازم‌اند
+## 📥 نصب
 
-## اجرای محیط توسعه
+۱. آخرین نصاب را از [**Releases**](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
+   دانلود کنید (`SubSync Studio_x.y.z_x64-setup.exe`)
+۲. نصب کنید — نصاب کوچک است؛ **بار اول که برنامه باز شود، صفحهٔ راه‌اندازی همهٔ
+   پیش‌نیازها را خودش دانلود و نصب می‌کند**
+۳. (پیشنهادی) در همان صفحه، پوشهٔ رسانه‌های‌تان را به استثناهای Defender اضافه کنید —
+   روی هارد دیسک مکانیکی چند برابر سریع‌تر می‌شود
+۴. برای دانلود از SubSource، کلید API را در تنظیمات ذخیره کنید (در Credential Manager می‌ماند)
+
+**پیش‌نیاز سیستم:** Windows 10/11 (64-bit) — اگر WebView2 نصب نباشد، نصاب آن را دانلود می‌کند.
+
+<details>
+<summary><b>ترتیب پیدا شدن ابزارها</b> (برای کاربران حرفه‌ای)</summary>
+
+1. مسیرهای ست‌شده در «تنظیمات → ابزارهای خارجی»
+2. مسیرهای نصب‌شده توسط معاونت راه‌اندازی (`%LOCALAPPDATA%\com.subsync.studio\tools`)
+3. PATH سیستم و مسیرهای استاندارد (`Program Files\7-Zip`، `%LOCALAPPDATA%\Programs\SubSource`)
+
+</details>
+
+## 🛠 ساخت از سورس
+
+پیش‌نیاز: Node 20+، Rust stable (MSVC) — NSIS به‌صورت خودکار توسط tauri-cli دانلود می‌شود.
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev     # اجرای توسعه
+npm run tauri build   # نصاب ریلیز → src-tauri/target/release/bundle/nsis/
 ```
 
-`npm run tauri dev` ابتدا Vite را روی `http://localhost:5173` بالا می‌آورد و سپس پنجره Tauri را
-باز می‌کند. اجرای مستقیم `src-tauri/target/debug/persian-subtitle-studio.exe` بدون Vite باعث
-خطای `localhost refused to connect` می‌شود؛ این رفتار طبیعی نسخه توسعه است.
-
-یا فقط فرانت‌اند:
-
-```bash
-npm run dev
-```
-
-## تست‌ها و بررسی‌ها
+تست‌ها:
 
 ```bash
 cd src-tauri
-cargo fmt
-cargo check
-cargo test --lib          # تست‌های واحد
-cargo test --lib -- --ignored   # تست‌های زنده: تشخیص ابزارها + چرخه کامل ffmpeg روی فایل مصنوعی
-cargo clippy --all-targets -- -D warnings
+cargo test                     # unit + integration (بدون نیاز به شبکه/کلید)
+cargo test -- --ignored       # تست‌های زنده (ابزارهای واقعی لازم دارند)
+cargo clippy --all-targets    # صفر warning هدف پروژه است
 ```
 
-build فرانت‌اند:
+## 🧱 تکنولوژی
 
-```bash
-npm run build
-```
+- **Backend:** Rust + Tauri 2 — هسته‌های مستقل از Tauri با callback تزریق‌پذیر، admission
+  اتمیک عملیات (RAII)، workspace موقت مقیدشده، fail-closed در همهٔ مرزها
+- **Frontend:** React 19 + TypeScript + Tailwind CSS v4 — RTL کامل با فونت وزیرمتن؛
+  همهٔ اعداد و وضعیت‌ها فقط از بک‌اند
+- **امنیت:** دانلودها با SHA256 پین‌شده تأیید می‌شوند، کلید API فقط در Credential Manager،
+  هیچ عمل elevated بدون رضایت صریح کاربر اجرا نمی‌شود
 
-## ساخت نصب‌کننده ویندوز (Release)
+## 📦 اجزای باندل‌شده
 
-> ⚠️ برای ساخت نسخه توزیع **فقط** از دستور زیر استفاده کنید:
->
-> ```bash
-> npm ci
-> npm run tauri build
-> ```
->
-> هرگز `cargo build --release` را برای ساخت نسخه نهایی اجرا نکنید. آن دستور feature
-> `custom-protocol` مربوط به Tauri را فعال نمی‌کند؛ در نتیجه فایل اجرایی به‌جای فرانت‌اند
-> بسته‌شده، `http://localhost:5173` را باز می‌کند و صفحه «Hmmm… can't reach this page /
-> localhost refused to connect» (با لینک «Checking the proxy and the firewall») نمایش داده
-> می‌شود. این خطا ربطی به پروکسی ویندوز ندارد.
+| جزء | منبع |
+|---|---|
+| `sub-rs.exe` (کلاینت دانلود SubSource) | باینری این پروژه |
+| `7z2603-x64.exe` | نصاب رسمی [7-Zip](https://www.7-zip.org/) (LGPL) |
+| `ffmpeg` / `python` / `ffsubsync` | **باندل نمی‌شوند** — در زمان اجرا از منابع رسمی با نسخهٔ پین‌شده و SHA256 دانلود می‌شوند |
 
-خروجی دقیق:
+## 🗺 نقشهٔ راه
 
-```text
-src-tauri/target/release/bundle/nsis/SubSync Studio_0.1.0_x64-setup.exe
-```
+- [x] فاز ۱ — اسکن واقعی پوشه‌ها، تشخیص اپیزود، داشبورد، تشخیص ابزارها، تنظیمات
+- [x] فاز ۲ — موتور زیرنویس: FFprobe، استخراج، تشخیص محتوای فارسی
+- [x] فاز ۳ — دانلود SubSource، آرشیوها، سینک ffsubsync، pipeline انتها-به-انتها
+- [x] فاز ۴ — نصاب ویندوز + معاونت راه‌اندازی خودکار پیش‌نیازها
+- [ ] OCR برای زیرنویس تصویری (PGS/VobSub)
+- [ ] ویرایشگر زیرنویس و زمان‌بندی دستی
 
-در صورت نیاز فقط NSIS:
+## 📄 لایسنس
 
-```bash
-npm run tauri build -- --bundles nsis
-```
+[MIT](LICENSE) — ffmpeg به‌صورت runtime دانلود می‌شود، نه باندل.
 
-`npm run tauri build` این مراحل را انجام می‌دهد: `npm run build` (TypeScript + Vite → `dist/`)،
-کامپایل Rust با assetهای جاسازی‌شده، و ساخت installer با NSIS. Node.js/npm/Rust فقط روی
-دستگاه سازنده لازم است؛ کاربر نهایی به هیچ‌کدام نیاز ندارد.
+## 🇬🇧 Summary (English)
 
-### نصب
-
-1. فایل `...-setup.exe` را اجرا کنید.
-2. در صفحه «Choose Install Location» مسیر دلخواه را انتخاب کنید (پیش‌فرض:
-   `%LOCALAPPDATA%\SubSync Studio`؛ بدون نیاز به Administrator).
-3. در پایان می‌توانید تیک ساخت میان‌بر Desktop را بزنید؛ میان‌بر Start Menu هم ساخته می‌شود.
-4. برنامه را از Start Menu یا Desktop اجرا کنید. برای باز شدن رابط کاربری به Vite، Node.js،
-   اینترنت یا اجرای دستی هیچ سروری نیاز نیست.
-
-نصب‌کننده امضای دیجیتال (Code Signing) ندارد؛ ویندوز ممکن است هشدار SmartScreen نشان دهد.
-در این حالت «More info» → «Run anyway» را انتخاب کنید.
-
-### حذف نصب
-
-از Settings → Apps → Installed apps → SubSync Studio → Uninstall، یا فایل
-`uninstall.exe` داخل پوشه نصب. در حین حذف، گزینه «Delete app data» به‌صورت پیش‌فرض
-غیرفعال است؛ تنظیمات و لاگ‌ها پاک نمی‌شوند. داده‌های کاربر در این مسیرها هستند:
-
-- `%APPDATA%\com.subsync.studio` — تنظیمات (`settings.json`)
-- `%LOCALAPPDATA%\com.subsync.studio` — لاگ‌ها و کش WebView2
-
-این مسیرها بیرون از پوشه نصب هستند و با upgrade/uninstall عادی حذف نمی‌شوند.
-
-## ابزارهای خارجی (بسته‌بندی نمی‌شوند)
-
-نصب‌کننده فقط `persian-subtitle-studio.exe` و `uninstall.exe` را نصب می‌کند. هیچ‌کدام از
-ابزارهای زیر داخل installer نیستند:
-
-| ابزار | کاربرد | مسیر پیش‌فرض تشخیص |
-| --- | --- | --- |
-| FFmpeg / FFprobe | تحلیل، استخراج و پردازش زیرنویس | `PATH` |
-| 7-Zip (`7z.exe`) | باز کردن ZIP/RAR | `%ProgramFiles%\7-Zip` یا `PATH` |
-| SubSource CLI (`sub-rs.exe`) | دانلود زیرنویس | `%LOCALAPPDATA%\Programs\SubSource` یا `PATH` |
-| FFsubsync (`ffs.exe`) | هم‌زمان‌سازی زیرنویس | `%LOCALAPPDATA%\Programs\SubSource\ffsubsync-venv\Scripts` یا `PATH` |
-
-اگر ابزاری در این مسیرها نباشد، مسیر آن را در صفحه تنظیمات برنامه به‌صورت دستی وارد کنید.
-نبود هر ابزار فقط قابلیت مربوط به آن را غیرفعال می‌کند؛ برنامه باید همچنان باز شود.
-
-## فضای دیسک و پاک‌سازی
-
-بیشتر حجم پروژه مربوط به خروجی‌های build است، نه سورس‌کد:
-
-| مسیر | حجم تقریبی | قابل حذف؟ | نحوه بازسازی |
-| --- | --- | --- | --- |
-| `src-tauri/target/` | ~11.3 GB (debug ~9.3 + release ~1.8) | ✅ بله | `npm run tauri build` یا `cargo build` |
-| `node_modules/` | ~162 MB | ✅ بله | `npm ci` |
-| `dist/` | ~0.4 MB | ✅ بله | `npm run build` |
-| `.git/` | ~1.8 MB | ❌ نه | تاریخچه ریپو |
-| `src/` + `src-tauri/src/` | ~1 MB | ❌ نه | سورس‌کد |
-
-پاک‌سازی امن (وقتی هیچ build یا برنامه‌ای در حال اجرا نیست):
-
-```bat
-rmdir /s /q src-tauri\target
-rmdir /s /q dist
-rmdir /s /q node_modules
-```
-
-یا برای target: `cargo clean --manifest-path src-tauri\Cargo.toml`.
-هیچ‌کدام از این مسیرها در Git ردیابی نمی‌شوند (`.gitignore`). فایل‌های سورس،
-`src-tauri/icons/`، `Cargo.lock` و `package-lock.json` را حذف نکنید.
-
-## عیب‌یابی: صفحه «can't reach this page» / پروکسی
-
-اگر برنامه صفحه‌ای شبیه «Hmmm… can't reach this page»، «localhost refused to connect» یا
-«Checking the proxy and the firewall» نشان داد:
-
-- این پیام خطای WebView2 است، نه خطای پروکسی. تنظیمات پروکسی ویندوز را تغییر ندهید.
-- یعنی فایل اجرایی نسخه **توسعه** است یا با `cargo build --release` (بدون `npm run tauri build`)
-  ساخته شده و به `http://localhost:5173` اشاره می‌کند.
-- راه‌حل: نسخه نصب‌شده را از Start Menu اجرا کنید، یا با `npm run tauri build` دوباره installer
-  بسازید. برای توسعه هم از `npm run tauri dev` استفاده کنید تا Vite بالا باشد.
-
-## معماری
-
-```
-src-tauri/src/
-├── main.rs            # نقطه ورود
-├── lib.rs             # راه‌اندازی Tauri، State، بررسی ابزارها در شروع
-├── models/            # ساختارهای داده مشترک (serde camelCase)
-├── scanner/           # اسکن بازگشتی + naming (تشخیص S/E) + تست‌ها
-├── settings/          # بارگذاری/ذخیره JSON با اعتبارسنجی
-├── tools/             # تشخیص و پروب ابزارهای خارجی
-├── logging/           # لاگ در حافظه + فایل + رخداد به UI
-├── commands/          # دستورات Tauri (scan/settings/tools/logs)
-└── state.rs           # وضعیت سراسری
-
-src/                   # فرانت‌اند React (RTL، فارسی، Dark)
-├── components/        # Sidebar، UI primitives
-├── pages/             # Dashboard، Library، Processing، Logs، Settings
-├── hooks/             # useAppData — State و رخدادهای Backend
-├── lib/               # api.ts (invoke) و format.ts (اعداد/حجم فارسی)
-└── types/             # قرینه مدل‌های Rust
-```
-
-اصل طراحی: **منطق عملیات در Rust** است؛ فرانت‌اند فقط رابط است. اجرای ابزارهای خارجی با
-`std::process::Command` و آرگومان‌های جداگانه انجام می‌شود (بدون ساخت رشته شل). دسترسی‌های
-Tauri حداقلی است (`core:default` + `dialog:default`).
-
-## اصول داده‌ای (برای همه فازها)
-
-- ویدیوی اصلی هرگز تغییر نمی‌کند
-- زیرنویس‌های اولیه حفظ و هرگز بازنویسی نمی‌شوند
-- هر خروجی اول Temp، بعد اعتبارسنجی، بعد انتقال امن
-- پردازش گروهی فقط با کلیک صریح کاربر شروع می‌شود
-
-## CI
-
-GitHub Actions روی ویندوز: `npm ci`، build فرانت‌اند، `cargo fmt --check`، `clippy -D warnings`،
-`cargo test` و build دودی — ببینید `.github/workflows/ci.yml`.
+SubSync Studio automates Persian subtitles for your video library: extract embedded tracks,
+download from SubSource (API key stored only in Windows Credential Manager), match subtitle
+archives to episodes, sync timing with ffsubsync, and place `<name>.fa.synced.srt` next to
+each video — with a first-run wizard that auto-installs all prerequisites (version-pinned,
+SHA256-verified, per-user), honest progress everywhere, and safe cancellation/recovery.
+Built with Tauri 2 + Rust + React. Requires Windows 10+.

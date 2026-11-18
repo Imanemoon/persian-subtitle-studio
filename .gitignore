@@ -50,3 +50,4 @@ desktop.ini
 
 # Test fixtures generated at runtime
 /tmp-fixtures/
+.zcode/

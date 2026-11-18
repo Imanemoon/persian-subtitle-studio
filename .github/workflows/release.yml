@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Tests before release
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build NSIS installer
+        run: npm run tauri build
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/release/bundle/nsis/SubSync Studio_0.1.0_x64-setup.exe"
+          if (-not (Test-Path $exe)) { throw "installer not found: $exe" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "$hash  $([IO.Path]::GetFileName($exe))" | Out-File -Encoding ascii "SHA256SUMS.txt"
+          Get-Content "SHA256SUMS.txt"
+
+      - name: Rename installer with version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          Copy-Item "src-tauri/target/release/bundle/nsis/SubSync Studio_0.1.0_x64-setup.exe" "SubSync-Studio_${tag}_x64-setup.exe"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "SubSync Studio ${{ github.ref_name }}"
+          body_path: null
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+          files: |
+            SubSync-Studio_${{ github.ref_name }}_x64-setup.exe
+            SHA256SUMS.txt
