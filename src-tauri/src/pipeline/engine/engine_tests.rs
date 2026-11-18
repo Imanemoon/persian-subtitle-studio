@@ -153,13 +153,19 @@ fn cancelled_pipeline_returns_cancelled_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// تست زندهٔ انتها-به-انتها: ffprobe/ffmpeg واقعی + بدون API key.
+/// تست زندهٔ انتها-به-انتها: ffprobe/ffmpeg/ffs واقعی + بدون API key.
 /// پیش‌نیاز: ffmpeg و ffprobe در PATH (مثل سایر تست‌های #[ignore]).
-/// ویدیوی سینتتیک با Track متنی فارسی → استخراج واقعی → بدون کلید →
-/// NeedsApiKey → ورودی سینک انتخاب‌شده → Completed.
+/// ویدیوی سینتتیک با Track متنی فارسیِ tagدار (`language=fas`) → بدون هیچ
+/// تصمیم کاربر: استخراج واقعی → skip دانلود (sidecar معتبر) → سینک واقعی →
+/// جانمایی یا کیفیت پایین → Completed.
+///
+/// ⚠️ Track بدون tag باید **مطلقاً** استفاده نشود — pipeline برای آن تصمیم
+/// D-Review ثبت می‌کند و تستِ بدون resolver تا ابد منتظر می‌ماند (باگ واقعی
+/// نسخهٔ قبلی این تست: `live_pipeline_extracts_and_reports_needs_api_key`
+/// روی انتظار تصمیم بلاک می‌شد و هیچ‌وقت تمام نمی‌شد).
 #[test]
 #[ignore]
-fn live_pipeline_extracts_and_reports_needs_api_key() {
+fn live_pipeline_extracts_syncs_and_places_tagged_track() {
     let _probe = crate::tools::resolve_tool_path("ffprobe", &Default::default())
         .expect("ffprobe واقعی لازم است");
     let ffmpeg = crate::tools::resolve_tool_path("ffmpeg", &Default::default())
@@ -167,7 +173,7 @@ fn live_pipeline_extracts_and_reports_needs_api_key() {
     let state = make_pipeline_state();
     let dir = unique_dir("live");
 
-    // ویدیوی سینتتیک با Track متنی فارسی (الگوی commands/tests.rs)
+    // ویدیوی سینتتیک با Track متنی فارسی tagدار (الگوی commands/tests.rs)
     let fa_fixture = dir.join("fa-fixture.srt");
     std::fs::write(&fa_fixture, "1\n00:00:00,200 --> 00:00:00,800\nسلام دنیا\n").unwrap();
     let video = dir.join("Live.Show.S01E01.mkv");
@@ -195,6 +201,8 @@ fn live_pipeline_extracts_and_reports_needs_api_key() {
         "aac".into(),
         "-c:s".into(),
         "srt".into(),
+        "-metadata:s:s:0".into(),
+        "language=fas".into(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut cmd = std::process::Command::new(&ffmpeg);
@@ -218,11 +226,16 @@ fn live_pipeline_extracts_and_reports_needs_api_key() {
     };
     let summary = run_pipeline_body(&state, &control, input, &sink, &io).unwrap();
 
-    // استخراج واقعی موفق؛ بدون API key → NeedsApiKey؛ ورودی سینک انتخاب شده
+    // استخراج واقعی → sidecar معتبر دانلود را skip می‌کند (بدون نیاز به کلید)
+    // → سینک واقعی → جانمایی «.fa.synced.srt» یا کیفیت پایین — هر دو پایان صادقانه
     assert_eq!(summary.status, PipelineStatus::Completed);
     assert!(summary.counts.analyzed >= 1);
     assert_eq!(summary.counts.extracted, 1);
-    assert_eq!(summary.counts.needs_api_key, 1);
+    assert_eq!(
+        summary.counts.needs_api_key, 0,
+        "sidecar معتبر باید دانلود را skip کند"
+    );
+    assert_eq!(summary.counts.decisions_pending, 0);
     let item = &summary.items[0];
     assert!(item
         .artifacts
@@ -230,6 +243,22 @@ fn live_pipeline_extracts_and_reports_needs_api_key() {
         .as_deref()
         .unwrap_or("")
         .contains("fa.srt"));
+    match &item.outcome {
+        Some(ItemOutcome::Synced { output_path }) => {
+            assert!(
+                output_path.contains("fa.synced.srt"),
+                "خروجی جانمایی‌شده باید نسخهٔ synced باشد: {output_path}"
+            );
+            assert!(
+                std::path::Path::new(output_path).exists(),
+                "فایل سینک‌شده باید روی دیسک باشد: {output_path}"
+            );
+        }
+        Some(ItemOutcome::UnchangedLowQuality) => {
+            // آفست پایین‌کیفیت — فایل اصلی دست‌نخورده؛ پایان صادقانهٔ دیگر
+        }
+        other => panic!("outcome غیرمنتظره برای ویدیوی tagدار با sینک واقعی: {other:?}"),
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
