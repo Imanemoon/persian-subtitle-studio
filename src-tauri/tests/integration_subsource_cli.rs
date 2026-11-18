@@ -22,8 +22,16 @@ fn unique_test_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// دریافت مسیر fake executable
+/// دریافت مسیر fake executable.
+/// ساخت با rustc باید بین تست‌های موازی همگام شود — دو link هم‌زمان روی
+/// یک فایل خروجی، LNK1104 (قفل فایل) می‌دهد که روی CI اجرای ۸ تایی را
+/// شکست می‌دهد. Mutex + double-check: سازنده دقیقاً یک‌بار اجرا می‌شود.
 fn get_fake_exe() -> PathBuf {
+    use std::sync::{Mutex, OnceLock};
+    static FAKE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = FAKE_BUILD_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let target_dir = PathBuf::from(manifest_dir).join("target").join("debug");
 

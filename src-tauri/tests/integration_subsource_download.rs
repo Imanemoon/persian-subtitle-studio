@@ -27,6 +27,11 @@ use subsync_studio_lib::subsource::staging::{
 
 /// دریافت یا کامپایل fake_subsource executable
 fn get_fake_exe() -> PathBuf {
+    use std::sync::{Mutex, OnceLock};
+    static FAKE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = FAKE_BUILD_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let target_dir = PathBuf::from(manifest_dir).join("target").join("debug");
 
