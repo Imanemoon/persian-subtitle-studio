@@ -40,7 +40,11 @@ pub enum PipelineStage {
 
 /// وضعیت مرحلهٔ جاری برای یک ویدیو — اطلاعاتی؛ نهایی نیست.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum StageStatus {
     Pending,
     InProgress,
@@ -61,7 +65,11 @@ pub enum StageStatus {
 
 /// وضعیت پایانی یک ویدیو — فقط یک‌بار ست می‌شود و `completed` می‌سازد.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum ItemOutcome {
     /// زیرنویس سینک‌شدهٔ معتبر از قبل موجود است (بازبینی تازهٔ فایل‌سیستم)
     AlreadySynced,
@@ -178,11 +186,20 @@ pub struct PipelineCounts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineSnapshot {
+    /// شمارهٔ یکنوای snapshot — فرانت رویدادهای قدیمی‌تر را دور می‌ریزد.
+    #[serde(default)]
+    pub seq: u64,
     pub run_id: String,
     pub stage: PipelineStage,
     pub status: PipelineStatus,
     pub total: usize,
     pub completed: usize,
+    /// تعداد آیتم‌هایی که همین حالا در حال پردازش‌اند (مثلاً workerهای سینک).
+    #[serde(default)]
+    pub active: usize,
+    /// درخواست توقف ثبت شده و worker هنوز به وضعیت پایانی نرسیده است.
+    #[serde(default)]
+    pub cancelling: bool,
     pub current_file: Option<String>,
     pub counts: PipelineCounts,
     pub message: String,
@@ -204,7 +221,11 @@ pub struct RegisteredOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum DecisionOptionPayload {
     /// چند Track متنی فارسی کاندید — انتخاب استخراج مستقیم
     EmbeddedTrack { stream_index: u32, label: String },

@@ -128,17 +128,31 @@ export const DECISION_KIND_TEXT: Record<
   },
 };
 
+/** رشتهٔ غیرخالی از payload — فیلد گم‌شده هرگز باعث خطا یا دادهٔ ساختگی نمی‌شود. */
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 /** برچسب انسانی گزینه — فقط نام فایل/برچسب Track؛ هیچ مسیر کامل نمایش داده نمی‌شود. */
 export function optionLabel(option: RegisteredOption): string {
   const payload: DecisionOptionPayload = option;
   switch (payload.kind) {
     case "embeddedTrack":
     case "reviewTrack":
-      return payload.label;
-    case "archiveCandidate":
-      return `${payload.archiveFileName} ← ${payload.memberPath}`;
+      return (
+        text(payload.label) ??
+        (typeof payload.streamIndex === "number"
+          ? `Track ${payload.streamIndex}`
+          : "Track زیرنویس")
+      );
+    case "archiveCandidate": {
+      const archive = fileBaseName(text(payload.archiveFileName));
+      const member = text(payload.memberPath);
+      if (archive && member) return `${archive} ← ${member}`;
+      return archive || member || "عضو آرشیو";
+    }
     case "sidecarPath":
-      return fileBaseName(payload.path);
+      return fileBaseName(payload.path) || "زیرنویس کنار ویدیو";
   }
 }
 
@@ -146,7 +160,8 @@ export function optionLabel(option: RegisteredOption): string {
 export function optionDetail(option: RegisteredOption): string | null {
   const payload: DecisionOptionPayload = option;
   if (payload.kind === "archiveCandidate") {
-    return `عضو آرشیو: ${payload.memberPath}`;
+    const member = text(payload.memberPath);
+    return member ? `عضو آرشیو: ${member}` : null;
   }
   return null;
 }
@@ -154,15 +169,23 @@ export function optionDetail(option: RegisteredOption): string | null {
 /** توضیح outcome نهایی برای زیر ردیف — مسیرهای workspace موقت هرگز نمایش داده نمی‌شوند. */
 export function outcomeDetail(outcome: ItemOutcome): string | null {
   switch (outcome.kind) {
-    case "synced":
-      return `خروجی: ${fileBaseName(outcome.outputPath)}`;
-    case "outputConflict":
-      return `فایل حفظ‌شده: ${fileBaseName(outcome.preservedPath)} — نسخهٔ سینک‌شدهٔ موقت هم نگه داشته شد`;
-    case "keyStoreUnavailable":
-      return `مخزن کلید خطا داد: ${outcome.reason}`;
+    case "synced": {
+      const name = fileBaseName(outcome.outputPath);
+      return name ? `خروجی: ${name}` : null;
+    }
+    case "outputConflict": {
+      const name = fileBaseName(outcome.preservedPath);
+      return name
+        ? `فایل حفظ‌شده: ${name} — نسخهٔ سینک‌شدهٔ موقت هم نگه داشته شد`
+        : "فایل موجود حفظ شد؛ نسخهٔ سینک‌شدهٔ موقت هم نگه داشته شد";
+    }
+    case "keyStoreUnavailable": {
+      const reason = text(outcome.reason);
+      return reason ? `مخزن کلید خطا داد: ${reason}` : "مخزن کلید خطا داد.";
+    }
     case "skipped":
     case "failed":
-      return outcome.reason;
+      return text(outcome.reason);
     case "needsApiKey":
       return "برای دانلود از SubSource، کلید API را در تنظیمات ذخیره کنید و دوباره تلاش کنید.";
     default:
@@ -172,6 +195,11 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
 
 /** آفست گزارش‌شدهٔ سینک — مقدار واقعی بک‌اند؛ وقتی نیست چیزی ساخته نمی‌شود. */
 export function formatOffset(offset: number): string {
+  if (!Number.isFinite(offset)) return "—";
   const sign = offset >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(offset).toFixed(3)} ثانیه`;
+  const value = Math.abs(offset)
+    .toFixed(3)
+    .replace(".", "٫")
+    .replace(/\d/g, (digit) => "۰۱۲۳۴۵۶۷۸۹"[Number(digit)]);
+  return `${sign}${value} ثانیه`;
 }

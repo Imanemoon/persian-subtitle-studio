@@ -13,11 +13,17 @@ export function isSupportedVideoFile(path: string): boolean {
   return (SUPPORTED_VIDEO_EXTENSIONS as readonly string[]).includes(ext);
 }
 
-export function fileBaseName(path: string): string {
+/**
+ * نام پایانی مسیر — ورودی ممکن است از بک‌اند ناقص برسد؛ هرگز نباید throw کند.
+ * (یک فیلد گم‌شده نباید کل UI را از ریشه جدا کند.)
+ */
+export function fileBaseName(path: string | null | undefined): string {
+  if (typeof path !== "string" || path.length === 0) return "";
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-export function folderBaseName(path: string): string {
+export function folderBaseName(path: string | null | undefined): string {
+  if (typeof path !== "string" || path.length === 0) return "";
   const trimmed = path.replace(/[\\/]+$/, "");
   return trimmed.split(/[\\/]/).pop() ?? trimmed;
 }

@@ -125,11 +125,17 @@ export interface PendingDecision {
 
 /** snapshot کامل run — برای رویداد pipeline:state و بازیابی get_pipeline_state */
 export interface PipelineSnapshot {
+  /** شمارهٔ یکنوای snapshot — رویداد قدیمی‌تر نباید وضعیت جدیدتر را overwrite کند */
+  seq: number;
   runId: string;
   stage: PipelineStage;
   status: PipelineStatus;
   total: number;
   completed: number;
+  /** تعداد آیتم‌هایی که همین حالا در حال پردازش‌اند */
+  active: number;
+  /** درخواست توقف ثبت شده و worker هنوز به وضعیت پایانی نرسیده */
+  cancelling: boolean;
   currentFile: string | null;
   counts: PipelineCounts;
   message: string;
