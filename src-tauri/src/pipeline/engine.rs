@@ -2,11 +2,11 @@
 //! هیچ منطق استخراج/دانلود/آرشیو/سینک تکرار نمی‌شود و هیچ تصمیمی
 //! خودکار گرفته نمی‌شود.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::models::{AnalysisStatus, SubtitleKind, VideoEntry};
 use crate::state::AppState;
@@ -16,8 +16,8 @@ use crate::subsource::plan::{
 
 use super::types::{
     DecisionKind, DecisionOptionPayload, ItemArtifacts, ItemOutcome, ItemRuntime, PipelineCounts,
-    PipelineEvent, PipelineInput, PipelineStage, PipelineStatus, PipelineSummary,
-    PreSelectionArtifact, StageStatus,
+    PipelineEvent, PipelineInput, PipelineItemSnapshot, PipelineStage, PipelineStatus,
+    PipelineSummary, PreSelectionArtifact, StageStatus,
 };
 use super::{PipelineControl, WaitExit};
 
@@ -85,10 +85,21 @@ pub(crate) fn run_worker(
             }
         }
     }));
+    // وضعیت پایانی همیشه با خلاصه هم‌راستا می‌شود — حتی در مسیر panic/fail.
+    if let Ok(summary) = &lifecycle {
+        control.set_status(summary.status);
+        control.set_active(0);
+        control.set_current_file(None);
+        control.set_cancelling(false);
+    }
     match lifecycle {
         Ok(summary) => super::emit_to(sink, PipelineEvent::Done { summary }),
         // ۴) panic — خلاصهٔ Failed + fallback emit داخل boundary خودش
         Err(panic_payload) => {
+            control.set_status(PipelineStatus::Failed);
+            control.set_active(0);
+            control.set_current_file(None);
+            control.set_cancelling(false);
             let mut summary = summary_from_control(
                 control,
                 false,
@@ -305,7 +316,14 @@ pub(crate) fn run_pipeline_body(
         rt.stage = PipelineStage::Analyzing;
         rt.stage_status = StageStatus::InProgress;
         control.set_current_file(Some(rt.video_file_name.clone()));
+        control.set_message(format!("تحلیل زیرنویس داخلی: {}", rt.video_file_name));
         emit_item(control, sink, rt);
+        super::emit_to(
+            sink,
+            PipelineEvent::State {
+                snapshot: control.snapshot(),
+            },
+        );
 
         match crate::commands::media::run_analyze_blocking(state, &rt.video_path, &cancel) {
             Ok(_) => {
@@ -337,6 +355,7 @@ pub(crate) fn run_pipeline_body(
             &extraction_plan.items,
             &cancel,
             |p| {
+                control.set_current_file(Some(p.video_path.clone()));
                 control.set_message(format!(
                     "استخراج {}/{}: {}",
                     p.current, p.total, p.video_path
@@ -1010,6 +1029,7 @@ pub(crate) fn run_pipeline_body(
 
     // ---- S9: Syncing — pool باند به syncWorkers ----
     control.set_stage(PipelineStage::Syncing);
+    control.set_active(0);
     push_state!("همگام‌سازی زیرنویس‌ها…");
     let ffs_res = crate::commands::media::resolve_tool(state, "ffsubsync");
     let ffmpeg_res = crate::commands::media::resolve_tool(state, "ffmpeg");
@@ -1060,6 +1080,22 @@ pub(crate) fn run_pipeline_body(
                 ));
             let outcomes: Arc<Mutex<HashMap<usize, crate::sync::SyncOutcome>>> = Default::default();
             let workers = sync_workers.min(jobs.len());
+            // نمایندهٔ UI برای stage سینک: پیام/فایل جاری/active را از workerها
+            // با throttle منتشر می‌کند تا UI در طول FFsubsync زنده بماند.
+            let ui = Arc::new(SyncUi::new(
+                Arc::clone(control),
+                Arc::clone(sink),
+                jobs.iter()
+                    .filter_map(|(i, _, _)| {
+                        items.get(*i).map(|rt| {
+                            let mut snap = rt.snapshot();
+                            snap.stage = PipelineStage::Syncing;
+                            snap.stage_status = StageStatus::Pending;
+                            (*i, snap)
+                        })
+                    })
+                    .collect(),
+            ));
             let mut pool = Vec::new();
             let _ = (&ffs_res, &ffmpeg_res);
             for _ in 0..workers {
@@ -1067,7 +1103,7 @@ pub(crate) fn run_pipeline_body(
                 let requests = Arc::clone(&requests);
                 let outcomes = Arc::clone(&outcomes);
                 let cancel = Arc::clone(&cancel);
-                let control = Arc::clone(control);
+                let ui = Arc::clone(&ui);
                 pool.push(std::thread::spawn(move || loop {
                     let Some(idx) = queue
                         .lock()
@@ -1097,9 +1133,11 @@ pub(crate) fn run_pipeline_body(
                     else {
                         break;
                     };
+                    ui.started(idx);
                     let outcome = crate::sync::run_sync(&request, &cancel, &mut |p| {
-                        control.set_message(p.message.clone());
+                        ui.progress(idx, &p);
                     });
+                    ui.finished(idx);
                     outcomes
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -1109,6 +1147,7 @@ pub(crate) fn run_pipeline_body(
             for handle in pool {
                 let _ = handle.join();
             }
+            ui.finish_all();
             {
                 let mut map = outcomes.lock().unwrap_or_else(PoisonError::into_inner);
                 for (idx, outcome) in map.drain() {
@@ -1217,6 +1256,9 @@ pub(crate) fn run_pipeline_body(
     // ---- Done ----
     control.set_stage(PipelineStage::Done);
     control.set_status(PipelineStatus::Completed);
+    control.set_active(0);
+    control.set_current_file(None);
+    control.set_cancelling(false);
     set_counts_snapshot(control, &mut counts);
     let duration_ms = started.elapsed().as_millis() as u64;
     control.set_message("pipeline کامل شد.");
@@ -1260,6 +1302,133 @@ fn resolve_all_tools(state: &AppState) -> HashMap<&'static str, Option<PathBuf>>
 fn set_counts_snapshot(control: &PipelineControl, counts: &mut PipelineCounts) {
     counts.decisions_pending = 0;
     control.set_counts(*counts);
+}
+
+/// پل پیشرفت stage سینک بین workerهای موازی و UI.
+///
+/// - فقط رویدادهای واقعی: شروع/پایان هر فایل و پیام‌های خود FFsubsync.
+/// - رویداد State با throttle منتشر می‌شود تا Tauri/React زیر بار نرود.
+/// - `completed` را دست نمی‌زند؛ outcome نهایی فقط در Finalizing ست می‌شود.
+struct SyncUi {
+    control: Arc<PipelineControl>,
+    sink: super::SinkStore,
+    base: HashMap<usize, PipelineItemSnapshot>,
+    active: Mutex<BTreeMap<usize, String>>,
+    last_emit: Mutex<Instant>,
+}
+
+impl SyncUi {
+    fn new(
+        control: Arc<PipelineControl>,
+        sink: super::SinkStore,
+        base: HashMap<usize, PipelineItemSnapshot>,
+    ) -> Self {
+        SyncUi {
+            control,
+            sink,
+            base,
+            active: Mutex::new(BTreeMap::new()),
+            last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
+        }
+    }
+
+    fn name_of(&self, idx: usize) -> String {
+        self.base
+            .get(&idx)
+            .map(|s| s.video_file_name.clone())
+            .unwrap_or_else(|| "—".into())
+    }
+
+    fn active_count(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    fn emit_state(&self, force: bool) {
+        {
+            let mut last = self
+                .last_emit
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !force && last.elapsed() < Duration::from_millis(400) {
+                return;
+            }
+            *last = Instant::now();
+        }
+        super::emit_to(
+            &self.sink,
+            PipelineEvent::State {
+                snapshot: self.control.snapshot(),
+            },
+        );
+    }
+
+    fn started(&self, idx: usize) {
+        let name = self.name_of(idx);
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(idx, name.clone());
+        if let Some(mut snap) = self.base.get(&idx).cloned() {
+            snap.stage = PipelineStage::Syncing;
+            snap.stage_status = StageStatus::InProgress;
+            self.control.put_item_snapshot(snap.clone());
+            super::emit_to(&self.sink, PipelineEvent::Item { item: snap });
+        }
+        self.control.set_current_file(Some(name.clone()));
+        self.control.set_active(self.active_count());
+        self.control.set_message(format!("همگام‌سازی: {name}"));
+        self.emit_state(true);
+    }
+
+    fn progress(&self, idx: usize, progress: &crate::sync::SyncProgress) {
+        let name = self.name_of(idx);
+        self.control.set_current_file(Some(name.clone()));
+        self.control.set_active(self.active_count());
+        self.control
+            .set_message(format!("{name} — {}", progress.message));
+        self.emit_state(false);
+    }
+
+    fn finished(&self, idx: usize) {
+        let name = self.name_of(idx);
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&idx);
+        if let Some(mut snap) = self.base.get(&idx).cloned() {
+            snap.stage = PipelineStage::Syncing;
+            snap.stage_status = StageStatus::Done;
+            self.control.put_item_snapshot(snap.clone());
+            super::emit_to(&self.sink, PipelineEvent::Item { item: snap });
+        }
+        let active = self.active_count();
+        let next = self
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .next()
+            .cloned();
+        self.control.set_active(active);
+        self.control.set_current_file(next);
+        self.control
+            .set_message(format!("همگام‌سازی انجام شد: {name}"));
+        self.emit_state(true);
+    }
+
+    /// پایان pool — active/فایل جاری پاک می‌شوند و وضعیت نهایی منتشر می‌شود.
+    fn finish_all(&self) {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.control.set_active(0);
+        self.control.set_current_file(None);
+        self.emit_state(true);
+    }
 }
 
 /// آیا خروجی دانلود برای این منبع واقعاً روی دیسک هست؟ ثبت provenance پیش
@@ -1306,6 +1475,9 @@ fn mark_all_cancelled(control: &PipelineControl) {
     }
     g.status = PipelineStatus::Cancelled;
     g.counts.decisions_pending = 0;
+    g.active = 0;
+    g.current_file = None;
+    g.cancelling = false;
     drop(g);
     control.set_message("pipeline لغو شد.");
 }

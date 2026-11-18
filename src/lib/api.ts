@@ -11,7 +11,7 @@ import type {
   TrackReview,
   VideoEntry,
 } from "../types";
-import type { PipelineSnapshot } from "../types/pipeline";
+import type { PipelineItemSnapshot, PipelineSnapshot } from "../types/pipeline";
 
 export const api = {
   getLibrary: () => invoke<VideoEntry[]>("get_library"),
@@ -91,5 +91,7 @@ export const api = {
   cancelPipeline: () => invoke<boolean>("cancel_pipeline"),
   getPipelineState: () =>
     invoke<PipelineSnapshot | null>("get_pipeline_state"),
+  getPipelineItems: () =>
+    invoke<PipelineItemSnapshot[]>("get_pipeline_items"),
   isPipelineActive: () => invoke<boolean>("is_pipeline_active"),
 };

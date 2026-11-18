@@ -93,6 +93,7 @@ pub fn run() {
             commands::pipeline::resolve_pipeline_decision,
             commands::pipeline::cancel_pipeline,
             commands::pipeline::get_pipeline_state,
+            commands::pipeline::get_pipeline_items,
             commands::pipeline::is_pipeline_active,
             commands::secrets::set_subsource_api_key,
             commands::secrets::has_subsource_api_key,

@@ -340,14 +340,9 @@ pub(crate) fn execute_in_workspace(
         return SyncOutcome::bare(SyncStatus::Cancelled, "عملیات پیش از اجرا لغو شد.");
     }
 
-    let video_name = request
-        .video_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
     on_progress(SyncProgress {
         stage: SyncStage::Running,
-        message: format!("اجرای FFsubsync برای «{video_name}»…"),
+        message: "اجرای FFsubsync…".into(),
     });
 
     let args = cli::build_cli_args(request, &output, &workspace.log_dir);

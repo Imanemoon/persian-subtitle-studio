@@ -14,8 +14,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::engine::{run_worker, PipelineIo};
 use super::types::{
-    ItemArtifacts, ItemOutcome, PendingDecision, PipelineEvent, PipelineInput, PipelineSnapshot,
-    PipelineStage, PipelineStatus, PipelineSummary,
+    ItemArtifacts, ItemOutcome, PendingDecision, PipelineEvent, PipelineInput,
+    PipelineItemSnapshot, PipelineSnapshot, PipelineStage, PipelineStatus, PipelineSummary,
+    StageStatus,
 };
 use super::{cancel_active_pipeline, resolve_decision_core, PipelineControl, WorkerCleanup};
 use crate::archive::provenance::ProvenanceRegistry;
@@ -260,6 +261,8 @@ struct Run {
     summary: PipelineSummary,
     /// تصمیم‌های منتشرشده (برای ادعاهای «هیچ تصمیمی نبود» / «دقیقاً یک تصمیم»)
     decisions: Vec<PendingDecision>,
+    /// همهٔ رویدادهای منتشرشده به‌ترتیب — برای ادعاهای پیشرفت زنده
+    events: Vec<PipelineEvent>,
 }
 
 impl Run {
@@ -405,7 +408,7 @@ fn run_pipeline(
     );
 
     let mut decisions = Vec::new();
-    let summary = {
+    let (summary, captured) = {
         let evs = events.lock().unwrap();
         let mut seen_ids = std::collections::HashSet::new();
         for e in evs.iter() {
@@ -417,14 +420,20 @@ fn run_pipeline(
                 }
             }
         }
-        evs.iter()
+        let summary = evs
+            .iter()
             .find_map(|e| match e {
                 PipelineEvent::Done { summary } => Some(summary.clone()),
                 _ => None,
             })
-            .expect("رویداد Done باید صادر شده باشد")
+            .expect("رویداد Done باید صادر شده باشد");
+        (summary, evs.clone())
     };
-    Run { summary, decisions }
+    Run {
+        summary,
+        decisions,
+        events: captured,
+    }
 }
 
 fn placed_path(video: &Path) -> PathBuf {
@@ -1223,6 +1232,68 @@ fn cancel_while_awaiting_decision_cleans_pending_state() {
     );
 }
 
+/// حین سینک، وضعیت زنده منتشر می‌شود: فایل جاری، تعداد فعال، پیام واقعی.
+/// `completed` تا قبل از outcome نهایی صفر می‌ماند و seq یکنواست.
+#[test]
+fn sync_publishes_live_activity_before_completion() {
+    let h = Harness::new("sync-live");
+    h.set_ffs("success");
+    let video = h.video("Show.S01E08.mkv");
+    h.probe_json(&video, JSON_NONE);
+    h.sidecar(&video, ".fa.srt", SRT_FA_A);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+
+    let states: Vec<&PipelineSnapshot> = run
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            PipelineEvent::State { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        states.iter().any(|s| s.stage == PipelineStage::Syncing),
+        "حین سینک باید snapshot منتشر شود، نه فقط در پایان"
+    );
+    let started = states
+        .iter()
+        .find(|s| s.stage == PipelineStage::Syncing && s.active > 0)
+        .expect("snapshot سینک باید فایل فعال را نشان دهد");
+    assert_eq!(started.current_file.as_deref(), Some("Show.S01E08.mkv"));
+    assert!(started.message.contains("همگام‌سازی"));
+    assert_eq!(started.completed, 0, "completed فقط از outcome نهایی");
+    assert!(!started.cancelling);
+
+    let item_events: Vec<&PipelineItemSnapshot> = run
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            PipelineEvent::Item { item } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        item_events.iter().any(|i| {
+            i.stage == PipelineStage::Syncing && i.stage_status == StageStatus::InProgress
+        }),
+        "رویداد آیتم باید شروع سینک را نشان دهد"
+    );
+
+    let seqs: Vec<u64> = states.iter().map(|s| s.seq).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "seq باید اکیداً یکنوا باشد: {seqs:?}"
+    );
+}
+
 /// سناریو ۱۷: لغو در میانهٔ سینک — هیچ جانمایی؛ sidecar دست‌نخورده.
 #[test]
 fn cancel_during_sync_places_nothing() {
@@ -1236,11 +1307,16 @@ fn cancel_during_sync_places_nothing() {
 
     let st = Arc::clone(&h.state);
     let watcher = std::thread::spawn(move || {
+        // در حین سینک، UI باید فایل جاری و تعداد فعال را ببیند — نه فقط
+        // پیام مرحله. این همان پلی است که قبلاً وجود نداشت.
         assert!(
             wait_for_snapshot(&st, Duration::from_secs(20), |snap| {
                 snap.stage == PipelineStage::Syncing
+                    && snap.active > 0
+                    && snap.current_file.as_deref() == Some("Show.S01E20.mkv")
+                    && snap.message.contains("Show.S01E20.mkv")
             }),
-            "باید به مرحلهٔ سینک برسد"
+            "در حین سینک باید فایل جاری/تعداد فعال/پیام زنده منتشر شود"
         );
         let cancelled = cancel_active_pipeline(&st).expect("لغو");
         assert!(cancelled);

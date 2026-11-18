@@ -7,7 +7,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::pipeline::{
     cancel_active_pipeline, clear_published_control, resolve_decision_core, take_guard_once,
-    GuardHandoff, PipelineControl, PipelineEvent, PipelineInput, PipelineSnapshot,
+    GuardHandoff, PipelineControl, PipelineEvent, PipelineInput, PipelineItemSnapshot,
+    PipelineSnapshot,
 };
 use crate::state::{acquire_batch_op, AppState};
 
@@ -111,14 +112,35 @@ pub fn resolve_pipeline_decision(
 /// لغو pipeline فعال — فقط control منتشرشده؛ بدون pipeline → false.
 /// worker پس از wake، آیتم‌های باز را Cancelled می‌کند و pipeline:done می‌فرستد.
 #[tauri::command]
-pub fn cancel_pipeline(state: State<'_, AppState>) -> Result<bool, String> {
-    cancel_active_pipeline(&state)
+pub fn cancel_pipeline(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+    let cancelled = cancel_active_pipeline(&state)?;
+    if cancelled {
+        // وضعیت «در حال توقف» را فوراً منتشر می‌کنیم — تا worker پاسخ دهد،
+        // کاربر باید ببیند که درخواست ثبت شده و برنامه در حال توقف است.
+        if let Some(control) = pipeline_control(&state) {
+            let _ = emit_event(
+                &app,
+                PipelineEvent::State {
+                    snapshot: control.snapshot(),
+                },
+            );
+        }
+    }
+    Ok(cancelled)
 }
 
 /// snapshot کامل — برای بازیابی UI بدون اتکای انحصاری به رویدادها.
 #[tauri::command]
 pub fn get_pipeline_state(state: State<'_, AppState>) -> Option<PipelineSnapshot> {
     pipeline_control(&state).map(|control| control.snapshot())
+}
+
+/// آیتم‌های run فعال — بازیابی جدول فایل‌ها پس از remount/reload.
+#[tauri::command]
+pub fn get_pipeline_items(state: State<'_, AppState>) -> Vec<PipelineItemSnapshot> {
+    pipeline_control(&state)
+        .map(|control| control.item_snapshots())
+        .unwrap_or_default()
 }
 
 /// آیا pipeline فعالی جریان دارد؟

@@ -17,7 +17,7 @@ pub use types::{
     PipelineStage, PipelineStatus, PipelineSummary, RegisteredOption, StageStatus,
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::state::{AppState, BatchOpGuard};
@@ -42,6 +42,8 @@ pub(crate) struct ControlState {
     pub pending: Option<PendingDecisionState>,
     pub counts: PipelineCounts,
     pub current_file: Option<String>,
+    pub active: usize,
+    pub cancelling: bool,
     pub message: String,
     pub invalid_selections: Vec<crate::scanner::SelectionIssue>,
     pub staged_paths: Vec<String>,
@@ -58,6 +60,8 @@ pub(crate) struct PendingDecisionState {
 pub struct PipelineControl {
     run_id: String,
     cancel: Arc<AtomicBool>,
+    /// شمارهٔ یکنوای snapshot — جلوگیری از overwrite شدن وضعیت جدید با رویداد کهنه.
+    seq: AtomicU64,
     started: Instant,
     inner: Mutex<ControlState>,
     gate: Condvar,
@@ -74,6 +78,7 @@ impl PipelineControl {
         PipelineControl {
             run_id,
             cancel: Arc::clone(&guard.cancel),
+            seq: AtomicU64::new(0),
             started: Instant::now(),
             inner: Mutex::new(ControlState {
                 stage: PipelineStage::Validating,
@@ -82,6 +87,8 @@ impl PipelineControl {
                 pending: None,
                 counts: PipelineCounts::default(),
                 current_file: None,
+                active: 0,
+                cancelling: false,
                 message: message.into(),
                 invalid_selections: Vec::new(),
                 staged_paths: Vec::new(),
@@ -116,20 +123,38 @@ impl PipelineControl {
 
     /// snapshot کامل — برای command و رویدادها. completed فقط از outcomeهای نهایی.
     pub(crate) fn snapshot(&self) -> PipelineSnapshot {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         let mut g = self.lock_inner();
         g.counts.decisions_pending = if g.pending.is_some() { 1 } else { 0 };
         let completed = g.items.iter().filter(|i| i.outcome.is_some()).count();
         PipelineSnapshot {
+            seq,
             run_id: self.run_id.clone(),
             stage: g.stage,
             status: g.status,
             total: g.items.len(),
             completed,
+            active: g.active,
+            cancelling: g.cancelling,
             current_file: g.current_file.clone(),
             counts: g.counts,
             pending_decision: g.pending.as_ref().map(|p| p.decision.clone()),
             message: g.message.clone(),
         }
+    }
+
+    /// snapshot آیتم‌های ثبت‌شده — برای بازیابی UI پس از remount/reload.
+    pub(crate) fn item_snapshots(&self) -> Vec<PipelineItemSnapshot> {
+        self.lock_inner().items.clone()
+    }
+
+    pub(crate) fn set_active(&self, active: usize) {
+        self.lock_inner().active = active;
+    }
+
+    /// ثبت درخواست توقف — وضعیت پایانی همچنان از مسیر worker می‌آید.
+    pub(crate) fn set_cancelling(&self, cancelling: bool) {
+        self.lock_inner().cancelling = cancelling;
     }
 
     pub(crate) fn set_stage(&self, stage: PipelineStage) {
@@ -358,7 +383,8 @@ pub fn cancel_active_pipeline(state: &AppState) -> Result<bool, String> {
     // ۱) ست پرچم (همان Arc پرچم batch guard — هسته‌های فعال از همان poll می‌کنند)
     control.cancel.store(true, Ordering::SeqCst);
     // ۲) بیدارسازی waiterها — notify زیر inner (پروتکل بدون lost wakeup)
-    let _guard = control.lock_inner();
+    let mut g = control.lock_inner();
+    g.cancelling = true;
     control.gate.notify_all();
     Ok(true)
 }

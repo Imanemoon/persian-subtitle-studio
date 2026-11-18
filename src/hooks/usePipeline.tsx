@@ -54,15 +54,24 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const runIdRef = useRef<string | null>(null);
+  const seqRef = useRef<number>(0);
+  /** runی که رویداد پایانی‌اش رسیده — رویدادهای کهنهٔ همان run دور ریخته می‌شوند */
+  const finishedRunRef = useRef<string | null>(null);
 
   const applySnapshot = useCallback((next: PipelineSnapshot) => {
-    // run جدید → وضعیت run قبلی پاک می‌شود (رویدادهای قدیمی معتبر نیستند)
     if (runIdRef.current !== null && runIdRef.current !== next.runId) {
+      // run جدید → وضعیت run قبلی پاک می‌شود (رویدادهای قدیمی معتبر نیستند)
       setItems([]);
       setSummary(null);
       setDecision(null);
+      seqRef.current = 0;
+      finishedRunRef.current = null;
     }
+    if (finishedRunRef.current === next.runId) return; // رویداد کهنه پس از پایان
     runIdRef.current = next.runId;
+    // رویداد قدیمی‌تر از snapshot فعلی هرگز وضعیت جدیدتر را overwrite نمی‌کند
+    if (next.seq > 0 && next.seq <= seqRef.current) return;
+    if (next.seq > 0) seqRef.current = next.seq;
     setSnapshot(next);
     // snapshot مرجع حقیقت تصمیم باز است — رویداد decision فقط اعلام اولیه است
     setDecision(next.pendingDecision ?? null);
@@ -71,20 +80,6 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
-
-    // بازیابی وضعیت فعلی هنگام باز/بازگشایی UI — بدون اتکای انحصاری به رویدادها
-    (async () => {
-      try {
-        const restored = await api.getPipelineState();
-        if (!disposed && restored) {
-          runIdRef.current = restored.runId;
-          setSnapshot(restored);
-          setDecision(restored.pendingDecision ?? null);
-        }
-      } catch {
-        // بک‌اند در دسترس نیست — رویدادهای بعدی وضعیت را می‌سازند
-      }
-    })();
 
     const register = async () => {
       unlisteners.push(
@@ -111,17 +106,49 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
       );
       unlisteners.push(
         await listen<PipelineSummary>("pipeline:done", (event) => {
+          const summaryEvent = event.payload;
           // خلاصه مرجع حقیقت پایان است: snapshot وضعیت کهنه (مثلاً running)
           // دارد چون مسیر لغو/شکست رویداد state نهایی نمی‌فرستد؛ آیتم‌های
           // نهایی‌شده هم فقط در خلاصه‌اند (mark_all_cancelled رویداد Item ندارد)
+          if (runIdRef.current !== null && runIdRef.current !== summaryEvent.runId) {
+            return; // خلاصهٔ run دیگری — نادیده
+          }
+          finishedRunRef.current = summaryEvent.runId;
+          runIdRef.current = summaryEvent.runId;
           setSnapshot(null);
-          setItems(event.payload.items);
+          setItems(summaryEvent.items);
           setDecision(null);
-          setSummary(event.payload);
+          setSummary(summaryEvent);
         }),
       );
     };
-    void register();
+
+    // ابتدا شنونده‌ها، بعد بازیابی وضعیت — رویداد بین این دو گم نمی‌شود.
+    (async () => {
+      try {
+        await register();
+      } catch {
+        // حتی اگر ثبت شنونده شکست بخورد، بازیابی وضعیت را امتحان می‌کنیم
+      }
+      if (disposed) return;
+      try {
+        const [restored, restoredItems] = await Promise.all([
+          api.getPipelineState(),
+          api.getPipelineItems(),
+        ]);
+        if (!disposed && restored) {
+          applySnapshot(restored);
+          // ادغام: رویدادهای تازه‌ترِ رسیده، بر snapshot بازیابی‌شده مقدم‌اند
+          setItems((prev) => {
+            const map = new Map(restoredItems.map((it) => [it.videoPath, it]));
+            for (const item of prev) map.set(item.videoPath, item);
+            return [...map.values()];
+          });
+        }
+      } catch {
+        // بک‌اند در دسترس نیست — رویدادهای بعدی وضعیت را می‌سازند
+      }
+    })();
 
     return () => {
       disposed = true;
@@ -195,6 +222,9 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     setDecision(null);
     setActionError(null);
     runIdRef.current = null;
+    // پاک‌سازی کامل — وگرنه seq قدیمی اولین snapshot run بعدی را دور می‌ریزد
+    seqRef.current = 0;
+    finishedRunRef.current = null;
   }, []);
 
   const value: PipelineState = {

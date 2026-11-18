@@ -238,3 +238,96 @@ fn snapshot_counts_only_terminal_outcomes() {
     assert_eq!(pending.options.len(), 1);
     assert_eq!(pending.options[0].option_id, "dec-s-opt-0");
 }
+
+/// قرارداد serde: فیلدهای struct-variantها باید camelCase باشند — فرانت
+/// `outputPath`/`preservedPath`/`decisionId`/`streamIndex` را می‌خواند.
+/// (رگرسیون صفحهٔ سیاه: `rename_all` روی enum فقط نام variantها را عوض می‌کرد.)
+#[test]
+fn enum_struct_variant_fields_serialize_as_camel_case() {
+    let synced = serde_json::to_value(ItemOutcome::Synced {
+        output_path: "C:\\v\\a.fa.synced.srt".into(),
+    })
+    .unwrap();
+    assert_eq!(synced["kind"], "synced");
+    assert_eq!(synced["outputPath"], "C:\\v\\a.fa.synced.srt");
+    assert!(synced.get("output_path").is_none());
+
+    let conflict = serde_json::to_value(ItemOutcome::OutputConflict {
+        preserved_path: "C:\\v\\a.fa.srt".into(),
+    })
+    .unwrap();
+    assert_eq!(conflict["kind"], "outputConflict");
+    assert_eq!(conflict["preservedPath"], "C:\\v\\a.fa.srt");
+    assert!(conflict.get("preserved_path").is_none());
+
+    let waiting = serde_json::to_value(StageStatus::NeedsDecision {
+        decision_id: "dec-1".into(),
+    })
+    .unwrap();
+    assert_eq!(waiting["kind"], "needsDecision");
+    assert_eq!(waiting["decisionId"], "dec-1");
+    assert!(waiting.get("decision_id").is_none());
+
+    let track = serde_json::to_value(DecisionOptionPayload::EmbeddedTrack {
+        stream_index: 3,
+        label: "فارسی".into(),
+    })
+    .unwrap();
+    assert_eq!(track["kind"], "embeddedTrack");
+    assert_eq!(track["streamIndex"], 3);
+    assert!(track.get("stream_index").is_none());
+
+    let archive = serde_json::to_value(DecisionOptionPayload::ArchiveCandidate {
+        archive_file_name: "a.zip".into(),
+        member_path: "sub/a.srt".into(),
+    })
+    .unwrap();
+    assert_eq!(archive["archiveFileName"], "a.zip");
+    assert_eq!(archive["memberPath"], "sub/a.srt");
+}
+
+/// seq یکنواست و active/cancelling واقعاً از snapshot خوانده می‌شوند.
+#[test]
+fn snapshot_seq_is_monotonic_and_reports_activity() {
+    let state = make_state();
+    let (_guard, control) = make_control(&state, "run-seq");
+
+    let first = control.snapshot();
+    control.set_active(2);
+    control.set_cancelling(true);
+    control.set_current_file(Some("a.mkv".into()));
+    let second = control.snapshot();
+
+    assert!(second.seq > first.seq, "seq باید یکنوا باشد");
+    assert_eq!(second.active, 2);
+    assert!(second.cancelling);
+    assert_eq!(second.current_file.as_deref(), Some("a.mkv"));
+
+    control.set_active(0);
+    control.set_cancelling(false);
+    let third = control.snapshot();
+    assert!(third.seq > second.seq);
+    assert_eq!(third.active, 0);
+    assert!(!third.cancelling);
+}
+
+/// بازیابی UI پس از remount: آیتم‌های ثبت‌شده باید بدون رویداد قابل خواندن باشند.
+#[test]
+fn item_snapshots_recovers_registered_rows() {
+    let state = make_state();
+    let (_guard, control) = make_control(&state, "run-items");
+    assert!(control.item_snapshots().is_empty());
+
+    control.put_item_snapshot(make_item("C:\\v\\a.mkv"));
+    let mut b = make_item("C:\\v\\b.mkv");
+    b.outcome = Some(ItemOutcome::AlreadySynced);
+    control.put_item_snapshot(b);
+    // upsert بر اساس مسیر — ردیف تکراری ساخته نمی‌شود
+    control.put_item_snapshot(make_item("C:\\v\\a.mkv"));
+
+    let items = control.item_snapshots();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].video_path, "C:\\v\\a.mkv");
+    assert_eq!(items[1].video_path, "C:\\v\\b.mkv");
+    assert_eq!(items[1].outcome, Some(ItemOutcome::AlreadySynced));
+}
