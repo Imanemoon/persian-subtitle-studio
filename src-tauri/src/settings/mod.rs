@@ -82,6 +82,10 @@ pub struct Settings {
     pub existing_file_behavior: ExistingFileBehavior,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
     pub logs_dir: Option<String>,
+    /// معاونت راه‌اندازی (نصب خودکار پیش‌نیازها) یک‌بار دیده شده/پشت زده شده است —
+    /// پس از true شدن، صفحهٔ setup دوباره اجباری نمی‌شود.
+    #[serde(default)]
+    pub setup_completed: bool,
 }
 
 impl Default for Settings {
@@ -94,6 +98,7 @@ impl Default for Settings {
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             logs_dir: None,
+            setup_completed: false,
         }
     }
 }

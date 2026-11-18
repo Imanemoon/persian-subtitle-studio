@@ -29,6 +29,10 @@
     "targets": ["nsis"],
     "publisher": "SubSync Studio",
     "shortDescription": "مدیریت خودکار زیرنویس فارسی سریال‌ها و فیلم‌ها",
+    "resources": [
+      "resources/tools/7z2603-x64.exe",
+      "resources/tools/sub-rs.exe"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -161,6 +161,7 @@ fn make_state() -> Arc<AppState> {
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
         pipeline: Mutex::new(None),
         archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
+        setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
 }
 

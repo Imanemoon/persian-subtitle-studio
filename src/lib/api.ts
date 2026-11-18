@@ -8,10 +8,29 @@ import type {
   Settings,
   SubtitleValidation,
   ToolInfo,
+  ToolStatus,
   TrackReview,
   VideoEntry,
 } from "../types";
 import type { PipelineItemSnapshot, PipelineSnapshot } from "../types/pipeline";
+
+/** وضعیت یک ابزار در معاونت راه‌اندازی — قرینه SetupToolStatus بک‌اند. */
+export interface SetupToolStatus {
+  id: string;
+  label: string;
+  requiredForEntry: boolean;
+  sizeHint: string;
+  status: ToolStatus;
+}
+
+/** پیام پیشرفت نصب — رویداد setup:progress؛ اعداد از واقعیت بک‌اند. */
+export interface SetupProgressPayload {
+  toolId: string;
+  phase: string;
+  receivedBytes: number;
+  totalBytes: number;
+  message: string;
+}
 
 export const api = {
   getLibrary: () => invoke<VideoEntry[]>("get_library"),
@@ -33,6 +52,17 @@ export const api = {
 
   detectTools: () => invoke<ToolInfo[]>("detect_tools"),
   getLogs: (limit = 300) => invoke<LogEntry[]>("get_logs", { limit }),
+
+  // ---- معاونت راه‌اندازی: نصب خودکار پیش‌نیازها + شتاب Defender + میان‌بر ----
+  setupStatus: () => invoke<SetupToolStatus[]>("setup_status"),
+  installTool: (id: string) => invoke<void>("install_tool", { id }),
+  cancelSetup: () => invoke<void>("cancel_setup"),
+  isElevated: () => invoke<boolean>("is_elevated"),
+  addDefenderExclusion: (paths: string[]) =>
+    invoke<string>("add_defender_exclusion", { paths }),
+  createAdminShortcut: () => invoke<string>("create_admin_shortcut"),
+  getAppDirHints: () =>
+    invoke<{ installDir: string; toolsDir: string }>("get_app_dir_hints"),
 
   // ---- فاز ۲: تحلیل و استخراج زیرنویس داخلی ----
   analyzeVideo: (path: string) => invoke<VideoEntry>("analyze_video", { path }),

@@ -771,6 +771,7 @@ mod tests {
             archive_provenance: Mutex::new(
                 crate::archive::provenance::ProvenanceRegistry::default(),
             ),
+            setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

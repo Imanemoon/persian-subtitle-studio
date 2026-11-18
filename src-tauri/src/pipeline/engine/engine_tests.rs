@@ -27,6 +27,7 @@ fn make_pipeline_state() -> AppState {
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
         archive_provenance: Mutex::new(ProvenanceRegistry::default()),
         pipeline: Mutex::new(None),
+        setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
 }
 

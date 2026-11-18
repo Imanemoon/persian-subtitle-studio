@@ -180,9 +180,11 @@ export interface Settings {
   processing: ProcessingSettings;
   existingFileBehavior: ExistingFileBehavior;
   logsDir: string | null;
+  /** معاونت راه‌اندازی یک‌بار طی شده یا پشت زده شده */
+  setupCompleted: boolean;
 }
 
-export type PageId = "home" | "library" | "processing" | "logs" | "settings";
+export type PageId = "home" | "setup" | "library" | "processing" | "logs" | "settings";
 
 /** انتخاب کاربر در صفحهٔ خانه — پوشه یا چند فایل، هر دو با هم نه */
 export type HomeSelection =

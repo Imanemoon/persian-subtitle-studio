@@ -90,6 +90,7 @@ fn make_test_state(fake_exe: &Path, library: Vec<VideoEntry>) -> AppState {
         archive_provenance: Mutex::new(
             subsync_studio_lib::archive::provenance::ProvenanceRegistry::default(),
         ),
+        setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }
 }
 

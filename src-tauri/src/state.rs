@@ -303,12 +303,23 @@ pub struct AppState {
     pub archive_provenance: Mutex<ProvenanceRegistry>,
     /// pipeline فعال (در صورت وجود) — admission از طریق ops registry انجام می‌شود.
     pub pipeline: Mutex<Option<Arc<crate::pipeline::PipelineControl>>>,
+    /// لغو نصب خودکار ابزارها (معاونت راه‌اندازی) — مستقل از registry عملیات.
+    pub setup_cancel: Arc<AtomicBool>,
 }
 
-/// مسیرهای دائمی برنامه (تنظیمات و لاگ).
+/// مسیرهای دائمی برنامه (تنظیمات، لاگ و داده‌های محلی ابزارها).
 #[derive(Clone)]
 pub struct AppPaths {
     pub config_dir: PathBuf,
+    /// ریشهٔ داده‌های محلی — پوشهٔ `tools` نصب خودکار زیر آن ساخته می‌شود.
+    pub data_dir: PathBuf,
+}
+
+impl AppPaths {
+    /// پوشهٔ نصب ابزارهای خودکار — `<data_dir>/tools`.
+    pub fn tools_dir(&self) -> PathBuf {
+        self.data_dir.join("tools")
+    }
 }
 
 #[cfg(test)]

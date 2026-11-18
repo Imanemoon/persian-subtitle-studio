@@ -6,6 +6,7 @@ pub mod pipeline;
 pub mod scan;
 pub mod secrets;
 pub mod settings;
+pub mod setup;
 pub mod subsource;
 pub mod subtitle;
 pub mod tools;

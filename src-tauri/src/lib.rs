@@ -7,6 +7,7 @@ pub mod models;
 pub mod pipeline;
 pub mod scanner;
 pub mod settings;
+pub mod setup;
 pub mod state;
 pub mod subsource;
 pub mod subtitle;
@@ -30,11 +31,16 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio"));
+            let data_dir = app
+                .path()
+                .app_local_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio"));
             let log_dir = app
                 .path()
                 .app_log_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio").join("logs"));
             let _ = std::fs::create_dir_all(&config_dir);
+            let _ = std::fs::create_dir_all(&data_dir);
             let _ = std::fs::create_dir_all(&log_dir);
 
             logging::init(Some(log_dir.join("subsync-studio.log")));
@@ -76,8 +82,15 @@ pub fn run() {
                     crate::archive::provenance::ProvenanceRegistry::default(),
                 ),
                 pipeline: Mutex::new(None),
+                setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
-            app.manage(AppPaths { config_dir });
+            app.manage(AppPaths {
+                config_dir,
+                data_dir,
+            });
+
+            // ابزارهای باندل‌شده (sub-rs) — فقط اگر در هیچ‌جای سیستم نیستند
+            commands::setup::seed_bundled_tools(app.handle());
 
             Ok(())
         })
@@ -105,6 +118,13 @@ pub fn run() {
             commands::archive::execute_archive_extraction,
             commands::archive::is_archive_active,
             commands::tools::detect_tools,
+            commands::setup::setup_status,
+            commands::setup::install_tool,
+            commands::setup::cancel_setup,
+            commands::setup::is_elevated,
+            commands::setup::add_defender_exclusion,
+            commands::setup::get_app_dir_hints,
+            commands::setup::create_admin_shortcut,
             commands::logs::get_logs,
             commands::media::analyze_video,
             commands::media::analyze_all,

@@ -21,6 +21,9 @@ walkdir = "2"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = { version = "3.6", features = ["windows-native"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
 
 [profile.release]
 codegen-units = 1
