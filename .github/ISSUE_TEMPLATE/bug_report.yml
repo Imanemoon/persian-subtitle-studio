@@ -1,0 +1,62 @@
+name: "🐛 گزارش باگ / Bug report"
+description: "چیزی درست کار نمی‌کند / Something doesn't work"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ممنون که وقت می‌گذارید! لاگ برنامه بهترین کمک است:
+        «لاگ‌ها» → کپی، یا فایل `%LOCALAPPDATA%\com.subsync.studio\logs\` —
+        لطفاً نام فایل‌های خصوصی‌تان را حذف کنید.
+
+  - type: input
+    id: version
+    attributes:
+      label: "نسخهٔ برنامه / App version"
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: "ویندوز / Windows"
+      options:
+        - "Windows 11"
+        - "Windows 10"
+        - "Other / دیگر"
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: "در کدام مرحله؟ / Which stage?"
+      options:
+        - "راه‌اندازی / Setup wizard"
+        - "اسکن / Scan"
+        - "تحلیل/استخراج / Analyze & extract"
+        - "دانلود / Download"
+        - "آرشیو / Archive"
+        - "سینک / Sync"
+        - "جانمایی / Placement"
+        - "UI / غیره / Other"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: "چه انتظاری داشتید و چه اتفاقی افتاد؟ / What happened?"
+      placeholder: "گام‌به‌گام بازتولید + نتیجهٔ واقعی / Steps to reproduce + actual result"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: "لاگ مرتبط / Relevant logs"
+      render: shell
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "چک‌لیست"
+      options:
+        - label: "در آخرین Release تست کردم / I tested on the latest release"
+        - label: "لاگ بدون اطلاعات خصوصی است / Logs contain no private info"

@@ -1,0 +1,23 @@
+name: "💡 پیشنهاد قابلیت / Feature request"
+description: "ایده‌ای برای بهتر شدن SubSync Studio / Suggest an idea"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: "چه مشکلی را حل می‌کند؟ / What problem does it solve?"
+      placeholder: "من می‌خواهم… ولی برنامه نمی‌تواند… / I want to… but the app can't…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "راه‌حل پیشنهادی / Proposed solution"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "چک‌لیست"
+      options:
+        - label: "در Issues موجود چک کردم / I searched existing issues"

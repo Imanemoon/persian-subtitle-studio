@@ -3,3 +3,19 @@
 *.ico binary
 *.icns binary
 *.woff2 binary
+
+# پایان‌خط صریح برای متن‌های اصلی — مخزن LF می‌ماند
+*.rs text diff=rust
+*.ts text diff=typescript
+*.tsx text diff=typescript
+*.css text diff=css
+*.json text
+*.md text diff=markdown
+*.yml text
+*.yaml text
+*.toml text diff=toml
+*.ps1 text
+*.sh text eol=lf
+
+# باینری‌های باندل‌شده — هیچ تبدیلی رویشان انجام نشود
+src-tauri/resources/tools/*.exe binary

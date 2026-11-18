@@ -7,6 +7,7 @@
 *Automatic Persian subtitle extraction, downloading and syncing for your movies & series — on Windows, with zero manual work.*
 
 [![Release](https://img.shields.io/github/v/release/Imanemoon/persian-subtitle-studio?label=%D8%AF%D8%A7%D9%86%D9%84%D9%88%D8%AF&color=10b981)](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Imanemoon/persian-subtitle-studio/total?label=%D8%AF%D8%A7%D9%86%D9%84%D9%88%D8%AF%D9%87%D8%A7&color=0ea5e9)](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
 [![CI](https://github.com/Imanemoon/persian-subtitle-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Imanemoon/persian-subtitle-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey)](#نصب)
@@ -137,11 +138,29 @@ cargo clippy --all-targets    # صفر warning هدف پروژه است
 
 [MIT](LICENSE) — ffmpeg به‌صورت runtime دانلود می‌شود، نه باندل.
 
-## 🇬🇧 Summary (English)
+## 🇬🇧 Features (English)
 
-SubSync Studio automates Persian subtitles for your video library: extract embedded tracks,
-download from SubSource (API key stored only in Windows Credential Manager), match subtitle
-archives to episodes, sync timing with ffsubsync, and place `<name>.fa.synced.srt` next to
-each video — with a first-run wizard that auto-installs all prerequisites (version-pinned,
-SHA256-verified, per-user), honest progress everywhere, and safe cancellation/recovery.
-Built with Tauri 2 + Rust + React. Requires Windows 10+.
+SubSync Studio is a **free & open-source Windows desktop app** that automates Persian (Farsi)
+subtitles for your entire video library:
+
+- **Extract embedded Persian subtitles** from MKV/MP4 — dual-layer Persian detection
+  (language tag + real content verification), multi-track selection, review for untagged tracks
+- **Download Persian subtitles from SubSource.org** — API key stored only in Windows
+  Credential Manager, safe staging with hard links
+- **Match & extract subtitle archives** (zip/rar/7z) with episode matching and conflict preservation
+- **Sync subtitle timing with FFsubsync** — multi-segment alignment, intro/outro skip,
+  low-quality protection, validated offset shown in the UI
+- **Place `<name>.fa.synced.srt` next to each video** — strict no-overwrite policy
+- **First-run setup wizard** auto-installs all prerequisites (ffmpeg, Python, ffsubsync —
+  version-pinned, SHA256-verified, per-user, no admin required)
+- **Honest progress everywhere** — every number and status comes from the backend; fake
+  percentages don't exist in this codebase
+- **Safe by design** — atomic operations, workspace confinement, no-overwrite placement,
+  cancel anything at any time, state recovery after restart
+
+It is the modern GUI replacement for the manual
+*PowerShell + FFmpeg + SubSource CLI + 7-Zip + FFsubsync* pipeline.
+Built with **Tauri 2 + Rust + React 19**, full RTL Persian UI (Vazirmatn font), MIT licensed.
+
+Keywords: persian subtitles, farsi subtitle sync, ffsubsync gui, subsource downloader,
+subtitle extractor, automatic subtitle sync, tauri desktop app, rust subtitle tool.
