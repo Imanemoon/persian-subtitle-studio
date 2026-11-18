@@ -134,9 +134,11 @@ cargo clippy --all-targets    # صفر warning هدف پروژه است
 - [ ] OCR برای زیرنویس تصویری (PGS/VobSub)
 - [ ] ویرایشگر زیرنویس و زمان‌بندی دستی
 
-## 📄 لایسنس
+## 📄 لایسنس و تغییرات
 
-[MIT](LICENSE) — ffmpeg به‌صورت runtime دانلود می‌شود، نه باندل.
+- لایسنس: [MIT](LICENSE) — ffmpeg به‌صورت runtime دانلود می‌شود، نه باندل
+- تاریخچهٔ نسخه‌ها: [CHANGELOG](docs/CHANGELOG.md)
+- گزارش آسیب‌پذیری: [.github/SECURITY.md](.github/SECURITY.md)
 
 ## 🇬🇧 Features (English)
 
