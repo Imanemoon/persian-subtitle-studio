@@ -27,3 +27,29 @@ export function folderBaseName(path: string | null | undefined): string {
   const trimmed = path.replace(/[\\/]+$/, "");
   return trimmed.split(/[\\/]/).pop() ?? trimmed;
 }
+
+/** کلید مقایسهٔ مسیر در ویندوز — جداکنندهٔ یکسان، بدون جداکنندهٔ پایانی، حروف کوچک. */
+export function pathKey(path: string | null | undefined): string {
+  if (typeof path !== "string" || path.length === 0) return "";
+  return path.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/** آیا دو مسیر به یک فایل/پوشه اشاره می‌کنند؟ (مقایسهٔ ویندوزی، حساس به حروف نیست) */
+export function isSamePath(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const key = pathKey(a);
+  return key.length > 0 && key === pathKey(b);
+}
+
+/** آیا مسیر داخل پوشه (یا خودِ پوشه) قرار دارد؟ — فقط مقایسهٔ متنی مسیر. */
+export function isPathInside(
+  path: string | null | undefined,
+  folder: string | null | undefined,
+): boolean {
+  const child = pathKey(path);
+  const root = pathKey(folder);
+  if (!child || !root) return false;
+  return child === root || child.startsWith(`${root}/`);
+}
