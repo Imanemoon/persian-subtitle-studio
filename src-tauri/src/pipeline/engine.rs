@@ -469,6 +469,44 @@ pub(crate) fn run_pipeline_body(
             emit_item(control, sink, rt);
             continue;
         };
+        // در SoftSub، اگر sidecar معتبر از قبل موجود باشد، آن را مبنای سینک نگه می‌داریم
+        // اما برای جلوگیری از دو Track فارسی، Track داخلیِ یکتای فارسی را هم شناسایی می‌کنیم.
+        if softsub_mode && !rt.sidecar_valid.is_empty() {
+            match analysis.status {
+                AnalysisStatus::PersianTextTrackFound => {
+                    let candidates: Vec<u32> = analysis
+                        .streams
+                        .iter()
+                        .filter(|stream| {
+                            stream.kind == SubtitleKind::Text
+                                && (stream.persian_candidate || stream.persian_confirmed)
+                        })
+                        .map(|stream| stream.stream_index)
+                        .collect();
+                    if candidates.len() == 1 {
+                        rt.embedded_stream_index = candidates.first().copied();
+                        rt.stage_status = StageStatus::Done;
+                    } else {
+                        rt.stage_status = StageStatus::Skipped {
+                            reason: "Track داخلی فارسی یکتا برای جایگزینی پیدا نشد؛ Trackهای موجود حفظ می‌شوند".into(),
+                        };
+                    }
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+                AnalysisStatus::Extracted => {
+                    rt.embedded_stream_index = analysis
+                        .last_extraction
+                        .as_ref()
+                        .map(|extraction| extraction.stream_index);
+                    rt.stage_status = StageStatus::Done;
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
         match analysis.status {
             AnalysisStatus::NeedsTrackSelection => {
                 // D1: چند Track متنی فارسی → انتخاب صریح کاربر
@@ -512,6 +550,12 @@ pub(crate) fn run_pipeline_body(
                     emit_item(control, sink, rt);
                     continue;
                 }
+                if softsub_mode && !rt.sidecar_valid.is_empty() {
+                    rt.embedded_stream_index = Some(stream_index);
+                    rt.stage_status = StageStatus::Done;
+                    emit_item(control, sink, rt);
+                    continue;
+                }
                 match crate::commands::subtitle::run_extract_blocking(
                     state,
                     &rt.video_path,
@@ -520,6 +564,8 @@ pub(crate) fn run_pipeline_body(
                 ) {
                     Ok(extracted) => {
                         rt.has_sidecar = true;
+                        rt.generated_sync_input = true;
+                        rt.embedded_stream_index = Some(stream_index);
                         rt.artifacts.sync_input_path = Some(extracted.target_path.clone());
                         rt.stage_status = StageStatus::Done;
                         counts.extracted += 1;
@@ -563,13 +609,25 @@ pub(crate) fn run_pipeline_body(
                     &cancel,
                 ) {
                     Ok(review) if review.persian_confirmed => {
-                        match crate::commands::subtitle::promote_review_core(
+                        if softsub_mode && !rt.sidecar_valid.is_empty() {
+                            // زیرنویس کناری مبنای sync است؛ Review فقط Track داخلیِ
+                            // قابل‌جایگزینی را تأیید می‌کند و sidecar جدید نمی‌سازد.
+                            rt.embedded_stream_index = Some(stream_index);
+                            rt.stage_status = StageStatus::Done;
+                        } else {
+                            match crate::commands::subtitle::promote_review_core(
                             state,
                             &rt.video_path,
                             stream_index,
                         ) {
                             Ok(updated) => {
                                 rt.has_sidecar = true;
+                                rt.generated_sync_input = true;
+                                rt.embedded_stream_index = updated
+                                    .analysis
+                                    .as_ref()
+                                    .and_then(|a| a.last_extraction.as_ref())
+                                    .map(|e| e.stream_index);
                                 rt.artifacts.sync_input_path = updated
                                     .analysis
                                     .as_ref()
@@ -586,6 +644,7 @@ pub(crate) fn run_pipeline_body(
                                 rt.stage_status = StageStatus::Failed {
                                     reason: err.clone(),
                                 };
+                            }
                             }
                         }
                     }
@@ -952,6 +1011,7 @@ pub(crate) fn run_pipeline_body(
                     AIS::Placed => {
                         items[pos].stage_status = StageStatus::Done;
                         items[pos].has_sidecar = true;
+                        items[pos].generated_sync_input = true;
                         counts.archives_placed += 1;
                         if let Some(out) = &item.output_path {
                             items[pos].artifacts.sync_input_path = Some(out.clone());
@@ -1032,7 +1092,7 @@ pub(crate) fn run_pipeline_body(
                     .valid
                     .iter()
                     .any(|p| is_synced_name(&p.to_string_lossy()));
-                if synced {
+                if synced && !softsub_mode {
                     rt.outcome = Some(ItemOutcome::AlreadySynced);
                     counts.already_synced += 1;
                     rt.stage_status = StageStatus::Done;
@@ -1040,7 +1100,7 @@ pub(crate) fn run_pipeline_body(
                     let normal: Vec<PathBuf> = inspection
                         .valid
                         .iter()
-                        .filter(|p| !is_synced_name(&p.to_string_lossy()))
+                        .filter(|p| softsub_mode || !is_synced_name(&p.to_string_lossy()))
                         .cloned()
                         .collect();
                     match normal.len() {
