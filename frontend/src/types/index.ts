@@ -169,6 +169,7 @@ export interface ProcessingSettings {
   segmentCount: number;
   skipIntroOutro: boolean;
   skipSyncOnLowQuality: boolean;
+  subtitleOutputMode: "softSub" | "sidecar";
 }
 
 export type ExistingFileBehavior = "neverOverwrite";
