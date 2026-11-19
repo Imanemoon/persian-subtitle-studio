@@ -1769,6 +1769,42 @@ fn refresh_sidecar_flags(
     }
 }
 
+/// فقط فایل زیرنویسی را حذف می‌کند که همین اجرای pipeline ساخته است؛
+/// فایل‌های قبلی کاربر یا فایل‌های خارج از پوشهٔ ویدیو هرگز حذف نمی‌شوند.
+fn remove_generated_sync_input(rt: &ItemRuntime) -> Option<String> {
+    if !rt.generated_sync_input {
+        return None;
+    }
+    let video = Path::new(&rt.video_path);
+    let Some(input) = rt.artifacts.sync_input_path.as_deref() else {
+        return None;
+    };
+    let subtitle = Path::new(input);
+    if subtitle == video || subtitle.parent() != video.parent() {
+        return Some(format!(
+            "فایل موقت زیرنویس به‌صورت خودکار حذف نشد و برای بررسی حفظ شد: {input}"
+        ));
+    }
+    match std::fs::symlink_metadata(subtitle) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !crate::archive::listing::is_link_or_reparse(&metadata) =>
+        {
+            std::fs::remove_file(subtitle).err().map(|error| {
+                format!(
+                    "SoftSub موفق بود اما حذف زیرنویس موقت ناموفق شد: {input} ({error})"
+                )
+            })
+        }
+        Ok(_) => Some(format!(
+            "زیرنویس موقت حذف نشد چون دیگر یک فایل معمولی امن نیست: {input}"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => Some(format!(
+            "بررسی زیرنویس موقت برای حذف ناموفق بود؛ فایل حفظ شد: {input} ({error})"
+        )),
+    }
+}
 fn refresh_entry_siblings(state: &AppState, video_path: &str, sink: &super::SinkStore) {
     let Some(mut entry) = crate::commands::media::get_entry(state, video_path) else {
         return;
