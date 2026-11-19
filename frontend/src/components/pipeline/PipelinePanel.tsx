@@ -590,6 +590,7 @@ function NeedsReview({ summary }: { summary: PipelineSummary }) {
 }
 
 const COUNT_LABELS: Array<[keyof PipelineCounts, string]> = [
+  ["softsubbed", "SoftSub شده"],
   ["synced", "سینک شد"],
   ["alreadySynced", "از قبل سینک‌شده"],
   ["unchangedLowQuality", "کیفیت پایین"],

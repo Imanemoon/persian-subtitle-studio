@@ -14,6 +14,17 @@ pub struct ToolPathOverrides {
     pub ffsubsync: Option<String>,
 }
 
+/// مقصد نهایی زیرنویس سینک‌شده.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleOutputMode {
+    /// زیرنویس درون فایل ویدیو remux می‌شود و به‌صورت SoftSub در دسترس است.
+    #[default]
+    SoftSub,
+    /// رفتار قدیمی: خروجی زیرنویس کنار فایل ویدیو ذخیره می‌شود.
+    Sidecar,
+}
+
 /// مقادیر پیش‌فرض پردازش مطابق تجربه اسکریپت PowerShell قبلی.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -23,6 +34,8 @@ pub struct ProcessingSettings {
     pub segment_count: u32,
     pub skip_intro_outro: bool,
     pub skip_sync_on_low_quality: bool,
+    /// محل خروجی زیرنویس؛ SoftSub حالت پیش‌فرض نسخه‌های جدید است.
+    pub subtitle_output_mode: SubtitleOutputMode,
 }
 
 /// تنظیمات SubSource API و دانلود
@@ -59,6 +72,7 @@ impl Default for ProcessingSettings {
             segment_count: 6,
             skip_intro_outro: true,
             skip_sync_on_low_quality: true,
+            subtitle_output_mode: SubtitleOutputMode::SoftSub,
         }
     }
 }
@@ -423,6 +437,42 @@ mod tests {
         assert_eq!(
             s.excluded_folders,
             vec!["Ted Lasso".to_string(), "Better Call Saul".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// تنظیمات قدیمی (بدون subtitleOutputMode) — فیلد جدید با پیش‌فرض SoftSub
+    /// مهاجرت می‌شود و انتخاب صریح sidecar دست‌نخورده می‌ماند.
+    #[test]
+    fn legacy_settings_without_output_mode_default_to_softsub_and_keep_explicit_sidecar() {
+        let dir = unique_temp_dir("output-mode-migration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{
+            "rootFolder": "D:\\Series",
+            "processing": { "syncWorkers": 4, "segmentCount": 6 }
+        }"#;
+        std::fs::write(config_file_path(&dir), json).unwrap();
+
+        let loaded = load(&dir);
+        assert_eq!(
+            loaded.processing.subtitle_output_mode,
+            SubtitleOutputMode::SoftSub,
+            "تنظیمات قدیمی باید به پیش‌فرض جدید مهاجرت شود"
+        );
+
+        // انتخاب صریح کاربر (sidecar) پس از ذخیره و بارگذاری مجدد حفظ می‌شود
+        let mut s = loaded;
+        s.processing.subtitle_output_mode = SubtitleOutputMode::Sidecar;
+        save(&dir, &s).expect("save");
+        let raw = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(
+            raw.contains("\"sidecar\""),
+            "مقدار serialize باید camelCase باشد: {raw}"
+        );
+        let reloaded = load(&dir);
+        assert_eq!(
+            reloaded.processing.subtitle_output_mode,
+            SubtitleOutputMode::Sidecar
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

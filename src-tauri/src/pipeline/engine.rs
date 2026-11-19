@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::models::{AnalysisStatus, SubtitleKind, VideoEntry};
+use crate::settings::SubtitleOutputMode;
 use crate::state::AppState;
 use crate::subsource::plan::{
     create_download_plan, inspect_persian_sidecars, SkipReasonCode, SkippedDownload,
@@ -202,6 +203,7 @@ pub(crate) fn run_pipeline_body(
     };
     let settings = state.settings.lock().unwrap().clone();
     let sync_workers = settings.processing.sync_workers.max(1) as usize;
+    let softsub_mode = settings.processing.subtitle_output_mode == SubtitleOutputMode::SoftSub;
     let _tools = resolve_all_tools(state);
     ensure_running()?;
 
@@ -241,6 +243,8 @@ pub(crate) fn run_pipeline_body(
             sidecar_conflicts: Vec::new(),
             inspection_failed: false,
             has_sidecar: false,
+            embedded_stream_index: None,
+            generated_sync_input: false,
             archive_sources: Vec::new(),
         });
     }
@@ -282,7 +286,7 @@ pub(crate) fn run_pipeline_body(
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-                if synced {
+                if synced && !softsub_mode {
                     rt.outcome = Some(ItemOutcome::AlreadySynced);
                     counts.already_synced += 1;
                     rt.stage_status = StageStatus::Done;
@@ -307,12 +311,19 @@ pub(crate) fn run_pipeline_body(
     push_state!("تحلیل زیرنویس‌های داخلی…");
     let analyze_total = items
         .iter()
-        .filter(|rt| rt.outcome.is_none() && !rt.inspection_failed && rt.sidecar_valid.is_empty())
+        .filter(|rt| {
+            rt.outcome.is_none()
+                && !rt.inspection_failed
+                && (softsub_mode || rt.sidecar_valid.is_empty())
+        })
         .count() as u32;
     let mut analyze_done = 0u32;
     control.set_stage_progress(0, analyze_total);
     for rt in items.iter_mut() {
-        if rt.outcome.is_some() || rt.inspection_failed || !rt.sidecar_valid.is_empty() {
+        if rt.outcome.is_some()
+            || rt.inspection_failed
+            || (!softsub_mode && !rt.sidecar_valid.is_empty())
+        {
             continue; // این‌ها نیازی به تحلیل ندارند
         }
         if cancel.load(Ordering::SeqCst) {
@@ -353,11 +364,31 @@ pub(crate) fn run_pipeline_body(
     control.set_stage(PipelineStage::Extracting);
     push_state!("استخراج زیرنویس‌های داخلی…");
     let library: Vec<VideoEntry> = state.library.lock().unwrap().clone();
-    let extraction_plan = crate::commands::subtitle::plan_extraction_from_library(&library);
+    let extraction_library: Vec<VideoEntry> = library
+        .iter()
+        .filter(|entry| {
+            !softsub_mode
+                || items
+                    .iter()
+                    .find(|rt| rt.video_path == entry.path)
+                    .map(|rt| rt.sidecar_valid.is_empty())
+                    .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    let extraction_plan =
+        crate::commands::subtitle::plan_extraction_from_library(&extraction_library);
     // آماده‌ها (دقیقاً یک Track فارسی) — هستهٔ موجود execute_plan_items
     if !extraction_plan.items.is_empty() {
         let total = extraction_plan.items.len() as u64;
         control.set_stage_progress(0, total as u32);
+        // snapshot پایه هر آیتم از قبل گرفته می‌شود تا closure «شروع» به items
+        // دسترسی نداشته باشد و closure «پایان» بتواند items را mut کند —
+        // دو closure هم‌زمان نمی‌توانند items را هم read و هم mut بگیرند.
+        let base_snapshots: std::collections::HashMap<String, PipelineItemSnapshot> = items
+            .iter()
+            .map(|rt| (rt.video_path.clone(), rt.snapshot()))
+            .collect();
         let (success, _failed) = crate::commands::subtitle::execute_plan_items(
             state,
             total,
@@ -365,8 +396,7 @@ pub(crate) fn run_pipeline_body(
             &cancel,
             |p| {
                 // بازخورد آیتم‌محور: ردیف همان فایل «در حال پردازش» می‌شود
-                if let Some(rt) = items.iter().find(|rt| rt.video_path == p.video_path) {
-                    let mut snap = rt.snapshot();
+                if let Some(mut snap) = base_snapshots.get(&p.video_path).cloned() {
                     snap.stage = PipelineStage::Extracting;
                     snap.stage_status = StageStatus::InProgress;
                     control.put_item_snapshot(snap.clone());
@@ -392,7 +422,17 @@ pub(crate) fn run_pipeline_body(
             },
             |updated| {
                 // پایان استخراج همان فایل — نتیجهٔ واقعی روی ردیف می‌نشیند
-                if let Some(rt) = items.iter().find(|rt| rt.video_path == updated.path) {
+                if let Some(rt) = items.iter_mut().find(|rt| rt.video_path == updated.path) {
+                    if let Some(extraction) = updated
+                        .analysis
+                        .as_ref()
+                        .and_then(|analysis| analysis.last_extraction.as_ref())
+                    {
+                        rt.has_sidecar = true;
+                        rt.generated_sync_input = true;
+                        rt.embedded_stream_index = Some(extraction.stream_index);
+                        rt.artifacts.sync_input_path = Some(extraction.target_path.clone());
+                    }
                     let mut snap = rt.snapshot();
                     snap.stage = PipelineStage::Extracting;
                     snap.stage_status = if updated
@@ -442,6 +482,44 @@ pub(crate) fn run_pipeline_body(
             emit_item(control, sink, rt);
             continue;
         };
+        // در SoftSub، اگر sidecar معتبر از قبل موجود باشد، آن را مبنای سینک نگه می‌داریم
+        // اما برای جلوگیری از دو Track فارسی، Track داخلیِ یکتای فارسی را هم شناسایی می‌کنیم.
+        if softsub_mode && !rt.sidecar_valid.is_empty() {
+            match analysis.status {
+                AnalysisStatus::PersianTextTrackFound => {
+                    let candidates: Vec<u32> = analysis
+                        .streams
+                        .iter()
+                        .filter(|stream| {
+                            stream.kind == SubtitleKind::Text
+                                && (stream.persian_candidate || stream.persian_confirmed)
+                        })
+                        .map(|stream| stream.stream_index)
+                        .collect();
+                    if candidates.len() == 1 {
+                        rt.embedded_stream_index = candidates.first().copied();
+                        rt.stage_status = StageStatus::Done;
+                    } else {
+                        rt.stage_status = StageStatus::Skipped {
+                            reason: "Track داخلی فارسی یکتا برای جایگزینی پیدا نشد؛ Trackهای موجود حفظ می‌شوند".into(),
+                        };
+                    }
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+                AnalysisStatus::Extracted => {
+                    rt.embedded_stream_index = analysis
+                        .last_extraction
+                        .as_ref()
+                        .map(|extraction| extraction.stream_index);
+                    rt.stage_status = StageStatus::Done;
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
         match analysis.status {
             AnalysisStatus::NeedsTrackSelection => {
                 // D1: چند Track متنی فارسی → انتخاب صریح کاربر
@@ -485,6 +563,12 @@ pub(crate) fn run_pipeline_body(
                     emit_item(control, sink, rt);
                     continue;
                 }
+                if softsub_mode && !rt.sidecar_valid.is_empty() {
+                    rt.embedded_stream_index = Some(stream_index);
+                    rt.stage_status = StageStatus::Done;
+                    emit_item(control, sink, rt);
+                    continue;
+                }
                 match crate::commands::subtitle::run_extract_blocking(
                     state,
                     &rt.video_path,
@@ -493,6 +577,8 @@ pub(crate) fn run_pipeline_body(
                 ) {
                     Ok(extracted) => {
                         rt.has_sidecar = true;
+                        rt.generated_sync_input = true;
+                        rt.embedded_stream_index = Some(stream_index);
                         rt.artifacts.sync_input_path = Some(extracted.target_path.clone());
                         rt.stage_status = StageStatus::Done;
                         counts.extracted += 1;
@@ -536,29 +622,42 @@ pub(crate) fn run_pipeline_body(
                     &cancel,
                 ) {
                     Ok(review) if review.persian_confirmed => {
-                        match crate::commands::subtitle::promote_review_core(
-                            state,
-                            &rt.video_path,
-                            stream_index,
-                        ) {
-                            Ok(updated) => {
-                                rt.has_sidecar = true;
-                                rt.artifacts.sync_input_path = updated
-                                    .analysis
-                                    .as_ref()
-                                    .and_then(|a| a.last_extraction.as_ref())
-                                    .map(|e| e.target_path.clone());
-                                rt.stage_status = StageStatus::Done;
-                                counts.extracted += 1;
-                                super::emit_to(
-                                    sink,
-                                    PipelineEvent::LibraryEntry { entry: updated },
-                                );
-                            }
-                            Err(err) => {
-                                rt.stage_status = StageStatus::Failed {
-                                    reason: err.clone(),
-                                };
+                        if softsub_mode && !rt.sidecar_valid.is_empty() {
+                            // زیرنویس کناری مبنای sync است؛ Review فقط Track داخلیِ
+                            // قابل‌جایگزینی را تأیید می‌کند و sidecar جدید نمی‌سازد.
+                            rt.embedded_stream_index = Some(stream_index);
+                            rt.stage_status = StageStatus::Done;
+                        } else {
+                            match crate::commands::subtitle::promote_review_core(
+                                state,
+                                &rt.video_path,
+                                stream_index,
+                            ) {
+                                Ok(updated) => {
+                                    rt.has_sidecar = true;
+                                    rt.generated_sync_input = true;
+                                    rt.embedded_stream_index = updated
+                                        .analysis
+                                        .as_ref()
+                                        .and_then(|a| a.last_extraction.as_ref())
+                                        .map(|e| e.stream_index);
+                                    rt.artifacts.sync_input_path = updated
+                                        .analysis
+                                        .as_ref()
+                                        .and_then(|a| a.last_extraction.as_ref())
+                                        .map(|e| e.target_path.clone());
+                                    rt.stage_status = StageStatus::Done;
+                                    counts.extracted += 1;
+                                    super::emit_to(
+                                        sink,
+                                        PipelineEvent::LibraryEntry { entry: updated },
+                                    );
+                                }
+                                Err(err) => {
+                                    rt.stage_status = StageStatus::Failed {
+                                        reason: err.clone(),
+                                    };
+                                }
                             }
                         }
                     }
@@ -589,13 +688,14 @@ pub(crate) fn run_pipeline_body(
             }
             AnalysisStatus::Extracted => {
                 rt.has_sidecar = true;
-                // ورودی سینک از استخراجِ همین اجرا — بدون این، ویدیو بدون
-                // outcome از مرحلهٔ سینک عبور می‌کند
+                // ورودی سینک از استخراج قبلی؛ فقط اگر همین اجرا آن را نساخته
+                // باشد، پس از SoftSub هم به‌عنوان فایل کاربر حفظ می‌شود.
                 if let Some(extraction) = entry
                     .analysis
                     .as_ref()
                     .and_then(|a| a.last_extraction.as_ref())
                 {
+                    rt.embedded_stream_index = Some(extraction.stream_index);
                     rt.artifacts.sync_input_path = Some(extraction.target_path.clone());
                 }
                 rt.stage_status = StageStatus::Done;
@@ -925,6 +1025,7 @@ pub(crate) fn run_pipeline_body(
                     AIS::Placed => {
                         items[pos].stage_status = StageStatus::Done;
                         items[pos].has_sidecar = true;
+                        items[pos].generated_sync_input = true;
                         counts.archives_placed += 1;
                         if let Some(out) = &item.output_path {
                             items[pos].artifacts.sync_input_path = Some(out.clone());
@@ -1005,7 +1106,7 @@ pub(crate) fn run_pipeline_body(
                     .valid
                     .iter()
                     .any(|p| is_synced_name(&p.to_string_lossy()));
-                if synced {
+                if synced && !softsub_mode {
                     rt.outcome = Some(ItemOutcome::AlreadySynced);
                     counts.already_synced += 1;
                     rt.stage_status = StageStatus::Done;
@@ -1013,7 +1114,7 @@ pub(crate) fn run_pipeline_body(
                     let normal: Vec<PathBuf> = inspection
                         .valid
                         .iter()
-                        .filter(|p| !is_synced_name(&p.to_string_lossy()))
+                        .filter(|p| softsub_mode || !is_synced_name(&p.to_string_lossy()))
                         .cloned()
                         .collect();
                     match normal.len() {
@@ -1238,6 +1339,79 @@ pub(crate) fn run_pipeline_body(
                     continue;
                 };
                 let video = PathBuf::from(&rt.video_path);
+                if softsub_mode {
+                    let mux_result = (|| {
+                        let ffmpeg_exe = crate::commands::media::resolve_tool(state, "ffmpeg")
+                            .map_err(|error| {
+                                crate::subtitle::mux::MuxError::Probe(format!(
+                                    "ابزار FFmpeg برای ساخت SoftSub در دسترس نیست: {error}"
+                                ))
+                            })?;
+                        let ffprobe_exe = crate::commands::media::resolve_tool(state, "ffprobe")
+                            .map_err(|error| {
+                                crate::subtitle::mux::MuxError::Probe(format!(
+                                "ابزار FFprobe برای بررسی استریم‌های ویدیو در دسترس نیست: {error}"
+                            ))
+                            })?;
+                        crate::subtitle::mux::softsub_in_place(
+                            &ffmpeg_exe,
+                            &ffprobe_exe,
+                            &video,
+                            &candidate,
+                            rt.embedded_stream_index,
+                            &cancel,
+                        )
+                    })();
+                    match mux_result {
+                        Ok(success) => {
+                            let mut completed_outcome = outcome;
+                            let discard_warnings = completed_outcome
+                                .take_workspace()
+                                .map(|handle| handle.discard())
+                                .unwrap_or_default();
+                            for warning in discard_warnings {
+                                control.push_warning(warning);
+                            }
+                            if let Some(warning) = success.cleanup_warning {
+                                control.push_warning(warning);
+                            }
+                            if let Some(warning) = remove_generated_sync_input(rt) {
+                                control.push_warning(warning);
+                            }
+                            rt.outcome = Some(ItemOutcome::SoftSubbed {
+                                video_path: rt.video_path.clone(),
+                            });
+                            rt.artifacts.offset_seconds = completed_outcome.offset_seconds;
+                            counts.softsubbed += 1;
+                            rt.stage_status = StageStatus::Done;
+                            refresh_entry_siblings(state, &rt.video_path, sink);
+                        }
+                        Err(crate::subtitle::mux::MuxError::Cancelled) => {
+                            rt.artifacts.sync_candidate_path = outcome
+                                .workspace_display_root()
+                                .map(|path| path.to_string_lossy().into_owned());
+                            rt.stage_status = StageStatus::Failed {
+                                reason: "عملیات SoftSub لغو شد؛ فایل اصلی تغییر نکرد".into(),
+                            };
+                            emit_item(control, sink, rt);
+                            mark_all_cancelled(control);
+                            return Err(PipelineError::Cancelled);
+                        }
+                        Err(error) => {
+                            rt.outcome = Some(ItemOutcome::Failed {
+                                reason: format!("ساخت SoftSub ناموفق بود: {error}"),
+                            });
+                            rt.artifacts.sync_candidate_path = outcome
+                                .workspace_display_root()
+                                .map(|path| path.to_string_lossy().into_owned());
+                            counts.failed += 1;
+                            rt.stage_status = StageStatus::Done;
+                        }
+                    }
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+
                 let target = video.parent().unwrap_or(Path::new(".")).join(format!(
                     "{}.fa.synced.srt",
                     video.file_stem().unwrap_or_default().to_string_lossy()
@@ -1612,6 +1786,37 @@ fn refresh_sidecar_flags(
     }
 }
 
+/// فقط فایل زیرنویسی را حذف می‌کند که همین اجرای pipeline ساخته است؛
+/// فایل‌های قبلی کاربر یا فایل‌های خارج از پوشهٔ ویدیو هرگز حذف نمی‌شوند.
+fn remove_generated_sync_input(rt: &ItemRuntime) -> Option<String> {
+    if !rt.generated_sync_input {
+        return None;
+    }
+    let video = Path::new(&rt.video_path);
+    let input = rt.artifacts.sync_input_path.as_deref()?;
+    let subtitle = Path::new(input);
+    if subtitle == video || subtitle.parent() != video.parent() {
+        return Some(format!(
+            "فایل موقت زیرنویس به‌صورت خودکار حذف نشد و برای بررسی حفظ شد: {input}"
+        ));
+    }
+    match std::fs::symlink_metadata(subtitle) {
+        Ok(metadata)
+            if metadata.is_file() && !crate::archive::listing::is_link_or_reparse(&metadata) =>
+        {
+            std::fs::remove_file(subtitle).err().map(|error| {
+                format!("SoftSub موفق بود اما حذف زیرنویس موقت ناموفق شد: {input} ({error})")
+            })
+        }
+        Ok(_) => Some(format!(
+            "زیرنویس موقت حذف نشد چون دیگر یک فایل معمولی امن نیست: {input}"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => Some(format!(
+            "بررسی زیرنویس موقت برای حذف ناموفق بود؛ فایل حفظ شد: {input} ({error})"
+        )),
+    }
+}
 fn refresh_entry_siblings(state: &AppState, video_path: &str, sink: &super::SinkStore) {
     let Some(mut entry) = crate::commands::media::get_entry(state, video_path) else {
         return;

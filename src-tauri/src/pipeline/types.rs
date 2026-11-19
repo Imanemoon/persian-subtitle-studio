@@ -81,6 +81,10 @@ pub enum ItemOutcome {
     Synced {
         output_path: String,
     },
+    /// زیرنویس سینک‌شده با موفقیت داخل خود ویدیو قرار گرفت.
+    SoftSubbed {
+        video_path: String,
+    },
     /// کیفیت هم‌ترازی پایین بود — ورودی دست‌نخورده ماند
     UnchangedLowQuality,
     /// برای دانلود به API key نیاز دارد (فقط ویدیوهای واقعاً نیازمند دانلود)
@@ -172,6 +176,7 @@ pub struct PipelineCounts {
     pub downloaded: u64,
     pub archives_placed: u64,
     pub synced: u64,
+    pub softsubbed: u64,
     pub unchanged_low_quality: u64,
     pub already_synced: u64,
     pub conflicts: u64,
@@ -323,6 +328,10 @@ pub(crate) struct ItemRuntime {
     pub inspection_failed: bool,
     /// آیا استخراج/بررسی/جانمایی موفق sidecar تازه ساخته است
     pub has_sidecar: bool,
+    /// stream داخلی فارسی‌ای که در SoftSub با نسخهٔ سینک‌شده جایگزین می‌شود.
+    pub embedded_stream_index: Option<u32>,
+    /// ورودی sync در همین اجرای pipeline ساخته شده و پس از mux موفق قابل حذف است.
+    pub generated_sync_input: bool,
     /// آرشیوهای دانلودشدهٔ متناظر این ویدیو
     pub archive_sources: Vec<crate::subsource::plan::ArchiveSource>,
 }

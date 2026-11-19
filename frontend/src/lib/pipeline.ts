@@ -82,6 +82,8 @@ export function outcomeBadge(outcome: ItemOutcome): {
   switch (outcome.kind) {
     case "synced":
       return { tone: "success", label: "سینک شد" };
+    case "softSubbed":
+      return { tone: "success", label: "SoftSub شد" };
     case "alreadySynced":
       return { tone: "success", label: "از قبل سینک‌شده" };
     case "unchangedLowQuality":
@@ -172,6 +174,10 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
     case "synced": {
       const name = fileBaseName(outcome.outputPath);
       return name ? `خروجی: ${name}` : null;
+    }
+    case "softSubbed": {
+      const name = fileBaseName(outcome.videoPath);
+      return name ? `زیرنویس فارسی داخل ${name} قرار گرفت` : "زیرنویس فارسی داخل ویدیو قرار گرفت";
     }
     case "outputConflict": {
       const name = fileBaseName(outcome.preservedPath);
