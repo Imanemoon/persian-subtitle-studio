@@ -55,8 +55,9 @@ const JSON_UNTAGGED: &str =
 /// JSON پروب: بدون زیرنویس داخلی → مسیر sidecar/دانلود
 const JSON_NONE: &str = r#"{"streams": []}"#;
 
-/// ffsubsync جعلی — مود از فایل کنارش خوانده می‌شود (کپی اسکریپت تست‌های سینک)
-const FAKE_FFS_SCRIPT: &str = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset MODE=\r\nif exist \"%~dp0.fake_ffs_mode\" set /p MODE=<\"%~dp0.fake_ffs_mode\"\r\nset OUT=\r\nset IN=\r\nset PREV=\r\nfor %%A in (%*) do (\r\n  if \"!PREV!\"==\"-i\" set \"IN=%%~A\"\r\n  if \"!PREV!\"==\"-o\" set \"OUT=%%~A\"\r\n  set \"PREV=%%A\"\r\n)\r\nif \"%MODE%\"==\"success\" goto success\r\nif \"%MODE%\"==\"lowquality\" goto lowquality\r\nif \"%MODE%\"==\"fail\" goto fail\r\nif \"%MODE%\"==\"slow\" goto slow\r\nexit /b 9\r\n\r\n:success\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.234 1>&2\r\nexit /b 0\r\n\r\n:lowquality\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho low-quality alignment (score too low); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:fail\r\necho ffmpeg crashed badly 1>&2\r\nexit /b 3\r\n\r\n:slow\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho offset seconds: 1.234 1>&2\r\nping -n 31 127.0.0.1 >nul\r\nexit /b 0\r\n";
+/// ffsubsync جعلی — مود از فایل کنارش خوانده می‌شود (کپی اسکریپت تست‌های سینک).
+/// پارسر shift-based بدون `for %%A in (%*)` — مسیرهای دارای فاصله را سالم نگه می‌دارد.
+const FAKE_FFS_SCRIPT: &str = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset \"MODE=\"\r\nif exist \"%~dp0.fake_ffs_mode\" set /p MODE=<\"%~dp0.fake_ffs_mode\"\r\nset \"OUT=\"\r\nset \"IN=\"\r\nset \"VIDEO=\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i \"%~1\"==\"-i\" goto capi\r\nif /i \"%~1\"==\"-o\" goto capo\r\nif \"%VIDEO%\"==\"\" set \"VIDEO=%~1\"\r\nshift\r\ngoto loop\r\n:capi\r\nshift\r\nset \"IN=%~1\"\r\nshift\r\ngoto loop\r\n:capo\r\nshift\r\nset \"OUT=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\nif \"%MODE%\"==\"success\" goto success\r\nif \"%MODE%\"==\"lowquality\" goto lowquality\r\nif \"%MODE%\"==\"fail\" goto fail\r\nif \"%MODE%\"==\"slow\" goto slow\r\nexit /b 9\r\n\r\n:success\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.234 1>&2\r\nexit /b 0\r\n\r\n:lowquality\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho low-quality alignment (score too low); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:fail\r\necho ffmpeg crashed badly 1>&2\r\nexit /b 3\r\n\r\n:slow\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho offset seconds: 1.234 1>&2\r\nping -n 31 127.0.0.1 >nul\r\nexit /b 0\r\n";
 
 /// ffprobe جعلی: JSON هر ویدیو از `<tools>/<stem>.probe.json` خوانده می‌شود.
 /// توجه: `shift` در cmd مقدار %0 را هم جابه‌جا می‌کند — پس `%~dp0` باید
@@ -67,7 +68,9 @@ const FAKE_PROBE_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0\"\r\
 const FAKE_PROBE_SLOW_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0\"\r\necho started > \"%TOOLS%probe_started.marker\"\r\nfor /l %%i in (1,1,15000000) do @set /a x=%%i >nul\r\ntype \"%TOOLS%all.probe.json\"\r\n";
 
 /// ffmpeg جعلی: آخرین آرگومان = مقصد؛ محتوا بر اساس mode.
-const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i \"%~1\"==\"-i\" call :capture_input\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:capture_input\r\nset /a INPUTS+=1\r\nshift\r\nif \"!INPUTS!\"==\"1\" set \"FIRST=%~1\"\r\nexit /b\r\n:run\r\nif \"!INPUTS!\"==\"2\" goto mux\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:mux\r\nif /i \"%MODE%\"==\"mux-fail\" exit /b 9\r\nif /i \"%MODE%\"==\"mux-slow\" (\r\n  echo started > \"%TOOLS%mux_started.marker\"\r\n  ping -n 60 127.0.0.1 >nul\r\n)\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
+/// توجه: capture ورودی‌ها بدون `call` انجام می‌شود — `shift` داخل زیرروتین
+/// `call`-شده آرگومان‌های caller را نمی‌بیند و FIRST خالی می‌ماند.
+const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i not \"%~1\"==\"-i\" goto store\r\nshift\r\nset /a INPUTS+=1\r\nif \"%INPUTS%\"==\"1\" set \"FIRST=%~1\"\r\n:store\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\nif \"%INPUTS%\"==\"2\" goto mux\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:mux\r\necho %* > \"%TOOLS%mux_args.txt\"\r\nif /i \"%MODE%\"==\"mux-fail\" exit /b 9\r\nif /i \"%MODE%\"==\"mux-slow\" (\r\n  echo started > \"%TOOLS%mux_started.marker\"\r\n  ping -n 12 127.0.0.1 >nul\r\n)\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
 
 // ---------------------------------------------------------------------------
 // زیرساخت هارنس
@@ -186,10 +189,15 @@ impl Harness {
     }
 
     /// تمام سناریوهای قدیمی برای حفظ قرارداد قبلی در حالت sidecar اجرا می‌شوند.
-    fn sidecar(tag: &str) -> Self {
+    fn sidecar_mode(tag: &str) -> Self {
         let harness = Self::new(tag);
-        harness.state.settings.lock().unwrap().processing.subtitle_output_mode =
-            crate::settings::SubtitleOutputMode::Sidecar;
+        harness
+            .state
+            .settings
+            .lock()
+            .unwrap()
+            .processing
+            .subtitle_output_mode = crate::settings::SubtitleOutputMode::Sidecar;
         harness
     }
 
@@ -205,6 +213,12 @@ impl Harness {
     /// mode استخراج ffmpeg (success | latin | fail)
     fn set_ffmpeg_mode(&self, mode: &str) {
         fs::write(self.tools.join(".fake_ffmpeg_mode"), mode).unwrap();
+    }
+
+    /// آرگومان‌های ثبت‌شدهٔ آخرین فراخوانی mux جعلی — برای ادعای شکل invocation
+    /// (حفظ استریم‌ها / حذف فقط Track جایگزین‌شده).
+    fn mux_args(&self) -> Option<String> {
+        fs::read_to_string(self.tools.join("mux_args.txt")).ok()
     }
 
     /// ابزار subsource جعلی + marker mode در ریشهٔ فیکسچر (در مسیر ancestor
@@ -490,13 +504,31 @@ fn default_mode_embedded_persian_track_becomes_softsub_without_sidecars() {
     let after = h.video_bytes(&video);
     assert_ne!(after, before, "خروجی SoftSub باید جایگزین فایل اصلی شود");
     assert!(
-        after.windows(b"SOFTSUB-REMUX-MARKER".len()).any(|window| window == b"SOFTSUB-REMUX-MARKER"),
+        after
+            .windows(b"SOFTSUB-REMUX-MARKER".len())
+            .any(|window| window == b"SOFTSUB-REMUX-MARKER"),
         "نشانگر remux باید داخل فایل نهایی باشد"
     );
-    assert!(!placed_path(&video).exists(), "نباید sidecar سینک‌شده ساخته شود");
-    assert!(!extracted_path(&video).exists(), "فایل استخراج موقت پس از mux موفق پاک می‌شود");
+    assert!(
+        !placed_path(&video).exists(),
+        "نباید sidecar سینک‌شده ساخته شود"
+    );
+    assert!(
+        !extracted_path(&video).exists(),
+        "فایل استخراج موقت پس از mux موفق پاک می‌شود"
+    );
     assert_eq!(run.summary.counts.softsubbed, 1);
     assert!(run.decisions.is_empty());
+    // Track داخلی (index 2) باید حذف و نسخهٔ سینک‌شده جایگزین شود — بدون Track فارسی تکراری
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        args.contains("-0:2"),
+        "mux باید فقط Track داخلی فارسی را حذف کند: {args}"
+    );
+    assert!(
+        args.contains("1:0"),
+        "زیرنویس سینک‌شده باید ورودی دوم باشد: {args}"
+    );
 }
 
 #[test]
@@ -519,15 +551,27 @@ fn default_mode_downloads_missing_persian_subtitle_and_softsubs_mp4() {
     );
 
     assert_eq!(run.summary.status, PipelineStatus::Completed);
-    assert!(matches!(run.outcome(&video), ItemOutcome::SoftSubbed { .. }));
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
     let after = h.video_bytes(&video);
     assert_ne!(after, before);
-    assert!(after.windows(b"SOFTSUB-REMUX-MARKER".len()).any(|window| window == b"SOFTSUB-REMUX-MARKER"));
+    assert!(after
+        .windows(b"SOFTSUB-REMUX-MARKER".len())
+        .any(|window| window == b"SOFTSUB-REMUX-MARKER"));
     assert!(!placed_path(&video).exists());
     assert!(!extracted_path(&video).exists());
     assert_eq!(run.summary.counts.downloaded, 1);
     assert_eq!(run.summary.counts.archives_placed, 1);
     assert_eq!(run.summary.counts.softsubbed, 1);
+    // بدون Track داخلی فارسی، همهٔ استریم‌های قبلی حفظ می‌شوند — هیچ حذفی نباید
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        !args.contains("-0:"),
+        "بدون Track داخلی هیچ استریمی نباید حذف شود: {args}"
+    );
+    assert!(args.contains("1:0"), "زیرنویس باید ورودی دوم باشد: {args}");
 }
 
 #[test]
@@ -552,8 +596,15 @@ fn failed_softsub_remux_preserves_original_video_and_recovery_inputs() {
         ItemOutcome::Failed { reason } => assert!(reason.contains("SoftSub")),
         other => panic!("انتظار شکست SoftSub، دریافت: {other:?}"),
     }
-    assert_eq!(h.video_bytes(&video), before, "فایل اصلی در شکست mux باید دست‌نخورده بماند");
-    assert!(extracted_path(&video).exists(), "ورودی استخراج‌شده برای بازیابی حفظ می‌شود");
+    assert_eq!(
+        h.video_bytes(&video),
+        before,
+        "فایل اصلی در شکست mux باید دست‌نخورده بماند"
+    );
+    assert!(
+        extracted_path(&video).exists(),
+        "ورودی استخراج‌شده برای بازیابی حفظ می‌شود"
+    );
     assert!(run.artifacts(&video).sync_candidate_path.is_some());
 }
 
@@ -588,8 +639,260 @@ fn cancel_during_softsub_mux_leaves_original_video_untouched() {
 
     assert_eq!(run.summary.status, PipelineStatus::Cancelled);
     assert!(matches!(run.outcome(&video), ItemOutcome::Cancelled));
-    assert_eq!(h.video_bytes(&video), before, "لغو حین mux نباید فایل اصلی را تغییر دهد");
+    assert_eq!(
+        h.video_bytes(&video),
+        before,
+        "لغو حین mux نباید فایل اصلی را تغییر دهد"
+    );
     assert!(!placed_path(&video).exists());
+}
+
+/// SoftSub با sidecar از قبل سینک‌شده: در تضاد با حالت sidecar (AlreadySynced)،
+/// نسخهٔ سینک‌شدهٔ موجود به‌عنوان ورودی سینک استفاده و داخل ویدیو قرار می‌گیرد؛
+/// فایل کاربر حفظ می‌شود و هیچ Track داخلی‌ای حذف نمی‌شود (ویدیو Track ندارد).
+#[test]
+fn softsub_with_already_synced_sidecar_muxes_it_without_sidecar_outcome() {
+    let h = Harness::new("softsub-presynced");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E08.mkv");
+    h.probe_json(&video, JSON_NONE);
+    let sub = h.sidecar(&video, ".fa.synced.srt", SRT_FA_A);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    assert_eq!(
+        run.summary.counts.already_synced, 0,
+        "در SoftSub نباید AlreadySynced بماند"
+    );
+    assert_eq!(
+        fs::read(&sub).unwrap(),
+        SRT_FA_A.as_bytes(),
+        "sidecar کاربر حفظ شود"
+    );
+    let after = h.video_bytes(&video);
+    assert!(after
+        .windows(b"SOFTSUB-REMUX-MARKER".len())
+        .any(|w| w == b"SOFTSUB-REMUX-MARKER"));
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        !args.contains("-0:"),
+        "بدون Track داخلی هیچ استریمی حذف نمی‌شود: {args}"
+    );
+    assert_eq!(run.summary.counts.softsubbed, 1);
+    assert!(run.decisions.is_empty());
+}
+
+/// سناریوی مسیرهای ویندوز با فاصله و نویسه‌های فارسی — کل چرخهٔ SoftSub باید
+/// بدون هیچ خطای مسیری کار کند (آرگومان‌ها هرگز از shell عبور نمی‌کنند).
+#[test]
+fn softsub_handles_windows_paths_with_spaces_and_persian_characters() {
+    let h = Harness::new("softsub-persian-path");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let subdir = h.dir.join("lib").join("نمونه نمایش فصل ۱ - HD");
+    fs::create_dir_all(&subdir).unwrap();
+    let video = subdir.join("Show.S01E09.mkv");
+    fs::write(&video, b"FAKE-VIDEO-BYTES-DO-NOT-TOUCH").unwrap();
+    h.probe_json(&video, JSON_ONE_FA);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::SoftSubbed { video_path } => {
+            assert_eq!(Path::new(video_path), video.as_path());
+        }
+        other => panic!("انتظار SoftSubbed، دریافت: {other:?}"),
+    }
+    let after = h.video_bytes(&video);
+    assert!(
+        after
+            .windows(b"SOFTSUB-REMUX-MARKER".len())
+            .any(|w| w == b"SOFTSUB-REMUX-MARKER"),
+        "نشانگر remux باید داخل فایل نهایی باشد"
+    );
+    assert!(!placed_path(&video).exists());
+    assert!(!extracted_path(&video).exists());
+    assert_eq!(run.summary.counts.softsubbed, 1);
+}
+
+/// SoftSub با sidecar موجود کاربر: sidecar حفظ می‌شود (هرگز حذف نمی‌شود)،
+/// ویدیو remux می‌شود و Track داخلی فارسی یکتا جایگزین می‌شود — بدون Track تکراری.
+#[test]
+fn softsub_with_existing_sidecar_preserves_user_file_and_replaces_embedded_track() {
+    let h = Harness::new("softsub-sidecar");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E05.mkv");
+    h.probe_json(&video, JSON_ONE_FA);
+    let sub = h.sidecar(&video, ".fa.srt", SRT_FA_A);
+    let before = h.video_bytes(&video);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    // فایل کاربر دست‌نخورده می‌ماند — حتی پس از mux موفق
+    assert_eq!(
+        fs::read(&sub).unwrap(),
+        SRT_FA_A.as_bytes(),
+        "sidecar کاربر حفظ شود"
+    );
+    let after = h.video_bytes(&video);
+    assert_ne!(after, before, "ویدیو باید با نسخهٔ remux جایگزین شود");
+    assert!(after
+        .windows(b"SOFTSUB-REMUX-MARKER".len())
+        .any(|w| w == b"SOFTSUB-REMUX-MARKER"));
+    // Track داخلی یکتا (index 2) جایگزین می‌شود — بدون Track فارسی تکراری
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        args.contains("-0:2"),
+        "Track داخلی باید جایگزین شود: {args}"
+    );
+    assert_eq!(run.summary.counts.softsubbed, 1);
+    assert!(
+        run.decisions.is_empty(),
+        "با sidecar موجود هیچ تصمیمی لازم نیست"
+    );
+}
+
+/// چند Track داخلی فارسی + sidecar موجود: انتخاب Track جایگزین‌شدنی تصمیم صریح
+/// کاربر است؛ Track انتخابی حذف و نسخهٔ سینک‌شده جایگزین می‌شود و sidecar حفظ می‌شود.
+#[test]
+fn softsub_with_ambiguous_embedded_tracks_asks_which_track_to_replace() {
+    let h = Harness::new("softsub-ambiguous");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E06.mkv");
+    h.probe_json(&video, JSON_TWO_FA);
+    let sub = h.sidecar(&video, ".fa.srt", SRT_FA_A);
+    let before = h.video_bytes(&video);
+
+    let st = Arc::clone(&h.state);
+    let resolver: Resolver = Arc::new(move |decision: &PendingDecision| {
+        assert_eq!(decision.kind, crate::pipeline::DecisionKind::EmbeddedTrack);
+        assert_eq!(
+            decision.options.len(),
+            2,
+            "دو Track فارسی باید دو گزینه بدهند"
+        );
+        // کاربر Track دوم (index 3) را برای جایگزینی انتخاب می‌کند
+        let chosen = decision
+            .options
+            .iter()
+            .find(|o| {
+                matches!(
+                    &o.payload,
+                    crate::pipeline::DecisionOptionPayload::EmbeddedTrack {
+                        stream_index: 3,
+                        ..
+                    }
+                )
+            })
+            .expect("گزینهٔ Track دوم باید موجود باشد");
+        resolve_decision_core(&st, &decision.decision_id, &chosen.option_id).expect("resolve");
+    });
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        Some(resolver),
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert_eq!(run.decisions.len(), 1);
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    assert_eq!(
+        fs::read(&sub).unwrap(),
+        SRT_FA_A.as_bytes(),
+        "sidecar کاربر حفظ شود"
+    );
+    assert_ne!(
+        h.video_bytes(&video),
+        before,
+        "ویدیو باید با نسخهٔ remux جایگزین شود"
+    );
+    // فقط Track انتخاب‌شدهٔ کاربر (index 3) حذف می‌شود
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        args.contains("-0:3"),
+        "فقط Track انتخابی باید حذف شود: {args}"
+    );
+    assert_eq!(run.summary.counts.softsubbed, 1);
+}
+
+/// SoftSub برای Track بدون تگ فارسی که با review محتوا تأیید شده — نسخهٔ سینک‌شده
+/// جایگزین همان Track می‌شود (regression: probe تازه فارسی‌بودنِ تأییدشده با
+/// محتوا را نمی‌داند و نباید mux را رد کند).
+#[test]
+fn softsub_review_confirmed_untagged_track_is_replaced_not_rejected() {
+    let h = Harness::new("softsub-untagged");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E07.mkv");
+    h.probe_json(&video, JSON_UNTAGGED);
+
+    let st = Arc::clone(&h.state);
+    let resolver: Resolver = Arc::new(move |decision: &PendingDecision| {
+        assert_eq!(decision.kind, crate::pipeline::DecisionKind::ReviewTrack);
+        resolve_decision_core(&st, &decision.decision_id, &decision.options[0].option_id)
+            .expect("resolve باید موفق باشد");
+    });
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        Some(resolver),
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    // Track بدون تگ (index 2) که با review تأیید شد جایگزین می‌شود
+    let args = h.mux_args().expect("mux جعلی باید فراخوانی شود");
+    assert!(
+        args.contains("-0:2"),
+        "Track تأییدشده با review باید جایگزین شود: {args}"
+    );
+    // فایل استخراجِ موقتِ همین اجرا پس از mux موفق پاک می‌شود
+    assert!(!extracted_path(&video).exists());
+    assert_eq!(run.summary.counts.softsubbed, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,7 +902,7 @@ fn cancel_during_softsub_mux_leaves_original_video_untouched() {
 /// سناریو ۱+۱۲: ویدیو با Track فارسی معتبر → استخراج خودکار → سینک → جانمایی.
 #[test]
 fn embedded_valid_persian_track_is_extracted_synced_and_placed() {
-    let h = Harness::sidecar("embedded-fa");
+    let h = Harness::sidecar_mode("embedded-fa");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E01.mkv");
@@ -643,7 +946,7 @@ fn embedded_valid_persian_track_is_extracted_synced_and_placed() {
 /// سناریو ۲: Track مشکوک/بدون نشانه → تصمیم review صریح → تأیید → سینک.
 #[test]
 fn untagged_track_requires_explicit_review_decision() {
-    let h = Harness::new("untagged-review");
+    let h = Harness::sidecar_mode("untagged-review");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E02.mkv");
@@ -681,7 +984,7 @@ fn untagged_track_requires_explicit_review_decision() {
 /// سناریو ۳: دقیقاً یک sidecar معتبر → بدون هیچ تصمیم، سینک خودکار.
 #[test]
 fn single_valid_sidecar_syncs_without_any_decision() {
-    let h = Harness::new("single-sidecar");
+    let h = Harness::sidecar_mode("single-sidecar");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E03.mkv");
@@ -716,7 +1019,7 @@ fn single_valid_sidecar_syncs_without_any_decision() {
 /// سناریو ۴: دو sidecar معتبر → تصمیم صریح؛ انتخاب کاربر سینک می‌شود.
 #[test]
 fn multiple_sidecars_require_explicit_user_choice() {
-    let h = Harness::new("multi-sidecar");
+    let h = Harness::sidecar_mode("multi-sidecar");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E04.mkv");
@@ -801,7 +1104,7 @@ fn corrupted_sidecar_is_reported_as_conflict_and_never_used() {
 /// سناریو ۶+۹: دانلود موفق → آرشیو با یک عضو منطبق → استخراج → سینک → جانمایی.
 #[test]
 fn download_success_flows_through_archive_to_placed_sync() {
-    let h = Harness::new("download-ok");
+    let h = Harness::sidecar_mode("download-ok");
     h.set_ffs("success");
     h.set_subsource_tool("write-manifest-archives");
     h.set_seven_zip_tool();
@@ -932,7 +1235,7 @@ fn download_failure_is_typed_not_masked() {
 /// سناریو ۱۰: آرشیو با ابهام → تصمیم صریح کاربر → عضو انتخابی سینک می‌شود.
 #[test]
 fn ambiguous_archive_requires_explicit_user_choice() {
-    let h = Harness::new("archive-ambiguous");
+    let h = Harness::sidecar_mode("archive-ambiguous");
     h.set_ffs("success");
     h.set_subsource_tool("write-manifest-archives-ambiguous");
     h.set_seven_zip_tool();
@@ -1055,7 +1358,7 @@ fn ffsubsync_failure_keeps_inputs_untouched() {
 /// workspace موفق اما بی‌جانمایی برای بازیابی حفظ می‌شود.
 #[test]
 fn output_collision_preserves_both_files_and_recovers_workspace() {
-    let h = Harness::new("collision");
+    let h = Harness::sidecar_mode("collision");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E14.mkv");
@@ -1113,7 +1416,7 @@ fn output_collision_preserves_both_files_and_recovers_workspace() {
 /// ویدیوی دیگر به کار خود ادامه می‌دهد.
 #[test]
 fn missing_source_midrun_fails_only_that_video() {
-    let h = Harness::new("missing-midrun");
+    let h = Harness::sidecar_mode("missing-midrun");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     // Alpha: دو تراک فارسی → تصمیم (قلاب هم‌زمان‌بندی‌شده برای حذف Beta)
@@ -1163,7 +1466,7 @@ fn missing_source_midrun_fails_only_that_video() {
 /// تضمین: مسیرهای تکراری در ورودی → یک آیتم (یک job سینک به ازای هر ویدیو).
 #[test]
 fn duplicate_input_paths_collapse_to_one_item() {
-    let h = Harness::new("dup-paths");
+    let h = Harness::sidecar_mode("dup-paths");
     h.set_ffs("success");
     let video = h.video("Show.S01E15.mkv");
     h.probe_json(&video, JSON_NONE);
@@ -1187,7 +1490,7 @@ fn duplicate_input_paths_collapse_to_one_item() {
 /// خطا می‌دهد.
 #[test]
 fn snapshot_midrun_supports_reconnect_and_stale_decision_is_rejected() {
-    let h = Harness::new("reconnect");
+    let h = Harness::sidecar_mode("reconnect");
     h.set_ffs("success");
     let video = h.video("Show.S01E16.mkv");
     h.probe_json(&video, JSON_TWO_FA); // → تصمیم
