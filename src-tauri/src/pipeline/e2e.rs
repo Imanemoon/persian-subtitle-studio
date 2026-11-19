@@ -460,6 +460,139 @@ fn extracted_path(video: &Path) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// سناریوهای جدید خروجی SoftSub (حالت پیش‌فرض)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_mode_embedded_persian_track_becomes_softsub_without_sidecars() {
+    let h = Harness::new("softsub-embedded");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E01.mkv");
+    h.probe_json(&video, JSON_ONE_FA);
+    let before = h.video_bytes(&video);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::SoftSubbed { video_path } => {
+            assert_eq!(Path::new(video_path), video.as_path());
+        }
+        other => panic!("انتظار SoftSubbed، دریافت: {other:?}"),
+    }
+    let after = h.video_bytes(&video);
+    assert_ne!(after, before, "خروجی SoftSub باید جایگزین فایل اصلی شود");
+    assert!(
+        after.windows(b"SOFTSUB-REMUX-MARKER".len()).any(|window| window == b"SOFTSUB-REMUX-MARKER"),
+        "نشانگر remux باید داخل فایل نهایی باشد"
+    );
+    assert!(!placed_path(&video).exists(), "نباید sidecar سینک‌شده ساخته شود");
+    assert!(!extracted_path(&video).exists(), "فایل استخراج موقت پس از mux موفق پاک می‌شود");
+    assert_eq!(run.summary.counts.softsubbed, 1);
+    assert!(run.decisions.is_empty());
+}
+
+#[test]
+fn default_mode_downloads_missing_persian_subtitle_and_softsubs_mp4() {
+    let h = Harness::new("softsub-download");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    h.set_subsource_tool("write-manifest-archives");
+    h.set_seven_zip_tool();
+    let video = h.video("Show.S01E02.mp4");
+    h.probe_json(&video, JSON_NONE);
+    let before = h.video_bytes(&video);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Present("k-test"),
+        Some(h.dir.clone()),
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(matches!(run.outcome(&video), ItemOutcome::SoftSubbed { .. }));
+    let after = h.video_bytes(&video);
+    assert_ne!(after, before);
+    assert!(after.windows(b"SOFTSUB-REMUX-MARKER".len()).any(|window| window == b"SOFTSUB-REMUX-MARKER"));
+    assert!(!placed_path(&video).exists());
+    assert!(!extracted_path(&video).exists());
+    assert_eq!(run.summary.counts.downloaded, 1);
+    assert_eq!(run.summary.counts.archives_placed, 1);
+    assert_eq!(run.summary.counts.softsubbed, 1);
+}
+
+#[test]
+fn failed_softsub_remux_preserves_original_video_and_recovery_inputs() {
+    let h = Harness::new("softsub-fail");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("mux-fail");
+    let video = h.video("Show.S01E03.mkv");
+    h.probe_json(&video, JSON_ONE_FA);
+    let before = h.video_bytes(&video);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::Failed { reason } => assert!(reason.contains("SoftSub")),
+        other => panic!("انتظار شکست SoftSub، دریافت: {other:?}"),
+    }
+    assert_eq!(h.video_bytes(&video), before, "فایل اصلی در شکست mux باید دست‌نخورده بماند");
+    assert!(extracted_path(&video).exists(), "ورودی استخراج‌شده برای بازیابی حفظ می‌شود");
+    assert!(run.artifacts(&video).sync_candidate_path.is_some());
+}
+
+#[test]
+fn cancel_during_softsub_mux_leaves_original_video_untouched() {
+    let h = Harness::new("softsub-cancel");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("mux-slow");
+    let video = h.video("Show.S01E04.mkv");
+    h.probe_json(&video, JSON_ONE_FA);
+    let before = h.video_bytes(&video);
+
+    let st = Arc::clone(&h.state);
+    let marker = h.tools.join("mux_started.marker");
+    let watcher = std::thread::spawn(move || {
+        let start = Instant::now();
+        while !marker.exists() && start.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.exists(), "فرایند remux باید شروع شده باشد");
+        assert!(cancel_active_pipeline(&st).expect("لغو"));
+    });
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+    );
+    watcher.join().expect("watcher");
+
+    assert_eq!(run.summary.status, PipelineStatus::Cancelled);
+    assert!(matches!(run.outcome(&video), ItemOutcome::Cancelled));
+    assert_eq!(h.video_bytes(&video), before, "لغو حین mux نباید فایل اصلی را تغییر دهد");
+    assert!(!placed_path(&video).exists());
+}
+
+// ---------------------------------------------------------------------------
 // سناریوهای محتوایی (۱ تا ۱۳، ۱۸ تا ۲۲)
 // ---------------------------------------------------------------------------
 
