@@ -675,13 +675,14 @@ pub(crate) fn run_pipeline_body(
             }
             AnalysisStatus::Extracted => {
                 rt.has_sidecar = true;
-                // ورودی سینک از استخراجِ همین اجرا — بدون این، ویدیو بدون
-                // outcome از مرحلهٔ سینک عبور می‌کند
+                // ورودی سینک از استخراج قبلی؛ فقط اگر همین اجرا آن را نساخته
+                // باشد، پس از SoftSub هم به‌عنوان فایل کاربر حفظ می‌شود.
                 if let Some(extraction) = entry
                     .analysis
                     .as_ref()
                     .and_then(|a| a.last_extraction.as_ref())
                 {
+                    rt.embedded_stream_index = Some(extraction.stream_index);
                     rt.artifacts.sync_input_path = Some(extraction.target_path.clone());
                 }
                 rt.stage_status = StageStatus::Done;
@@ -1325,6 +1326,71 @@ pub(crate) fn run_pipeline_body(
                     continue;
                 };
                 let video = PathBuf::from(&rt.video_path);
+                if softsub_mode {
+                    let ffprobe_exe = crate::commands::media::resolve_tool(state, "ffprobe");
+                    let mux_result = match ffprobe_exe {
+                        Ok(ffprobe_exe) => crate::subtitle::mux::softsub_in_place(
+                            &ffmpeg_resolved_path(state)?,
+                            &ffprobe_exe,
+                            &video,
+                            &candidate,
+                            rt.embedded_stream_index,
+                            &cancel,
+                        ),
+                        Err(error) => Err(crate::subtitle::mux::MuxError::Probe(format!(
+                            "ابزار FFprobe برای بررسی استریم‌های ویدیو در دسترس نیست: {error}"
+                        ))),
+                    };
+                    match mux_result {
+                        Ok(success) => {
+                            let mut completed_outcome = outcome;
+                            let discard_warnings = completed_outcome
+                                .take_workspace()
+                                .map(|handle| handle.discard())
+                                .unwrap_or_default();
+                            for warning in discard_warnings {
+                                control.push_warning(warning);
+                            }
+                            if let Some(warning) = success.cleanup_warning {
+                                control.push_warning(warning);
+                            }
+                            if let Some(warning) = remove_generated_sync_input(rt) {
+                                control.push_warning(warning);
+                            }
+                            rt.outcome = Some(ItemOutcome::SoftSubbed {
+                                video_path: rt.video_path.clone(),
+                            });
+                            rt.artifacts.offset_seconds = completed_outcome.offset_seconds;
+                            counts.softsubbed += 1;
+                            rt.stage_status = StageStatus::Done;
+                            refresh_entry_siblings(state, &rt.video_path, sink);
+                        }
+                        Err(crate::subtitle::mux::MuxError::Cancelled) => {
+                            rt.artifacts.sync_candidate_path = outcome
+                                .workspace_display_root()
+                                .map(|path| path.to_string_lossy().into_owned());
+                            rt.stage_status = StageStatus::Failed {
+                                reason: "عملیات SoftSub لغو شد؛ فایل اصلی تغییر نکرد".into(),
+                            };
+                            emit_item(control, sink, rt);
+                            mark_all_cancelled(control);
+                            return Err(PipelineError::Cancelled);
+                        }
+                        Err(error) => {
+                            rt.outcome = Some(ItemOutcome::Failed {
+                                reason: format!("ساخت SoftSub ناموفق بود: {error}"),
+                            });
+                            rt.artifacts.sync_candidate_path = outcome
+                                .workspace_display_root()
+                                .map(|path| path.to_string_lossy().into_owned());
+                            counts.failed += 1;
+                            rt.stage_status = StageStatus::Done;
+                        }
+                    }
+                    emit_item(control, sink, rt);
+                    continue;
+                }
+
                 let target = video.parent().unwrap_or(Path::new(".")).join(format!(
                     "{}.fa.synced.srt",
                     video.file_stem().unwrap_or_default().to_string_lossy()
