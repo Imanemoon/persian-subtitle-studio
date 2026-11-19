@@ -487,6 +487,30 @@ export function SettingsPage() {
       <Card className="p-5">
         <SectionTitle icon={Check} title="پردازش و سینک (فاز ۳ و ۴)" />
         <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="subtitle-output-mode" className="w-56 shrink-0 text-sm text-ink-2">
+              نحوهٔ ذخیرهٔ زیرنویس
+            </label>
+            <select
+              id="subtitle-output-mode"
+              value={draft.processing.subtitleOutputMode}
+              onChange={(e) =>
+                patch({
+                  processing: {
+                    ...draft.processing,
+                    subtitleOutputMode: e.target.value as "softSub" | "sidecar",
+                  },
+                })
+              }
+              className="h-10 min-w-52 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            >
+              <option value="softSub">SoftSub — داخل فایل ویدیو (پیش‌فرض)</option>
+              <option value="sidecar">فایل جدا کنار ویدیو (سازگار با تلویزیون‌ها)</option>
+            </select>
+          </div>
+          <p className="text-xs leading-6 text-ink-3">
+            در حالت SoftSub، زیرنویس فارسیِ سینک‌شده داخل ویدیو قرار می‌گیرد. حالت فایل جدا، رفتار قبلی برنامه را حفظ می‌کند.
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             <span className="w-56 shrink-0 text-sm text-ink-2">تعداد Workerهای هم‌زمان سینک</span>
             <input
