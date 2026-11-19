@@ -1327,20 +1327,24 @@ pub(crate) fn run_pipeline_body(
                 };
                 let video = PathBuf::from(&rt.video_path);
                 if softsub_mode {
-                    let ffprobe_exe = crate::commands::media::resolve_tool(state, "ffprobe");
-                    let mux_result = match ffprobe_exe {
-                        Ok(ffprobe_exe) => crate::subtitle::mux::softsub_in_place(
-                            &ffmpeg_resolved_path(state)?,
+                    let mux_result = (|| {
+                        let ffmpeg_exe = crate::commands::media::resolve_tool(state, "ffmpeg")
+                            .map_err(|error| crate::subtitle::mux::MuxError::Probe(format!(
+                                "ابزار FFmpeg برای ساخت SoftSub در دسترس نیست: {error}"
+                            )))?;
+                        let ffprobe_exe = crate::commands::media::resolve_tool(state, "ffprobe")
+                            .map_err(|error| crate::subtitle::mux::MuxError::Probe(format!(
+                                "ابزار FFprobe برای بررسی استریم‌های ویدیو در دسترس نیست: {error}"
+                            )))?;
+                        crate::subtitle::mux::softsub_in_place(
+                            &ffmpeg_exe,
                             &ffprobe_exe,
                             &video,
                             &candidate,
                             rt.embedded_stream_index,
                             &cancel,
-                        ),
-                        Err(error) => Err(crate::subtitle::mux::MuxError::Probe(format!(
-                            "ابزار FFprobe برای بررسی استریم‌های ویدیو در دسترس نیست: {error}"
-                        ))),
-                    };
+                        )
+                    })();
                     match mux_result {
                         Ok(success) => {
                             let mut completed_outcome = outcome;
