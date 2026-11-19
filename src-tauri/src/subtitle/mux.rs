@@ -54,9 +54,15 @@ pub struct MuxSuccess {
 
 /// فایل ویدیو را با یک subtitle ورودی remux می‌کند.
 ///
-/// replace_stream_index فقط برای Track فارسی داخلی‌ای است که همین اجرا از آن
-/// استخراج کرده است؛ در این حالت همان Track حذف و نسخهٔ سینک‌شده جایگزین می‌شود.
-/// برای sidecar یا زیرنویس دانلودی None بدهید تا تمام استریم‌های قبلی حفظ شوند.
+/// `replace_stream_index` برای Track فارسی داخلی‌ای داده می‌شود که بالادست
+/// فارسی‌بودن‌اش تأیید شده است (تگ fa یا review محتوا + اعتبارسنجی استخراج)؛
+/// در این حالت همان Track حذف و نسخهٔ سینک‌شده جایگزین می‌شود تا دو Track
+/// فارسی هم‌زمان وجود نداشته باشد. برای زیرنویس دانلودی None بدهید تا تمام
+/// استریم‌های قبلی حفظ شوند.
+///
+/// بازبینی نهایی فقط ساختار را دوباره چک می‌کند (Track همان index هنوز زیرنویس
+/// متنی است) — نه تگ فارسی را، چون probe تازه فارسی‌بودنِ تأییدشده با محتوا
+/// را نمی‌داند و چک تگ، Trackهای تأییدشده با review را به‌اشتباه رد می‌کرد.
 pub fn softsub_in_place(
     ffmpeg: &Path,
     ffprobe: &Path,
@@ -101,10 +107,12 @@ pub fn softsub_in_place(
         )));
     }
 
-    let streams = crate::media::ffprobe::probe_subtitle_streams(ffprobe, video, cancel)
-        .map_err(|error| match error {
-            crate::media::ffprobe::ProbeError::Cancelled => MuxError::Cancelled,
-            crate::media::ffprobe::ProbeError::Failed(reason) => MuxError::Probe(reason),
+    let streams =
+        crate::media::ffprobe::probe_subtitle_streams(ffprobe, video, cancel).map_err(|error| {
+            match error {
+                crate::media::ffprobe::ProbeError::Cancelled => MuxError::Cancelled,
+                crate::media::ffprobe::ProbeError::Failed(reason) => MuxError::Probe(reason),
+            }
         })?;
 
     let output_subtitle_index = if let Some(index) = replace_stream_index {
@@ -113,12 +121,9 @@ pub fn softsub_in_place(
                 "Track زیرنویس شمارهٔ {index} در بازبینی نهایی پیدا نشد؛ ویدیو تغییر نکرد"
             )));
         };
-        if selected.kind != SubtitleKind::Text
-            || !(selected.persian_candidate || selected.persian_confirmed)
-        {
+        if selected.kind != SubtitleKind::Text {
             return Err(MuxError::Invalid(
-                "Track انتخاب‌شده دیگر یک زیرنویس متنی فارسی معتبر نیست؛ ویدیو تغییر نکرد"
-                    .into(),
+                "Track انتخاب‌شده دیگر یک زیرنویس متنی معتبر نیست؛ ویدیو تغییر نکرد".into(),
             ));
         }
         streams.len().saturating_sub(1)
@@ -271,14 +276,7 @@ fn run_ffmpeg(
 ) -> Result<(), MuxError> {
     let spec = output_subtitle_index.to_string();
     let mut command = Command::new(ffmpeg);
-    command.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-n",
-        "-i",
-    ]);
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-n", "-i"]);
     command.arg(video);
     command.arg("-i");
     command.arg(subtitle);
@@ -287,7 +285,16 @@ fn run_ffmpeg(
         command.arg("-map");
         command.arg(format!("-0:{index}"));
     }
-    command.args(["-map", "1:0", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy"]);
+    command.args([
+        "-map",
+        "1:0",
+        "-map_metadata",
+        "0",
+        "-map_chapters",
+        "0",
+        "-c",
+        "copy",
+    ]);
     command.arg(format!("-c:s:{spec}"));
     command.arg(subtitle_codec);
     command.arg(format!("-metadata:s:s:{spec}"));
@@ -307,9 +314,11 @@ fn run_ffmpeg(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| MuxError::Spawn(format!("اجرای FFmpeg برای ساخت SoftSub ناموفق بود: {error}")))?;
+    let mut child = command.spawn().map_err(|error| {
+        MuxError::Spawn(format!(
+            "اجرای FFmpeg برای ساخت SoftSub ناموفق بود: {error}"
+        ))
+    })?;
     let mut stderr_pipe = child.stderr.take().expect("stderr piped");
     let stderr_reader = std::thread::spawn(move || {
         use std::io::Read;
@@ -323,7 +332,9 @@ fn run_ffmpeg(
         if cancel.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stderr_reader.join();
+            // خوانندهٔ stderr join نمی‌شود — فرایند نوه‌ای ممکن است هندل لوله را
+            // نگه داشته باشد (مثل ffprobe: detach تا لغو بلافاصله برگردد)
+            drop(stderr_reader);
             return Err(MuxError::Cancelled);
         }
         match child.try_wait() {
@@ -334,13 +345,13 @@ fn run_ffmpeg(
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stderr_reader.join();
+                drop(stderr_reader);
                 return Err(MuxError::Timeout);
             }
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stderr_reader.join();
+                drop(stderr_reader);
                 return Err(MuxError::Io(format!(
                     "انتظار برای پایان FFmpeg ناموفق بود: {error}"
                 )));
@@ -401,5 +412,140 @@ mod tests {
         let streams = [0_u32, 2, 4];
         let index = streams.iter().filter(|stream| **stream != 2).count();
         assert_eq!(index, 2);
+    }
+
+    // ---------- تست‌های فرایند واقعی با ابزارهای cmd جعلی (فقط ویندوز) ----------
+
+    const FAKE_PROBE_ONE_FA: &str = "@echo off\r\necho {\"streams\": [{\"index\": 2, \"codec_name\": \"subrip\", \"codec_type\": \"subtitle\", \"tags\": {\"language\": \"fas\"}}]}\r\n";
+
+    /// ffmpeg جعلی: ویدیو (اولین -i) را به مقصد (آخرین آرگومان) کپی + نشانگر.
+    /// capture بدون `call` — `shift` در زیرروتین caller را تغییر نمی‌دهد.
+    const FAKE_FFMPEG_MUX_OK: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\nset \"LAST=\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i not \"%~1\"==\"-i\" goto store\r\nshift\r\nset /a INPUTS+=1\r\nif \"%INPUTS%\"==\"1\" set \"FIRST=%~1\"\r\n:store\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
+
+    /// ffmpeg جعلی که حین remux ویدیوی اصلی را تغییر می‌دهد — شبیه‌سازی
+    /// دست‌کاری هم‌زمان فایل توسط برنامهٔ دیگر.
+    const FAKE_FFMPEG_MUTATES_VIDEO: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\nset \"LAST=\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i not \"%~1\"==\"-i\" goto store\r\nshift\r\nset /a INPUTS+=1\r\nif \"%INPUTS%\"==\"1\" set \"FIRST=%~1\"\r\n:store\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\n>>\"%FIRST%\" echo EXTRA-CHANGED\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
+
+    const SRT_FA: &str = "1\n00:00:01,000 --> 00:00:02,000\nسلام\n";
+
+    struct Fixture {
+        dir: PathBuf,
+        video: PathBuf,
+        subtitle: PathBuf,
+        ffprobe: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn fixture(tag: &str, ffmpeg_script: &str) -> Fixture {
+        let dir = std::env::temp_dir().join(format!(
+            "subsync-mux-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("Movie.S01E01.mkv");
+        fs::write(&video, b"FAKE-VIDEO-CONTENTS").unwrap();
+        let subtitle = dir.join("Movie.S01E01.fa.srt");
+        fs::write(&subtitle, SRT_FA).unwrap();
+        let ffprobe = dir.join("fake-probe.cmd");
+        fs::write(&ffprobe, FAKE_PROBE_ONE_FA).unwrap();
+        let ffmpeg = dir.join("fake-ffmpeg.cmd");
+        fs::write(&ffmpeg, ffmpeg_script).unwrap();
+        Fixture {
+            dir,
+            video,
+            subtitle,
+            ffprobe,
+        }
+    }
+
+    fn leftover_softsub_dirs(parent: &Path) -> Vec<PathBuf> {
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().starts_with(".subsync-softsub-"))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn successful_mux_swaps_video_and_leaves_no_backup_or_workspace() {
+        let fx = fixture("ok", FAKE_FFMPEG_MUX_OK);
+        let cancel = AtomicBool::new(false);
+        let before = fs::read(&fx.video).unwrap();
+
+        let result = softsub_in_place(
+            &fx.dir.join("fake-ffmpeg.cmd"),
+            &fx.ffprobe,
+            &fx.video,
+            &fx.subtitle,
+            Some(2),
+            &cancel,
+        );
+
+        assert!(result.is_ok(), "mux باید موفق شود: {result:?}");
+        let after = fs::read(&fx.video).unwrap();
+        assert_ne!(after, before, "ویدیو باید با نسخهٔ remux جایگزین شود");
+        let text = String::from_utf8_lossy(&after);
+        assert!(text.contains("SOFTSUB-REMUX-MARKER"));
+        assert!(
+            leftover_softsub_dirs(&fx.dir).is_empty(),
+            "workspace و backup پس از موفقیت باید پاک شوند: {:?}",
+            leftover_softsub_dirs(&fx.dir)
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn video_modified_during_mux_aborts_without_installing_candidate() {
+        let fx = fixture("mutated", FAKE_FFMPEG_MUTATES_VIDEO);
+        let cancel = AtomicBool::new(false);
+
+        let result = softsub_in_place(
+            &fx.dir.join("fake-ffmpeg.cmd"),
+            &fx.ffprobe,
+            &fx.video,
+            &fx.subtitle,
+            Some(2),
+            &cancel,
+        );
+
+        match &result {
+            Err(MuxError::Invalid(message)) => {
+                assert!(
+                    message.contains("تغییر"),
+                    "دلیل باید تغییر فایل باشد: {message}"
+                );
+            }
+            other => panic!("انتظار Invalid به‌خاطر تغییر ویدیو، دریافت: {other:?}"),
+        }
+        // تغییر هم‌زمان باقی می‌ماند (هرگز بازنویسی نمی‌شود) اما کاندیدا نصب نشده
+        let video = fs::read(&fx.video).unwrap();
+        let text = String::from_utf8_lossy(&video);
+        assert!(
+            text.contains("EXTRA-CHANGED"),
+            "تغییر هم‌زمان باید حفظ شده باشد"
+        );
+        assert!(
+            !text.contains("SOFTSUB-REMUX-MARKER"),
+            "کاندیدا نباید روی ویدیوی تغییرکرده نصب شود"
+        );
+        assert!(
+            leftover_softsub_dirs(&fx.dir).is_empty(),
+            "workspace پس از کنار گذاشتن کاندیدا باید پاک شود"
+        );
     }
 }
