@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::models::{AnalysisStatus, SubtitleKind, VideoEntry};
 use crate::state::AppState;
+use crate::settings::SubtitleOutputMode;
 use crate::subsource::plan::{
     create_download_plan, inspect_persian_sidecars, SkipReasonCode, SkippedDownload,
 };
@@ -202,6 +203,7 @@ pub(crate) fn run_pipeline_body(
     };
     let settings = state.settings.lock().unwrap().clone();
     let sync_workers = settings.processing.sync_workers.max(1) as usize;
+    let softsub_mode = settings.processing.subtitle_output_mode == SubtitleOutputMode::SoftSub;
     let _tools = resolve_all_tools(state);
     ensure_running()?;
 
@@ -241,6 +243,8 @@ pub(crate) fn run_pipeline_body(
             sidecar_conflicts: Vec::new(),
             inspection_failed: false,
             has_sidecar: false,
+            embedded_stream_index: None,
+            generated_sync_input: false,
             archive_sources: Vec::new(),
         });
     }
@@ -282,7 +286,7 @@ pub(crate) fn run_pipeline_body(
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-                if synced {
+                if synced && !softsub_mode {
                     rt.outcome = Some(ItemOutcome::AlreadySynced);
                     counts.already_synced += 1;
                     rt.stage_status = StageStatus::Done;
@@ -307,12 +311,12 @@ pub(crate) fn run_pipeline_body(
     push_state!("تحلیل زیرنویس‌های داخلی…");
     let analyze_total = items
         .iter()
-        .filter(|rt| rt.outcome.is_none() && !rt.inspection_failed && rt.sidecar_valid.is_empty())
+        .filter(|rt| rt.outcome.is_none() && !rt.inspection_failed && (softsub_mode || rt.sidecar_valid.is_empty()))
         .count() as u32;
     let mut analyze_done = 0u32;
     control.set_stage_progress(0, analyze_total);
     for rt in items.iter_mut() {
-        if rt.outcome.is_some() || rt.inspection_failed || !rt.sidecar_valid.is_empty() {
+        if rt.outcome.is_some() || rt.inspection_failed || (!softsub_mode && !rt.sidecar_valid.is_empty()) {
             continue; // این‌ها نیازی به تحلیل ندارند
         }
         if cancel.load(Ordering::SeqCst) {
@@ -353,7 +357,20 @@ pub(crate) fn run_pipeline_body(
     control.set_stage(PipelineStage::Extracting);
     push_state!("استخراج زیرنویس‌های داخلی…");
     let library: Vec<VideoEntry> = state.library.lock().unwrap().clone();
-    let extraction_plan = crate::commands::subtitle::plan_extraction_from_library(&library);
+    let extraction_library: Vec<VideoEntry> = library
+        .iter()
+        .filter(|entry| {
+            !softsub_mode
+                || items
+                    .iter()
+                    .find(|rt| rt.video_path == entry.path)
+                    .map(|rt| rt.sidecar_valid.is_empty())
+                    .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    let extraction_plan =
+        crate::commands::subtitle::plan_extraction_from_library(&extraction_library);
     // آماده‌ها (دقیقاً یک Track فارسی) — هستهٔ موجود execute_plan_items
     if !extraction_plan.items.is_empty() {
         let total = extraction_plan.items.len() as u64;
@@ -392,7 +409,17 @@ pub(crate) fn run_pipeline_body(
             },
             |updated| {
                 // پایان استخراج همان فایل — نتیجهٔ واقعی روی ردیف می‌نشیند
-                if let Some(rt) = items.iter().find(|rt| rt.video_path == updated.path) {
+                if let Some(rt) = items.iter_mut().find(|rt| rt.video_path == updated.path) {
+                    if let Some(extraction) = updated
+                        .analysis
+                        .as_ref()
+                        .and_then(|analysis| analysis.last_extraction.as_ref())
+                    {
+                        rt.has_sidecar = true;
+                        rt.generated_sync_input = true;
+                        rt.embedded_stream_index = Some(extraction.stream_index);
+                        rt.artifacts.sync_input_path = Some(extraction.target_path.clone());
+                    }
                     let mut snap = rt.snapshot();
                     snap.stage = PipelineStage::Extracting;
                     snap.stage_status = if updated
