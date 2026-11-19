@@ -39,6 +39,7 @@ export type ItemOutcome =
   | { kind: "alreadySynced" }
   | { kind: "outputConflict"; preservedPath: string }
   | { kind: "synced"; outputPath: string }
+  | { kind: "softSubbed"; videoPath: string }
   | { kind: "unchangedLowQuality" }
   | { kind: "needsApiKey" }
   | { kind: "keyStoreUnavailable"; reason: string }
@@ -81,6 +82,7 @@ export interface PipelineCounts {
   downloaded: number;
   archivesPlaced: number;
   synced: number;
+  softsubbed: number;
   unchangedLowQuality: number;
   alreadySynced: number;
   conflicts: number;
