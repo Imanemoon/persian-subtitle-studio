@@ -14,6 +14,17 @@ pub struct ToolPathOverrides {
     pub ffsubsync: Option<String>,
 }
 
+/// مقصد نهایی زیرنویس سینک‌شده.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleOutputMode {
+    /// زیرنویس درون فایل ویدیو remux می‌شود و به‌صورت SoftSub در دسترس است.
+    #[default]
+    SoftSub,
+    /// رفتار قدیمی: خروجی زیرنویس کنار فایل ویدیو ذخیره می‌شود.
+    Sidecar,
+}
+
 /// مقادیر پیش‌فرض پردازش مطابق تجربه اسکریپت PowerShell قبلی.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -23,6 +34,8 @@ pub struct ProcessingSettings {
     pub segment_count: u32,
     pub skip_intro_outro: bool,
     pub skip_sync_on_low_quality: bool,
+    /// محل خروجی زیرنویس؛ SoftSub حالت پیش‌فرض نسخه‌های جدید است.
+    pub subtitle_output_mode: SubtitleOutputMode,
 }
 
 /// تنظیمات SubSource API و دانلود
@@ -59,6 +72,7 @@ impl Default for ProcessingSettings {
             segment_count: 6,
             skip_intro_outro: true,
             skip_sync_on_low_quality: true,
+            subtitle_output_mode: SubtitleOutputMode::SoftSub,
         }
     }
 }
