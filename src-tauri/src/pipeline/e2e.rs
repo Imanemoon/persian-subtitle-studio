@@ -67,7 +67,7 @@ const FAKE_PROBE_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0\"\r\
 const FAKE_PROBE_SLOW_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0\"\r\necho started > \"%TOOLS%probe_started.marker\"\r\nfor /l %%i in (1,1,15000000) do @set /a x=%%i >nul\r\ntype \"%TOOLS%all.probe.json\"\r\n";
 
 /// ffmpeg جعلی: آخرین آرگومان = مقصد؛ محتوا بر اساس mode.
-const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n";
+const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i \"%~1\"==\"-i\" call :capture_input\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:capture_input\r\nset /a INPUTS+=1\r\nshift\r\nif \"!INPUTS!\"==\"1\" set \"FIRST=%~1\"\r\nexit /b\r\n:run\r\nif \"!INPUTS!\"==\"2\" goto mux\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:mux\r\nif /i \"%MODE%\"==\"mux-fail\" exit /b 9\r\nif /i \"%MODE%\"==\"mux-slow\" (\r\n  echo started > \"%TOOLS%mux_started.marker\"\r\n  ping -n 60 127.0.0.1 >nul\r\n)\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
 
 // ---------------------------------------------------------------------------
 // زیرساخت هارنس
@@ -183,6 +183,14 @@ impl Harness {
             setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         Harness { state, dir, tools }
+    }
+
+    /// تمام سناریوهای قدیمی برای حفظ قرارداد قبلی در حالت sidecar اجرا می‌شوند.
+    fn sidecar(tag: &str) -> Self {
+        let harness = Self::new(tag);
+        harness.state.settings.lock().unwrap().processing.subtitle_output_mode =
+            crate::settings::SubtitleOutputMode::Sidecar;
+        harness
     }
 
     /// ffsubsync جعلی با mode مشخص
@@ -458,7 +466,7 @@ fn extracted_path(video: &Path) -> PathBuf {
 /// سناریو ۱+۱۲: ویدیو با Track فارسی معتبر → استخراج خودکار → سینک → جانمایی.
 #[test]
 fn embedded_valid_persian_track_is_extracted_synced_and_placed() {
-    let h = Harness::new("embedded-fa");
+    let h = Harness::sidecar("embedded-fa");
     h.set_ffs("success");
     h.set_ffmpeg_mode("success");
     let video = h.video("Show.S01E01.mkv");
