@@ -67,6 +67,9 @@ pub fn softsub_in_place(
 ) -> Result<MuxSuccess, MuxError> {
     validate_plain_file(video, "ویدیو")?;
     validate_plain_file(subtitle, "زیرنویس")?;
+    let initial_metadata = fs::metadata(video)
+        .map_err(|error| MuxError::Io(format!("خواندن مشخصات اولیهٔ ویدیو ناموفق بود: {error}")))?;
+    let initial_modified = initial_metadata.modified().ok();
 
     if video == subtitle {
         return Err(MuxError::Invalid(
@@ -169,6 +172,14 @@ pub fn softsub_in_place(
         let _ = fs::remove_dir_all(&workspace);
         return Err(MuxError::Invalid(
             "فایل ویدیو هنگام remux به فایل معمولی قابل‌اعتماد تبدیل نماند".into(),
+        ));
+    }
+    if source_meta.len() != initial_metadata.len()
+        || source_meta.modified().ok() != initial_modified
+    {
+        let _ = fs::remove_dir_all(&workspace);
+        return Err(MuxError::Invalid(
+            "فایل ویدیو هنگام remux توسط برنامه یا کاربر دیگری تغییر کرده؛ خروجی موقت کنار گذاشته شد".into(),
         ));
     }
 
