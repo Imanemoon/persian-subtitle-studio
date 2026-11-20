@@ -39,23 +39,24 @@ jobs:
       - name: Build NSIS installer
         run: npm run tauri build
 
-      - name: Compute SHA256
+      - name: Rename installer with tag
         shell: pwsh
         run: |
-          # نام نصاب از نسخهٔ tauri.conf.json می‌آید — بدون مسیر هاردکد
+          # نام خروجی NSIS از نسخهٔ tauri.conf.json می‌آید — بدون مسیر هاردکد
           $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
           $exe = "src-tauri/target/release/bundle/nsis/SubSync Studio_$($conf.version)_x64-setup.exe"
           if (-not (Test-Path $exe)) { throw "installer not found: $exe" }
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          "$hash  $([IO.Path]::GetFileName($exe))" | Out-File -Encoding ascii "SHA256SUMS.txt"
-          Get-Content "SHA256SUMS.txt"
+          $tag = "${{ github.ref_name }}"
+          Copy-Item $exe "SubSync-Studio_${tag}_x64-setup.exe"
 
-      - name: Rename installer with version
+      - name: Compute SHA256 of the final installer
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
-          Copy-Item "src-tauri/target/release/bundle/nsis/SubSync Studio_$($conf.version)_x64-setup.exe" "SubSync-Studio_${tag}_x64-setup.exe"
+          # checksum با نام نهایی asset — sha256sum -c مستقیماً کار می‌کند
+          $file = "SubSync-Studio_${{ github.ref_name }}_x64-setup.exe"
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash
+          "$hash  $file" | Out-File -Encoding ascii "SHA256SUMS.txt"
+          Get-Content "SHA256SUMS.txt"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
