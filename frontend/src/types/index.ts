@@ -172,6 +172,16 @@ export interface ProcessingSettings {
   subtitleOutputMode: "softSub" | "sidecar";
 }
 
+/** تنظیمات هاردساب — قرینه HardsubSettings بک‌اند */
+export type HardsubEncoder = "auto" | "nvidia" | "intel" | "amd" | "cpu";
+export type HardsubQuality = "fast" | "balanced" | "high";
+
+export interface HardsubSettings {
+  encoder: HardsubEncoder;
+  quality: HardsubQuality;
+  workers: number;
+}
+
 export type ExistingFileBehavior = "neverOverwrite";
 
 export interface Settings {
@@ -179,6 +189,7 @@ export interface Settings {
   excludedFolders: string[];
   toolPaths: ToolPathOverrides;
   processing: ProcessingSettings;
+  hardsub: HardsubSettings;
   existingFileBehavior: ExistingFileBehavior;
   logsDir: string | null;
   /** معاونت راه‌اندازی یک‌بار طی شده یا پشت زده شده */

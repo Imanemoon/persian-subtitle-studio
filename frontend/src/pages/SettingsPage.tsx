@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
+import { Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
-import type { Settings, ToolPathOverrides } from "../types";
+import type { HardsubSettings, Settings, ToolPathOverrides } from "../types";
 
 const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }[] = [
   { key: "ffmpeg", label: "FFmpeg", hint: "استخراج و بررسی رسانه" },
@@ -567,6 +567,86 @@ export function SettingsPage() {
             label="رد کردن سینک در کیفیت پایین تطبیق"
             hint="جلوگیری از خروجی نامطمئن (پیش‌فرض: فعال)"
           />
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={Film} title="هاردساب" />
+        <div className="space-y-3">
+          <p className="text-xs leading-6 text-ink-3">
+            هاردساب یعنی حک کردن زیرنویس داخل تصویر ویدیو — به‌صورت اختیاری پس از
+            پایان سینک، از پنجرهٔ نتیجه اجرا می‌شود. خروجی همیشه فایل جدید کنار
+            ویدیو است (<span dir="ltr" className="font-mono">&lt;نام&gt;.fa.hardsubbed</span>) و
+            فایل اصلی دست‌نخورده می‌ماند.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="hardsub-encoder" className="w-56 shrink-0 text-sm text-ink-2">
+              انکودر ویدیو
+            </label>
+            <select
+              id="hardsub-encoder"
+              value={draft.hardsub.encoder}
+              onChange={(e) =>
+                patch({
+                  hardsub: {
+                    ...draft.hardsub,
+                    encoder: e.target.value as HardsubSettings["encoder"],
+                  },
+                })
+              }
+              className="h-10 min-w-52 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            >
+              <option value="auto">خودکار — بهترین GPU موجود، در نبود آن CPU</option>
+              <option value="nvidia">فقط NVIDIA NVENC</option>
+              <option value="intel">فقط Intel QSV</option>
+              <option value="amd">فقط AMD AMF</option>
+              <option value="cpu">همیشه CPU</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="hardsub-quality" className="w-56 shrink-0 text-sm text-ink-2">
+              کیفیت انکود
+            </label>
+            <select
+              id="hardsub-quality"
+              value={draft.hardsub.quality}
+              onChange={(e) =>
+                patch({
+                  hardsub: {
+                    ...draft.hardsub,
+                    quality: e.target.value as HardsubSettings["quality"],
+                  },
+                })
+              }
+              className="h-10 min-w-52 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            >
+              <option value="fast">سریع — سرعت اول (پیش‌فرض)</option>
+              <option value="balanced">متعادل</option>
+              <option value="high">باکیفیت — کندتر</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-56 shrink-0 text-sm text-ink-2">تعداد Workerهای هم‌زمان هاردساب</span>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={draft.hardsub.workers}
+              onChange={(e) =>
+                patch({
+                  hardsub: {
+                    ...draft.hardsub,
+                    workers: Number(e.target.value) || 1,
+                  },
+                })
+              }
+              className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            />
+          </div>
+          <p className="text-xs leading-6 text-ink-3">
+            انکودر GPU چند برابر CPU سرعت دارد؛ در حالت خودکار با یک انکود آزمایشی
+            کوتاه بهترین گزینه انتخاب و در دیالوگ هاردساب نمایش داده می‌شود.
+          </p>
         </div>
       </Card>
     </div>

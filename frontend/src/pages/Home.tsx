@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { usePipeline } from "../hooks/usePipeline";
+import { HardsubPanel } from "../components/hardsub/HardsubPanel";
 import { PipelinePanel } from "../components/pipeline/PipelinePanel";
 import {
   fileBaseName,
@@ -167,11 +168,14 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   };
 
-  // نمای pipeline — run فعال یا خلاصهٔ پایان (تا «بستن خلاصه»)
+  // نمای pipeline — run فعال یا خلاصهٔ پایان (تا «بستن خلاصه») + هاردساب اختیاری
   if (runActive || summary) {
     return (
       <div className="flex h-full flex-col items-center overflow-y-auto px-6 py-8">
         <PipelinePanel onNavigate={onNavigate} />
+        <div className="mt-5 flex w-full justify-center">
+          <HardsubPanel />
+        </div>
       </div>
     );
   }

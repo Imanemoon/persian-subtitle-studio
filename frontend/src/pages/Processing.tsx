@@ -2,6 +2,8 @@ import { useState } from "react";
 import { AlertTriangle, FolderOpen, RefreshCw, Square } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { usePipeline } from "../hooks/usePipeline";
+import { useHardsub } from "../hooks/useHardsub";
+import { HardsubPanel } from "../components/hardsub/HardsubPanel";
 import { PipelinePanel } from "../components/pipeline/PipelinePanel";
 import { Badge, Button, Card, ProgressBar, SectionTitle } from "../components/ui";
 import { api } from "../lib/api";
@@ -11,6 +13,7 @@ import type { PageId } from "../types";
 export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const { scanning, progress, lastScan, library, stopScan, startScan } = useAppData();
   const { runActive, snapshot } = usePipeline();
+  const hardsub = useHardsub();
   const [scanRoot, setScanRoot] = useState<string | null>(null);
 
   const pickAndScan = async () => {
@@ -39,6 +42,13 @@ export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void 
       {runActive && snapshot && (
         <div className="flex justify-center">
           <PipelinePanel onNavigate={onNavigate} />
+        </div>
+      )}
+
+      {/* هاردساب فعال یا نتیجهٔ آن — مستقل از pipeline */}
+      {(hardsub.runActive || hardsub.snapshot || hardsub.summary) && (
+        <div className="flex justify-center">
+          <HardsubPanel />
         </div>
       )}
 
