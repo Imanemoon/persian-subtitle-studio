@@ -738,23 +738,15 @@ pub(crate) fn run_pipeline_body(
                     counts.key_store_unavailable += 1;
                 }
             }
-            Ok(None) => {
-                for &i in &needer_idxs {
-                    items[i].stage = PipelineStage::Downloading;
-                    items[i].outcome = Some(ItemOutcome::NeedsApiKey);
-                    items[i].stage_status = StageStatus::Done;
-                    counts.needs_api_key += 1;
+            // کلید اختیاری است: None/خالی = دانلود ناشناس با sub-rs
+            Ok(key) => {
+                let key = key.unwrap_or_default();
+                if key.trim().is_empty() {
+                    crate::logging::info(
+                        "pipeline",
+                        "کلید API تنظیم نشده — دانلود ناشناس SubSource",
+                    );
                 }
-            }
-            Ok(Some(key)) if key.trim().is_empty() => {
-                for &i in &needer_idxs {
-                    items[i].stage = PipelineStage::Downloading;
-                    items[i].outcome = Some(ItemOutcome::NeedsApiKey);
-                    items[i].stage_status = StageStatus::Done;
-                    counts.needs_api_key += 1;
-                }
-            }
-            Ok(Some(key)) => {
                 match crate::commands::media::resolve_tool(state, "subsource") {
                     Err(err) => {
                         for &i in &needer_idxs {

@@ -705,10 +705,11 @@ fn real_c_multi_stream_preservation_with_stream_hashes() {
 }
 
 /// آزمون B1 — ویدیو بدون Track داخلی و بدون sidecar و بدون کلید API:
-/// pipeline باید صادقانه NeedsApiKey بدهد و هیچ فایلی نسازد.
+/// کلید گِیت نیست — دانلود ناشناس واقعی تلاش می‌شود (نیازمند شبکه)؛
+/// نتیجه هر که باشد هرگز NeedsApiKey نیست.
 #[test]
 #[ignore = "فقط اجرای دستی real-world — به SUBSYNC_REAL_* و ابزارهای واقعی نیاز دارد"]
-fn real_b1_no_key_no_sidecar_reports_needs_api_key() {
+fn real_b1_no_key_downloads_anonymously() {
     let h = RealHarness::new("real-b1", SubtitleOutputMode::SoftSub, true);
     let video = h.copy_sample("NO_SUB", "Show.S01E02.mkv");
     let before = h.video_hash(&video);
@@ -720,12 +721,29 @@ fn real_b1_no_key_no_sidecar_reports_needs_api_key() {
     );
 
     assert_eq!(run.summary.status, PipelineStatus::Completed);
+    let outcome = run.outcome_of(&video);
     assert!(
-        matches!(run.outcome_of(&video), ItemOutcome::NeedsApiKey),
-        "بدون کلید باید NeedsApiKey صادقانه باشد: {:?}",
-        run.outcome_of(&video)
+        !matches!(outcome, ItemOutcome::NeedsApiKey),
+        "بدون کلید دیگر NeedsApiKey تولید نمی‌شود: {outcome:?}"
     );
-    assert_eq!(h.video_hash(&video), before, "ویدیو نباید دست بخورد");
+    // اگر دانلود ناشناس خروجی واقعی داشت → SoftSubbed؛ وگرنه شکست/پرش صادقانه
+    let has_output = run
+        .summary
+        .items
+        .iter()
+        .any(|item| item.video_path == video && item.artifacts.placed_path.is_some());
+    if has_output {
+        assert!(
+            matches!(outcome, ItemOutcome::SoftSubbed { .. }),
+            "با خروجی واقعی انتظار SoftSubbed: {outcome:?}"
+        );
+    } else {
+        assert_eq!(
+            h.video_hash(&video),
+            before,
+            "بدون خروجی واقعی ویدیو نباید دست بخورد"
+        );
+    }
     assert_no_softsub_leftover(&video);
 }
 

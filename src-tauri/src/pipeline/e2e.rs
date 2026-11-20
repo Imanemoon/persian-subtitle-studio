@@ -1140,13 +1140,14 @@ fn download_success_flows_through_archive_to_placed_sync() {
     assert_eq!(h.video_bytes(&video), before);
 }
 
-/// سناریو ۷: بدون API key → NeedsApiKey؛ بدون هیچ فراخوانی ابزار دانلود.
+/// سناریو ۷: بدون API key → دانلود ناشناس با sub-rs → آرشیو → سینک → جانمایی.
+/// کلید دیگر گِیت نیست؛ نبود آن مسیر دانلود را نمی‌بندد.
 #[test]
-fn missing_api_key_yields_needs_api_key_without_any_download() {
-    let h = Harness::new("no-key");
+fn missing_api_key_downloads_anonymously_and_syncs() {
+    let h = Harness::sidecar_mode("no-key-anonymous");
     h.set_ffs("success");
-    // اگر دانلود (اشتباهی) رخ دهد آرشیو می‌نویسد — نباید رخ دهد
     h.set_subsource_tool("write-manifest-archives");
+    h.set_seven_zip_tool();
     let video = h.video("Show.S01E07.mkv");
     h.probe_json(&video, JSON_NONE);
     let before = h.video_bytes(&video);
@@ -1160,13 +1161,17 @@ fn missing_api_key_yields_needs_api_key_without_any_download() {
     );
 
     assert_eq!(run.summary.status, PipelineStatus::Completed);
-    assert!(matches!(run.outcome(&video), ItemOutcome::NeedsApiKey));
-    assert_eq!(run.summary.counts.needs_api_key, 1);
-    assert!(
-        run.summary.staged_paths.is_empty(),
-        "بدون کلید نباید staging ساخته شود"
+    assert_eq!(
+        run.summary.counts.needs_api_key, 0,
+        "با دانلود ناشناس دیگر نباید NeedsApiKey تولید شود"
     );
-    assert!(!extracted_path(&video).exists());
+    assert_eq!(run.summary.counts.downloaded, 1);
+    assert_eq!(run.summary.counts.synced, 1);
+    assert!(matches!(run.outcome(&video), ItemOutcome::Synced { .. }));
+    assert!(
+        !run.summary.staged_paths.is_empty(),
+        "ریشه‌های staging باید برای بازیابی گزارش شوند"
+    );
     assert_eq!(h.video_bytes(&video), before);
 }
 
