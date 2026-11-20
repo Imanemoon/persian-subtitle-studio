@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AppDataProvider, useAppData } from "./hooks/useAppData";
 import { PipelineProvider } from "./hooks/usePipeline";
+import { HardsubProvider } from "./hooks/useHardsub";
 import { Header } from "./components/Header";
 import { Home } from "./pages/Home";
 import { Library } from "./pages/Library";
@@ -15,7 +16,9 @@ export default function App() {
   return (
     <AppDataProvider>
       <PipelineProvider>
-        <Shell />
+        <HardsubProvider>
+          <Shell />
+        </HardsubProvider>
       </PipelineProvider>
     </AppDataProvider>
   );

@@ -115,6 +115,8 @@ impl RealHarness {
             ops: Arc::new(Mutex::new(OpsRegistry::default())),
             archive_provenance: Mutex::new(ProvenanceRegistry::default()),
             pipeline: Mutex::new(None),
+            hardsub: Mutex::new(None),
+            hardsub_encoder_cache: Mutex::new(None),
             setup_cancel: Arc::new(AtomicBool::new(false)),
         });
         RealHarness {

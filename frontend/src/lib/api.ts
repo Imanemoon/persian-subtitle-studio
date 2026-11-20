@@ -13,6 +13,7 @@ import type {
   VideoEntry,
 } from "../types";
 import type { PipelineItemSnapshot, PipelineSnapshot } from "../types/pipeline";
+import type { HardsubPlan, HardsubSnapshot } from "../types/hardsub";
 
 /** وضعیت یک ابزار در معاونت راه‌اندازی — قرینه SetupToolStatus بک‌اند. */
 export interface SetupToolStatus {
@@ -124,4 +125,13 @@ export const api = {
   getPipelineItems: () =>
     invoke<PipelineItemSnapshot[]>("get_pipeline_items"),
   isPipelineActive: () => invoke<boolean>("is_pipeline_active"),
+
+  // ---- هاردساب — عملیات اختیاری پس از سینک؛ خروجی فایل جدید کنار ویدیو ----
+  planHardsub: (paths: string[]) =>
+    invoke<HardsubPlan>("plan_hardsub", { paths }),
+  startHardsub: (paths: string[]) =>
+    invoke<HardsubSnapshot>("start_hardsub", { paths }),
+  cancelHardsub: () => invoke<boolean>("cancel_hardsub"),
+  getHardsubState: () => invoke<HardsubSnapshot | null>("get_hardsub_state"),
+  isHardsubActive: () => invoke<boolean>("is_hardsub_active"),
 };

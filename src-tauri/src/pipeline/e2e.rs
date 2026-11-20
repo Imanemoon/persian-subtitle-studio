@@ -183,6 +183,8 @@ impl Harness {
             ops: Arc::new(Mutex::new(OpsRegistry::default())),
             archive_provenance: Mutex::new(ProvenanceRegistry::default()),
             pipeline: Mutex::new(None),
+            hardsub: Mutex::new(None),
+            hardsub_encoder_cache: Mutex::new(None),
             setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         Harness { state, dir, tools }
@@ -1819,6 +1821,8 @@ fn cancel_pipeline_spares_unrelated_single_ops() {
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
         archive_provenance: Mutex::new(ProvenanceRegistry::default()),
         pipeline: Mutex::new(None),
+        hardsub: Mutex::new(None),
+        hardsub_encoder_cache: Mutex::new(None),
         setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let single = acquire_single_op(&other_state.ops, "C:\\other\\video.mkv").expect("single");

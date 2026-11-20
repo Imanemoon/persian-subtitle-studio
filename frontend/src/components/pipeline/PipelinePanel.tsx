@@ -3,13 +3,16 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  Film,
   Info,
   Loader2,
   Square,
   XCircle,
 } from "lucide-react";
-import { Badge, Button, Card, ProgressBar } from "../ui";
+import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
+import { useHardsub } from "../../hooks/useHardsub";
+import { api } from "../../lib/api";
 import {
   DECISION_KIND_TEXT,
   PIPELINE_STAGES,
@@ -29,7 +32,17 @@ import type {
   PipelineStatus,
   PipelineSummary,
 } from "../../types/pipeline";
+import type { HardsubPlan } from "../../types/hardsub";
 import type { PageId } from "../../types";
+
+/** آیتم‌هایی که منبع زیرنویس آماده دارند و می‌توانند هاردساب شوند. */
+function hardsubEligible(item: PipelineItemSnapshot): boolean {
+  return (
+    item.outcome?.kind === "synced" ||
+    item.outcome?.kind === "softSubbed" ||
+    item.outcome?.kind === "alreadySynced"
+  );
+}
 
 /**
  * نمای اجرای pipeline — همهٔ داده‌ها از بک‌اند می‌آید؛ هیچ درصد یا موفقیتی
@@ -52,9 +65,59 @@ export function PipelinePanel({
     cancelPipeline,
     dismissSummary,
   } = usePipeline();
+  const { startHardsub } = useHardsub();
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  // ---- هاردساب: انتخاب گروهی + پلن تأیید ----
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [plan, setPlan] = useState<HardsubPlan | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
 
   if (!snapshot && !summary) return null;
+
+  const eligiblePaths = items.filter(hardsubEligible).map((item) => item.videoPath);
+  const eligibleCount = eligiblePaths.length;
+  const checkedCount = eligiblePaths.filter((p) => checked.has(p)).length;
+
+  const toggleChecked = (path: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const toggleAllChecked = () => {
+    setChecked(() =>
+      checkedCount === eligibleCount ? new Set() : new Set(eligiblePaths),
+    );
+  };
+
+  /** پلن هاردساب از بک‌اند (بازبینی تازهٔ فایل‌سیستم) → دیالوگ تأیید */
+  const requestHardsub = async (paths: string[]) => {
+    setPlanError(null);
+    setPlanLoading(true);
+    try {
+      const fresh = await api.planHardsub(paths);
+      setPlan(fresh);
+    } catch (e) {
+      setPlanError(String(e));
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  const confirmHardsub = async () => {
+    if (!plan || plan.items.length === 0) return;
+    setPlanLoading(true);
+    const ok = await startHardsub(plan.items.map((item) => item.videoPath));
+    setPlanLoading(false);
+    if (ok) {
+      setPlan(null);
+      setChecked(new Set());
+    }
+  };
 
   const status: PipelineStatus | undefined = summary?.status ?? snapshot?.status;
   const counts = summary?.counts ?? snapshot?.counts;
@@ -310,13 +373,153 @@ export function PipelinePanel({
               {faNum(items.length)} فایل
             </span>
           </div>
+          {/* نوار هاردساب گروهی — فقط پس از پایان اجرا و برای موارد دارای زیرنویس */}
+          {!runActive && eligibleCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface-2/40 px-5 py-2.5">
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-2">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-emerald-500"
+                  checked={eligibleCount > 0 && checkedCount === eligibleCount}
+                  onChange={toggleAllChecked}
+                />
+                انتخاب همه ({faNum(eligibleCount)} مورد با زیرنویس آماده)
+              </label>
+              <Button
+                variant="primary"
+                className="h-8 px-3 text-xs"
+                disabled={checkedCount === 0 || planLoading}
+                loading={planLoading}
+                onClick={() => void requestHardsub(eligiblePaths.filter((p) => checked.has(p)))}
+              >
+                <Film className="size-3.5" />
+                هاردساب موارد انتخاب‌شده ({faNum(checkedCount)})
+              </Button>
+            </div>
+          )}
           <div>
             {items.slice(0, 300).map((item) => (
-              <ItemRow key={item.videoPath} item={item} />
+              <ItemRow
+                key={item.videoPath}
+                item={item}
+                showActions={!runActive && eligibleCount > 0}
+                checked={checked.has(item.videoPath)}
+                onToggle={() => toggleChecked(item.videoPath)}
+                onHardsub={() => void requestHardsub([item.videoPath])}
+              />
             ))}
           </div>
+          {planError && (
+            <p className="flex items-start gap-1.5 border-t border-line px-5 py-2.5 text-xs leading-5 text-red-300">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              {planError}
+            </p>
+          )}
         </Card>
       )}
+
+      {/* ---- دیالوگ تأیید هاردساب — پلن تازه از بک‌اند ---- */}
+      <Modal
+        open={plan !== null}
+        title="تأیید هاردساب"
+        onClose={() => {
+          setPlan(null);
+          setPlanError(null);
+        }}
+        footer={
+          plan && plan.items.length > 0 ? (
+            <>
+              <Button
+                onClick={() => {
+                  setPlan(null);
+                  setPlanError(null);
+                }}
+              >
+                انصراف
+              </Button>
+              <Button
+                variant="primary"
+                loading={planLoading}
+                onClick={() => void confirmHardsub()}
+              >
+                شروع هاردساب ({faNum(plan.items.length)} مورد)
+              </Button>
+            </>
+          ) : (
+            <Button
+              onClick={() => {
+                setPlan(null);
+                setPlanError(null);
+              }}
+            >
+              بستن
+            </Button>
+          )
+        }
+      >
+        {plan && (
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs">
+              <span className="text-ink-3">انکودر تشخیص‌داده‌شده</span>
+              <span dir="ltr" className="font-semibold text-ink-1">
+                {plan.encoder}
+              </span>
+            </div>
+            <p className="text-xs leading-6 text-ink-2">
+              زیرنویس داخل تصویر حک می‌شود؛ خروجی فایل جدید کنار هر ویدیو ساخته
+              می‌شود و فایل اصلی دست‌نخورده می‌ماند. انکود ویدیو زمان‌بر است و به
+              ازای هر فایل جداگانه اجرا می‌شود.
+            </p>
+            {plan.items.length > 0 && (
+              <div className="space-y-1">
+                {plan.items.slice(0, 100).map((item) => (
+                  <div
+                    key={item.videoPath}
+                    className="rounded-lg border border-line bg-surface-2/60 px-3 py-2"
+                  >
+                    <div dir="ltr" className="truncate font-mono text-xs text-ink-1">
+                      {item.videoFileName}
+                    </div>
+                    <div dir="ltr" className="truncate font-mono text-[11px] text-ink-3">
+                      → {fileBaseName(item.outputPath)}
+                    </div>
+                  </div>
+                ))}
+                {plan.items.length > 100 && (
+                  <p className="text-[11px] text-ink-3">
+                    {faNum(plan.items.length - 100)} مورد دیگر…
+                  </p>
+                )}
+              </div>
+            )}
+            {plan.skipped.length > 0 && (
+              <div className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="text-xs font-semibold text-amber-300">
+                  رد شده ({faNum(plan.skipped.length)})
+                </div>
+                {plan.skipped.slice(0, 20).map((skip) => (
+                  <div key={skip.path} className="text-[11px] leading-5">
+                    <span dir="ltr" className="font-mono text-ink-1">
+                      {fileBaseName(skip.path)}
+                    </span>
+                    <span className="text-ink-3"> — {skip.reason}</span>
+                  </div>
+                ))}
+                {plan.skipped.length > 20 && (
+                  <p className="text-[11px] text-ink-3">
+                    {faNum(plan.skipped.length - 20)} مورد دیگر…
+                  </p>
+                )}
+              </div>
+            )}
+            {plan.items.length === 0 && (
+              <p className="text-xs text-amber-300">
+                هیچ موردی قابل هاردساب نیست — فهرست رد شده را ببینید.
+              </p>
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* ---- خلاصهٔ پایان: شمارش واقعی + موارد نیازمند بررسی ---- */}
       {summary && !runActive && counts && (
@@ -341,6 +544,25 @@ export function PipelinePanel({
           <CountsGrid counts={counts} />
 
           <NeedsReview summary={summary} />
+
+          {/* هاردساب گروهی همهٔ موارد موفق — پس از پایان سینک */}
+          {!runActive && eligibleCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs leading-5 text-ink-3">
+                زیرنویس را داخل تصویر حک کن — خروجی فایل جدید کنار ویدیو، بدون
+                تغییر فایل اصلی.
+              </p>
+              <Button
+                variant="primary"
+                disabled={planLoading}
+                loading={planLoading}
+                onClick={() => void requestHardsub(eligiblePaths)}
+              >
+                <Film className="size-3.5" />
+                هاردساب همهٔ موارد موفق ({faNum(eligibleCount)})
+              </Button>
+            </div>
+          )}
 
           {counts.needsApiKey > 0 && (
             <Button variant="primary" onClick={() => onNavigate("settings")}>
@@ -494,7 +716,19 @@ function itemRowState(item: PipelineItemSnapshot): {
   }
 }
 
-function ItemRow({ item }: { item: PipelineItemSnapshot }) {
+function ItemRow({
+  item,
+  showActions,
+  checked,
+  onToggle,
+  onHardsub,
+}: {
+  item: PipelineItemSnapshot;
+  showActions: boolean;
+  checked: boolean;
+  onToggle: () => void;
+  onHardsub: () => void;
+}) {
   const state = itemRowState(item);
   const detail = item.outcome ? outcomeDetail(item.outcome) : null;
   const reason =
@@ -507,10 +741,25 @@ function ItemRow({ item }: { item: PipelineItemSnapshot }) {
     item.offsetSeconds != null ||
     item.placedPath != null ||
     (item.sidecarConflicts?.length ?? 0) > 0;
+  const hardsubbable = hardsubEligible(item);
 
   return (
     <details className="group border-b border-line/60 last:border-0">
       <summary className="flex cursor-pointer list-none items-center gap-2.5 px-5 py-3 transition-colors hover:bg-surface-2/40">
+        {showActions && hardsubbable && (
+          // داخل summary است — toggle جزئیات با stop/prevent خنثی می‌شود
+          <input
+            type="checkbox"
+            className="size-4 shrink-0 accent-emerald-500"
+            checked={checked}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+            }}
+            onChange={onToggle}
+            aria-label={`انتخاب ${item.videoFileName} برای هاردساب`}
+          />
+        )}
         <span className={`size-2.5 shrink-0 rounded-full ${ROW_DOT[state.tone]}`} />
         <span
           dir="ltr"
@@ -519,6 +768,21 @@ function ItemRow({ item }: { item: PipelineItemSnapshot }) {
         >
           {item.videoFileName}
         </span>
+        {showActions && hardsubbable && (
+          <Button
+            variant="ghost"
+            className="h-7 shrink-0 px-2.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onHardsub();
+            }}
+            title="حک کردن زیرنویس داخل تصویر — خروجی فایل جدید کنار ویدیو"
+          >
+            <Film className="size-3.5" />
+            هاردساب
+          </Button>
+        )}
         <span
           className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${ROW_CHIP[state.tone]}`}
         >
