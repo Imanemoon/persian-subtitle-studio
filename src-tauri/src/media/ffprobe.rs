@@ -86,17 +86,74 @@ pub fn probe_subtitle_streams(
     video: &Path,
     cancel: &AtomicBool,
 ) -> Result<Vec<SubtitleStream>, ProbeError> {
+    let stdout = run_ffprobe_capture(
+        ffprobe,
+        &[
+            "-v",
+            "error",
+            "-select_streams",
+            "s",
+            "-show_entries",
+            "stream=index,codec_name,codec_type:stream_disposition=default,forced:stream_tags=language,language_ietf,title",
+            "-of",
+            "json",
+        ],
+        video,
+        cancel,
+        PROBE_TIMEOUT,
+    )?;
+    parse_ffprobe_json(&stdout).map_err(ProbeError::Failed)
+}
+
+/// مدت‌زمان ویدیو به ثانیه — برای timeout و درصد پیشرفت واقعی هاردساب.
+/// `None` یعنی مدت قابل اعتماد نیست (فایل خراب، N/A)؛ در این حالت هیچ
+/// درصدی ساخته نمی‌شود و timeout سخاوتمندانهٔ ثابت استفاده می‌شود.
+pub fn probe_duration(
+    ffprobe: &Path,
+    video: &Path,
+    cancel: &AtomicBool,
+) -> Result<Option<f64>, ProbeError> {
+    let stdout = run_ffprobe_capture(
+        ffprobe,
+        &[
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ],
+        video,
+        cancel,
+        PROBE_TIMEOUT,
+    )?;
+    Ok(parse_duration_output(&stdout))
+}
+
+/// تبدیل خروجی `duration` خام ffprobe به ثانیه — مستقل از فرایند، قابل تست.
+/// «N/A»، خالی و مقدار غیرمثبت → None (هیچ تخمین ساختگی‌ای ساخته نمی‌شود).
+pub fn parse_duration_output(text: &str) -> Option<f64> {
+    let value: f64 = text.trim().parse().ok()?;
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+/// هستهٔ مشترک اجرای FFprobe — ساخت args کامل (ویدیو آخرین arg)، اجرا با
+/// CREATE_NO_WINDOW، polling با لغو/timeout، و خواندن کامل stdout.
+/// در لغو و خطا، فرایند kill+wait (جمع‌آوری کامل) و خواننده‌های pipe
+/// detached می‌شوند (درس فرایند نوه‌ای در ویندوز).
+fn run_ffprobe_capture(
+    ffprobe: &Path,
+    args: &[&str],
+    video: &Path,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<String, ProbeError> {
     let mut cmd = Command::new(ffprobe);
-    cmd.args([
-        "-v",
-        "error",
-        "-select_streams",
-        "s",
-        "-show_entries",
-        "stream=index,codec_name,codec_type:stream_disposition=default,forced:stream_tags=language,language_ietf,title",
-        "-of",
-        "json",
-    ]);
+    cmd.args(args);
     cmd.arg(video);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -126,7 +183,7 @@ pub fn probe_subtitle_streams(
         s
     });
 
-    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         // لغو در طول انتظار: فرایند فرزند kill و wait می‌شود (جمع‌آوری کامل)
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
@@ -191,7 +248,7 @@ pub fn probe_subtitle_streams(
         )));
     }
 
-    parse_ffprobe_json(&stdout).map_err(ProbeError::Failed)
+    Ok(stdout)
 }
 
 /// تبدیل JSON خام FFprobe به مدل برنامه — مستقل از فرایند، قابل تست.
