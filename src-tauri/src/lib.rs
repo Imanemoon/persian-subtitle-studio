@@ -1,6 +1,7 @@
 // ماژول‌ها public هستند تا تست‌های یکپارچه (tests/) بتوانند مستقیماً
 // لایه command را با mock-runtime تست کنند.
 pub mod commands;
+pub mod hardsub;
 pub mod logging;
 pub mod media;
 pub mod models;
@@ -82,6 +83,8 @@ pub fn run() {
                     crate::archive::provenance::ProvenanceRegistry::default(),
                 ),
                 pipeline: Mutex::new(None),
+                hardsub: Mutex::new(None),
+                hardsub_encoder_cache: Mutex::new(None),
                 setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(AppPaths {
@@ -108,6 +111,11 @@ pub fn run() {
             commands::pipeline::get_pipeline_state,
             commands::pipeline::get_pipeline_items,
             commands::pipeline::is_pipeline_active,
+            commands::hardsub::plan_hardsub,
+            commands::hardsub::start_hardsub,
+            commands::hardsub::cancel_hardsub,
+            commands::hardsub::get_hardsub_state,
+            commands::hardsub::is_hardsub_active,
             commands::secrets::set_subsource_api_key,
             commands::secrets::has_subsource_api_key,
             commands::secrets::delete_subsource_api_key,

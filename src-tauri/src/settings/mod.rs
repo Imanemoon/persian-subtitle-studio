@@ -38,6 +38,56 @@ pub struct ProcessingSettings {
     pub subtitle_output_mode: SubtitleOutputMode,
 }
 
+/// انکودر ویدیو برای هاردساب — Auto بهترین گزینهٔ GPU اثبات‌شده را انتخاب می‌کند.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum HardsubEncoder {
+    /// تشخیص خودکار: NVENC → QSV → AMF با انکود آزمایشی، fallback به CPU
+    #[default]
+    Auto,
+    /// فقط NVIDIA NVENC
+    Nvidia,
+    /// فقط Intel QSV
+    Intel,
+    /// فقط AMD AMF
+    Amd,
+    /// همیشه libx264 نرم‌افزاری
+    Cpu,
+}
+
+/// سطح کیفیت هاردساب — بین سرعت و حجم/کیفیت تصویر.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum HardsubQuality {
+    /// سریع‌ترین preset با کیفیت قابل‌قبول (پیش‌فرض — هاردساب باید سریع باشد)
+    #[default]
+    Fast,
+    /// تعادل سرعت/کیفیت
+    Balanced,
+    /// بالاترین کیفیت، کندتر
+    High,
+}
+
+/// تنظیمات هاردساب — انکودر، کیفیت و تعداد worker موازی.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HardsubSettings {
+    pub encoder: HardsubEncoder,
+    pub quality: HardsubQuality,
+    /// تعداد انکود هم‌زمان (clamp 1..=4)
+    pub workers: u32,
+}
+
+impl Default for HardsubSettings {
+    fn default() -> Self {
+        Self {
+            encoder: HardsubEncoder::Auto,
+            quality: HardsubQuality::Fast,
+            workers: 2,
+        }
+    }
+}
+
 /// تنظیمات SubSource API و دانلود
 ///
 /// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
@@ -92,6 +142,8 @@ pub struct Settings {
     pub excluded_folders: Vec<String>,
     pub tool_paths: ToolPathOverrides,
     pub processing: ProcessingSettings,
+    /// تنظیمات هاردساب (burn-in) — پس از سینک، اختیاری توسط کاربر اجرا می‌شود.
+    pub hardsub: HardsubSettings,
     pub subsource: SubSourceSettings,
     pub existing_file_behavior: ExistingFileBehavior,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
@@ -109,6 +161,7 @@ impl Default for Settings {
             excluded_folders: vec!["Ted Lasso".to_string(), "Better Call Saul".to_string()],
             tool_paths: ToolPathOverrides::default(),
             processing: ProcessingSettings::default(),
+            hardsub: HardsubSettings::default(),
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             logs_dir: None,
@@ -122,6 +175,7 @@ impl Settings {
     pub fn sanitized(mut self) -> Self {
         self.processing.sync_workers = self.processing.sync_workers.clamp(1, 16);
         self.processing.segment_count = self.processing.segment_count.clamp(1, 12);
+        self.hardsub.workers = self.hardsub.workers.clamp(1, 4);
 
         let mut seen = std::collections::HashSet::new();
         self.excluded_folders = self
@@ -478,6 +532,53 @@ mod tests {
     }
 
     #[test]
+    fn legacy_settings_without_hardsub_default_to_auto_fast_and_keep_explicit_values() {
+        let dir = unique_temp_dir("hardsub-migration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{
+            "rootFolder": "D:\\Series",
+            "processing": { "syncWorkers": 4, "subtitleOutputMode": "sidecar" }
+        }"#;
+        std::fs::write(config_file_path(&dir), json).unwrap();
+
+        let loaded = load(&dir);
+        assert_eq!(loaded.hardsub, HardsubSettings::default(),
+            "تنظیمات قدیمیِ بدون hardsub باید به پیش‌فرض‌های جدید مهاجرت کند");
+        assert_eq!(loaded.hardsub.encoder, HardsubEncoder::Auto);
+        assert_eq!(loaded.hardsub.quality, HardsubQuality::Fast);
+        assert_eq!(loaded.hardsub.workers, 2);
+
+        // انتخاب صریح کاربر پس از ذخیره و بارگذاری مجدد حفظ می‌شود
+        let mut s = loaded;
+        s.hardsub.encoder = HardsubEncoder::Nvidia;
+        s.hardsub.quality = HardsubQuality::High;
+        s.hardsub.workers = 3;
+        save(&dir, &s).expect("save");
+        let raw = std::fs::read_to_string(config_file_path(&dir)).unwrap();
+        assert!(
+            raw.contains("\"nvidia\"") && raw.contains("\"high\""),
+            "مقدار serialize باید camelCase باشد: {raw}"
+        );
+        let reloaded = load(&dir);
+        assert_eq!(reloaded.hardsub.encoder, HardsubEncoder::Nvidia);
+        assert_eq!(reloaded.hardsub.quality, HardsubQuality::High);
+        assert_eq!(reloaded.hardsub.workers, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hardsub_workers_are_clamped_on_save() {
+        let dir = unique_temp_dir("hardsub-clamp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Settings::default();
+        s.hardsub.workers = 99;
+        save(&dir, &s).expect("save");
+        let reloaded = load(&dir);
+        assert_eq!(reloaded.hardsub.workers, 4, "workers باید به ۴ محدود شود");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_corrupt_backs_up_and_defaults() {
         let dir = unique_temp_dir("corrupt");
         std::fs::create_dir_all(&dir).unwrap();
@@ -645,7 +746,8 @@ mod tests {
         let saved_text = std::fs::read_to_string(config_file_path(&dir)).unwrap();
         assert!(!saved_text.contains("connectionMode"));
         assert!(!saved_text.contains("proxy"));
-        assert!(!saved_text.contains("worker"));
+        // کلید «worker» با نقل‌قول — substring ساده با «workers» هاردساب تداخل دارد
+        assert!(!saved_text.contains("\"worker\""));
         assert!(saved_text.contains("cleanAds"));
         assert!(saved_text.contains("skipExisting"));
 

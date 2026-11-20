@@ -1,5 +1,6 @@
 //! دستورات Tauri که فرانت‌اند فراخوانی می‌کند.
 
+pub mod hardsub;
 pub mod logs;
 pub mod media;
 pub mod pipeline;
