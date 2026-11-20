@@ -480,9 +480,7 @@ fn run_burn_ffmpeg(
 
 /// درصد واقعی از یک خط `-progress` — بدون مدت معلوم هیچ درصدی نمی‌دهد.
 pub fn progress_percent_from_line(line: &str, duration_seconds: Option<f64>) -> Option<u32> {
-    let Some(duration) = duration_seconds else {
-        return None;
-    };
+    let duration = duration_seconds?;
     let out_time_us = parse_out_time_us(line)?;
     Some(percent_for(out_time_us, duration))
 }
@@ -733,7 +731,7 @@ mod tests {
         assert_eq!(fs::read(&fx.video).unwrap(), video_before);
         assert_eq!(fs::read(&fx.subtitle).unwrap(), sub_before);
         // درصد واقعی از خط out_time_us ثبت شده (0.25s از 1s)
-        let percent = slot.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let percent = *slot.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!(percent, Some(25));
         // workspace پاک شده
         assert!(

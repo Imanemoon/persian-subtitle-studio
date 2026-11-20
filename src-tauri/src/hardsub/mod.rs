@@ -103,7 +103,7 @@ impl HardsubControl {
             .iter()
             .map(|slot| {
                 slot.as_ref()
-                    .and_then(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).clone())
+                    .and_then(|slot| *slot.lock().unwrap_or_else(PoisonError::into_inner))
             })
             .collect();
         for (index, item) in g.items.iter_mut().enumerate() {
@@ -244,6 +244,7 @@ pub(crate) struct EngineConfig {
 }
 
 /// ورود worker — گارد را از handoff می‌گیرد؛ خالی بودن handoff = fail-closed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn enter_worker(
     state: &AppState,
     run_id: String,

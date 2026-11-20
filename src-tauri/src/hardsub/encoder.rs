@@ -306,7 +306,7 @@ mod tests {
         assert!(!probe_encoder(&bad, VideoEncoder::Nvenc, &cancel));
         // script ناموجود → spawn شکست → false (بدون panic)
         assert!(!probe_encoder(
-            &Path::new("Z:\\definitely-missing-ffmpeg.cmd"),
+            Path::new("Z:\\definitely-missing-ffmpeg.cmd"),
             VideoEncoder::Nvenc,
             &cancel
         ));
