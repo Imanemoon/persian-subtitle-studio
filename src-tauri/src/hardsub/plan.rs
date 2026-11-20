@@ -40,10 +40,7 @@ pub fn output_extension(video: &Path) -> String {
 pub fn output_path_for(video: &Path) -> Option<PathBuf> {
     let stem = video.file_stem()?.to_string_lossy().into_owned();
     let dir = video.parent().filter(|dir| !dir.as_os_str().is_empty())?;
-    Some(dir.join(format!(
-        "{stem}.fa.hardsubbed.{}",
-        output_extension(video)
-    )))
+    Some(dir.join(format!("{stem}.fa.hardsubbed.{}", output_extension(video))))
 }
 
 /// منبع زیرنویس هر آیتم — تصمیم پلن؛ اجرا همان را مصرف می‌کند.
@@ -57,8 +54,8 @@ pub enum SubtitleSource {
 
 /// فایل ویدیوی قابل‌اعتماد؟ (معمولی، غیرخالی، بدون symlink/reparse)
 fn validate_video_file(video: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(video)
-        .map_err(|error| format!("ویدیو قابل دسترسی نیست: {error}"))?;
+    let metadata =
+        fs::symlink_metadata(video).map_err(|error| format!("ویدیو قابل دسترسی نیست: {error}"))?;
     if !metadata.is_file() || is_link_or_reparse(&metadata) || metadata.len() == 0 {
         return Err("ویدیو باید یک فایل معمولیِ غیرخالی و بدون symlink باشد".into());
     }
@@ -88,13 +85,16 @@ fn find_valid_sidecar(video: &Path) -> Option<PathBuf> {
 /// Track متنی فارسی داخلی — اولویت با Track با disposition=default؛ در
 /// نبود آن اولین Track متنی کاندید فارسی. Track تصویری (PGS) برای burn
 /// با فیلتر subtitles کار نمی‌کند و رد می‌شود.
-fn find_embedded_fa_text(ffprobe: &Path, video: &Path, cancel: &AtomicBool) -> Result<Option<u32>, String> {
-    let streams = ffprobe::probe_subtitle_streams(ffprobe, video, cancel).map_err(|error| {
-        match error {
+fn find_embedded_fa_text(
+    ffprobe: &Path,
+    video: &Path,
+    cancel: &AtomicBool,
+) -> Result<Option<u32>, String> {
+    let streams =
+        ffprobe::probe_subtitle_streams(ffprobe, video, cancel).map_err(|error| match error {
             ProbeError::Cancelled => "پروب ویدیو لغو شد".to_string(),
             ProbeError::Failed(reason) => format!("پروب Trackهای داخلی ناموفق بود: {reason}"),
-        }
-    })?;
+        })?;
     let text_fa = streams
         .iter()
         .filter(|stream| stream.persian_candidate && stream.kind == SubtitleKind::Text);
@@ -116,9 +116,7 @@ pub fn find_subtitle_source(
     }
     match find_embedded_fa_text(ffprobe, video, cancel)? {
         Some(stream_index) => Ok(SubtitleSource::EmbeddedStream { stream_index }),
-        None => Err(
-            "زیرنویس فارسی سینک‌شده (sidecar) و Track متنی فارسی داخلی یافت نشد".into(),
-        ),
+        None => Err("زیرنویس فارسی سینک‌شده (sidecar) و Track متنی فارسی داخلی یافت نشد".into()),
     }
 }
 
@@ -255,10 +253,7 @@ mod tests {
             PathBuf::from("D:/Shows/Movie.S01E01.720p.fa.hardsubbed.mkv")
         );
         let mp4 = output_path_for(Path::new("D:/x/Movie.mp4")).unwrap();
-        assert_eq!(
-            mp4,
-            PathBuf::from("D:/x/Movie.fa.hardsubbed.mp4")
-        );
+        assert_eq!(mp4, PathBuf::from("D:/x/Movie.fa.hardsubbed.mp4"));
     }
 
     #[test]
@@ -287,23 +282,31 @@ mod tests {
         // fa.srt معتبر → File
         let fa = fx.dir.join("Show.S01E01.720p.fa.srt");
         fs::write(&fa, SRT_FA).unwrap();
-        let plan = build_plan(&[video.to_string_lossy().into_owned()], &fx.ffprobe, &cancel, "E");
+        let plan = build_plan(
+            &[video.to_string_lossy().into_owned()],
+            &fx.ffprobe,
+            &cancel,
+            "E",
+        );
         assert_eq!(plan.items.len(), 1);
         assert_eq!(
             plan.items[0].subtitle_path.as_deref(),
             Some(fa.to_string_lossy().as_ref())
         );
         assert!(plan.items[0].embedded_stream_index.is_none());
-        assert!(
-            plan.items[0]
-                .output_path
-                .ends_with("Show.S01E01.720p.fa.hardsubbed.mkv")
-        );
+        assert!(plan.items[0]
+            .output_path
+            .ends_with("Show.S01E01.720p.fa.hardsubbed.mkv"));
 
         // synced.srt معتبر → اولویت بر fa.srt
         let synced = fx.dir.join("Show.S01E01.720p.fa.synced.srt");
         fs::write(&synced, SRT_FA).unwrap();
-        let plan = build_plan(&[video.to_string_lossy().into_owned()], &fx.ffprobe, &cancel, "E");
+        let plan = build_plan(
+            &[video.to_string_lossy().into_owned()],
+            &fx.ffprobe,
+            &cancel,
+            "E",
+        );
         assert_eq!(plan.items.len(), 1);
         assert_eq!(
             plan.items[0].subtitle_path.as_deref(),
@@ -323,13 +326,23 @@ mod tests {
         fs::write(&video, b"FAKE-VIDEO").unwrap();
         let fa = fx.dir.join("Movie.fa.srt");
         fs::write(&fa, "").unwrap();
-        let plan = build_plan(&[video.to_string_lossy().into_owned()], &fx.ffprobe, &cancel, "E");
+        let plan = build_plan(
+            &[video.to_string_lossy().into_owned()],
+            &fx.ffprobe,
+            &cancel,
+            "E",
+        );
         assert!(plan.items.is_empty(), "sidecar خالی نباید منبع شود");
 
         // پسوند غیر ویدیویی → skip
         let text = fx.dir.join("notes.txt");
         fs::write(&text, "hello").unwrap();
-        let plan = build_plan(&[text.to_string_lossy().into_owned()], &fx.ffprobe, &cancel, "E");
+        let plan = build_plan(
+            &[text.to_string_lossy().into_owned()],
+            &fx.ffprobe,
+            &cancel,
+            "E",
+        );
         assert!(plan.items.is_empty());
         assert!(plan.skipped[0].reason.contains("پسوند"));
 
@@ -337,7 +350,12 @@ mod tests {
         let output = fx.dir.join("Movie.fa.hardsubbed.mkv");
         fs::write(&output, b"OLD-OUTPUT").unwrap();
         fs::write(&fa, SRT_FA).unwrap();
-        let plan = build_plan(&[video.to_string_lossy().into_owned()], &fx.ffprobe, &cancel, "E");
+        let plan = build_plan(
+            &[video.to_string_lossy().into_owned()],
+            &fx.ffprobe,
+            &cancel,
+            "E",
+        );
         assert!(plan.items.is_empty());
         assert!(
             plan.skipped[0].reason.contains("موجود است"),

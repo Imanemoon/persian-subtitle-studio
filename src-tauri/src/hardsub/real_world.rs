@@ -39,19 +39,23 @@ fn resolve_tool_from_env_or_path(id: &str) -> PathBuf {
     let env_name = format!("SUBSYNC_REAL_{}", id.to_uppercase());
     if let Ok(path) = std::env::var(&env_name) {
         let path = PathBuf::from(path);
-        assert!(path.is_file(), "{env_name} باید فایل موجود باشد: {}", path.display());
+        assert!(
+            path.is_file(),
+            "{env_name} باید فایل موجود باشد: {}",
+            path.display()
+        );
         return path;
     }
-    crate::tools::resolve_tool_path(id, &Default::default())
-        .unwrap_or_else(|| panic!("{id} پیدا نشد — SUBSYNC_REAL_{} را تنظیم کنید یا نصب کنید", id.to_uppercase()))
+    crate::tools::resolve_tool_path(id, &Default::default()).unwrap_or_else(|| {
+        panic!(
+            "{id} پیدا نشد — SUBSYNC_REAL_{} را تنظیم کنید یا نصب کنید",
+            id.to_uppercase()
+        )
+    })
 }
 
 /// ساخت ویدیوی مصنوعی با lavfi — mpeg4 + aac (و در صورت درخواست Track متنی فارسی).
-fn build_synthetic_video(
-    ffmpeg: &Path,
-    video: &Path,
-    with_embedded_fa: bool,
-) {
+fn build_synthetic_video(ffmpeg: &Path, video: &Path, with_embedded_fa: bool) {
     let srt = video.parent().unwrap().join("fixture.srt");
     fs::write(&srt, SRT_FA).unwrap();
     let mut cmd = Command::new(ffmpeg);
@@ -71,16 +75,21 @@ fn build_synthetic_video(
     }
     cmd.args(["-map", "0:v", "-map", "1:a"]);
     if with_embedded_fa {
-        cmd.args(["-map", "2:s", "-metadata:s:s:0", "language=fas", "-metadata:s:s:0", "title=فارسی"]);
+        cmd.args([
+            "-map",
+            "2:s",
+            "-metadata:s:s:0",
+            "language=fas",
+            "-metadata:s:s:0",
+            "title=فارسی",
+        ]);
     }
     cmd.args(["-c:v", "mpeg4", "-q:v", "7", "-c:a", "aac", "-shortest"]);
     if with_embedded_fa {
         // mp4 نمی‌تواند subrip خام نگه دارد — mov_text (قرینهٔ SoftSub واقعی)
         cmd.args(["-c:s", "mov_text"]);
     }
-    cmd.arg(video)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+    cmd.arg(video).stdout(Stdio::null()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -116,7 +125,11 @@ fn probe_all_streams(ffprobe: &Path, video: &Path) -> Vec<(String, String)> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let out = cmd.output().expect("اجرای ffprobe");
-    assert!(out.status.success(), "ffprobe خروجی: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "ffprobe خروجی: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let json = String::from_utf8_lossy(&out.stdout);
     // parse سبک محلی — بدون وابستگی به ساختار FfprobeOutput داخلی
     let mut streams = Vec::new();
@@ -166,20 +179,34 @@ fn assert_burn_success(
 ) {
     // خروجی نصب شده
     let meta = fs::symlink_metadata(output).expect("خروجی هاردساب باید نصب شده باشد");
-    assert!(meta.is_file() && meta.len() > 0, "خروجی باید فایل غیرخالی باشد");
+    assert!(
+        meta.is_file() && meta.len() > 0,
+        "خروجی باید فایل غیرخالی باشد"
+    );
 
     // ساختار خروجی: یک استریم ویدیوی h264، صدا حفظ‌شده، بدون Track زیرنویس
     let streams = probe_all_streams(ffprobe, output);
     let video_streams = streams.iter().filter(|(kind, _)| kind == "video").count();
     let audio_streams = streams.iter().filter(|(kind, _)| kind == "audio").count();
-    let sub_streams = streams.iter().filter(|(kind, _)| kind == "subtitle").count();
-    assert!(video_streams >= 1, "خروجی باید استریم ویدیو داشته باشد: {streams:?}");
+    let sub_streams = streams
+        .iter()
+        .filter(|(kind, _)| kind == "subtitle")
+        .count();
     assert!(
-        streams.iter().any(|(kind, name)| kind == "video" && name == "h264"),
+        video_streams >= 1,
+        "خروجی باید استریم ویدیو داشته باشد: {streams:?}"
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|(kind, name)| kind == "video" && name == "h264"),
         "استریم ویدیو باید h264 باشد (خروجی بازانکود): {streams:?}"
     );
     assert_eq!(audio_streams, 1, "صدا باید با copy حفظ شود: {streams:?}");
-    assert_eq!(sub_streams, 0, "زیرنویس نباید به‌صورت Track بماند: {streams:?}");
+    assert_eq!(
+        sub_streams, 0,
+        "زیرنویس نباید به‌صورت Track بماند: {streams:?}"
+    );
 
     // مدت خروجی ≈ مدت منبع (±15٪) — بدون حذف/کشش زمانی
     let no_cancel = AtomicBool::new(false);
@@ -196,7 +223,11 @@ fn assert_burn_success(
     }
 
     // منبع دست‌نخورده + بدون workspace باقی‌مانده
-    assert_eq!(source_fingerprint(video), source_fp, "فایل اصلی نباید تغییر کند");
+    assert_eq!(
+        source_fingerprint(video),
+        source_fp,
+        "فایل اصلی نباید تغییر کند"
+    );
     assert!(
         leftover_workspaces(video.parent().unwrap()).is_empty(),
         "workspace باید پاک شده باشد"
@@ -220,7 +251,8 @@ fn real_hardsub_sidecar_burns_and_preserves_source() {
     let sub_fp = source_fingerprint(&sub);
 
     let no_cancel = AtomicBool::new(false);
-    let chosen = encoder::resolve_encoder(&ffmpeg, crate::settings::HardsubEncoder::Auto, &no_cancel);
+    let chosen =
+        encoder::resolve_encoder(&ffmpeg, crate::settings::HardsubEncoder::Auto, &no_cancel);
     let burn_plan = plan::build_plan(
         &[video.to_string_lossy().into_owned()],
         &ffprobe,
@@ -244,17 +276,26 @@ fn real_hardsub_sidecar_burns_and_preserves_source() {
         source: plan::SubtitleSource::File(sub.clone()),
         encoder: chosen,
         quality: crate::settings::HardsubQuality::Fast,
-        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel).unwrap(),
+        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel)
+            .unwrap(),
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
     });
     let outcome = result.unwrap_or_else(|error| panic!("burn باید موفق شود: {error:?}"));
     assert_eq!(outcome.output_path, output);
-    assert!(outcome.cleanup_warning.is_none(), "{:?}", outcome.cleanup_warning);
+    assert!(
+        outcome.cleanup_warning.is_none(),
+        "{:?}",
+        outcome.cleanup_warning
+    );
 
     assert_burn_success(&ffprobe, &video, &output, source_fp);
-    assert_eq!(source_fingerprint(&sub), sub_fp, "زیرنویس هم نباید تغییر کند");
+    assert_eq!(
+        source_fingerprint(&sub),
+        sub_fp,
+        "زیرنویس هم نباید تغییر کند"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -294,7 +335,8 @@ fn real_hardsub_embedded_track_extraction_and_burn() {
         source: plan::SubtitleSource::EmbeddedStream { stream_index },
         encoder: encoder::VideoEncoder::Libx264,
         quality: crate::settings::HardsubQuality::Fast,
-        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel).unwrap(),
+        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel)
+            .unwrap(),
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
@@ -337,7 +379,10 @@ fn real_hardsub_existing_output_conflicts_without_overwrite() {
         cancel: &no_cancel,
         progress_slot: None,
     });
-    assert!(matches!(result, Err(burn::BurnError::Conflict)), "{result:?}");
+    assert!(
+        matches!(result, Err(burn::BurnError::Conflict)),
+        "{result:?}"
+    );
     assert_eq!(source_fingerprint(&output), output_fp);
     assert_eq!(source_fingerprint(&video), source_fp);
     assert!(
@@ -359,7 +404,11 @@ fn real_archive_video() {
     let ffmpeg = resolve_tool_from_env_or_path("ffmpeg");
     let ffprobe = resolve_tool_from_env_or_path("ffprobe");
     let video = PathBuf::from(video);
-    assert!(video.is_file(), "ویدیوی واقعی موجود نیست: {}", video.display());
+    assert!(
+        video.is_file(),
+        "ویدیوی واقعی موجود نیست: {}",
+        video.display()
+    );
     let source_fp = source_fingerprint(&video);
 
     let dir = unique_temp_dir("archive");
@@ -368,8 +417,12 @@ fn real_archive_video() {
     fs::write(&sub, SRT_FA).unwrap();
 
     let no_cancel = AtomicBool::new(false);
-    let chosen = encoder::resolve_encoder(&ffmpeg, crate::settings::HardsubEncoder::Auto, &no_cancel);
-    crate::logging::info("hardsub-real", &format!("انکودر انتخاب‌شده: {}", chosen.label()));
+    let chosen =
+        encoder::resolve_encoder(&ffmpeg, crate::settings::HardsubEncoder::Auto, &no_cancel);
+    crate::logging::info(
+        "hardsub-real",
+        &format!("انکودر انتخاب‌شده: {}", chosen.label()),
+    );
 
     // خروجی در temp — آرشیو دست‌نخورده می‌ماند
     let output = dir.join(format!(
@@ -384,7 +437,8 @@ fn real_archive_video() {
         source: plan::SubtitleSource::File(sub.clone()),
         encoder: chosen,
         quality: crate::settings::HardsubQuality::Fast,
-        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel).unwrap(),
+        duration_seconds: crate::media::ffprobe::probe_duration(&ffprobe, &video, &no_cancel)
+            .unwrap(),
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
@@ -393,9 +447,16 @@ fn real_archive_video() {
     assert_eq!(outcome.output_path, output);
 
     // منبع واقعی دست‌نخورده؛ خروجی قابل خواندن (ادعای مدت با tolerance گسترده)
-    assert_eq!(source_fingerprint(&video), source_fp, "آرشیو واقعی نباید تغییر کند");
-    let out_duration = crate::media::ffprobe::probe_duration(&ffprobe, &output, &no_cancel)
-        .expect("probe خروجی");
-    assert!(out_duration.is_some(), "خروجی باید مدت قابل خواندن داشته باشد");
+    assert_eq!(
+        source_fingerprint(&video),
+        source_fp,
+        "آرشیو واقعی نباید تغییر کند"
+    );
+    let out_duration =
+        crate::media::ffprobe::probe_duration(&ffprobe, &output, &no_cancel).expect("probe خروجی");
+    assert!(
+        out_duration.is_some(),
+        "خروجی باید مدت قابل خواندن داشته باشد"
+    );
     let _ = fs::remove_dir_all(&dir);
 }

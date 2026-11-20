@@ -542,8 +542,11 @@ mod tests {
         std::fs::write(config_file_path(&dir), json).unwrap();
 
         let loaded = load(&dir);
-        assert_eq!(loaded.hardsub, HardsubSettings::default(),
-            "تنظیمات قدیمیِ بدون hardsub باید به پیش‌فرض‌های جدید مهاجرت کند");
+        assert_eq!(
+            loaded.hardsub,
+            HardsubSettings::default(),
+            "تنظیمات قدیمیِ بدون hardsub باید به پیش‌فرض‌های جدید مهاجرت کند"
+        );
         assert_eq!(loaded.hardsub.encoder, HardsubEncoder::Auto);
         assert_eq!(loaded.hardsub.quality, HardsubQuality::Fast);
         assert_eq!(loaded.hardsub.workers, 2);

@@ -102,11 +102,8 @@ impl HardsubControl {
             .slots
             .iter()
             .map(|slot| {
-                slot.as_ref().and_then(|slot| {
-                    slot.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .clone()
-                })
+                slot.as_ref()
+                    .and_then(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).clone())
             })
             .collect();
         for (index, item) in g.items.iter_mut().enumerate() {
@@ -116,7 +113,11 @@ impl HardsubControl {
                 };
             }
         }
-        let completed = g.items.iter().filter(|item| item.status.is_terminal()).count();
+        let completed = g
+            .items
+            .iter()
+            .filter(|item| item.status.is_terminal())
+            .count();
         HardsubSnapshot {
             seq,
             run_id: self.run_id.clone(),
@@ -130,11 +131,7 @@ impl HardsubControl {
     }
 
     /// به‌روزرسانی یک آیتم + بازشمارش صادقانهٔ counters — زیر همان قفل.
-    pub(crate) fn update_item(
-        &self,
-        index: usize,
-        update: impl FnOnce(&mut HardsubItemSnapshot),
-    ) {
+    pub(crate) fn update_item(&self, index: usize, update: impl FnOnce(&mut HardsubItemSnapshot)) {
         let mut g = self.lock();
         if let Some(item) = g.items.get_mut(index) {
             update(item);
@@ -192,10 +189,7 @@ fn counts_of(items: &[HardsubItemSnapshot]) -> HardsubCounts {
 
 /// حذف فقط control با run_id مطابق — poison-safe؛ خروجی: آیا حذف شد؟
 pub(crate) fn clear_published_control(state: &AppState, run_id: &str) -> bool {
-    let mut published = state
-        .hardsub
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut published = state.hardsub.lock().unwrap_or_else(PoisonError::into_inner);
     if published
         .as_ref()
         .map(|control| control.run_id() == run_id)
@@ -310,9 +304,12 @@ fn run_engine(
         g.slots = vec![None; plan.items.len()];
         g.counts = HardsubCounts::default();
     }
-    emit_to(sink, HardsubEvent::State {
-        snapshot: control.snapshot(),
-    });
+    emit_to(
+        sink,
+        HardsubEvent::State {
+            snapshot: control.snapshot(),
+        },
+    );
 
     // ticker — emits هر 400ms تا running=false؛ درصد زنده از slots ادغام می‌شود
     let ticker_control = Arc::clone(control);
@@ -325,9 +322,12 @@ fn run_engine(
                 break;
             }
         }
-        emit_to(&ticker_sink, HardsubEvent::State {
-            snapshot: ticker_control.snapshot(),
-        });
+        emit_to(
+            &ticker_sink,
+            HardsubEvent::State {
+                snapshot: ticker_control.snapshot(),
+            },
+        );
     });
 
     let cancel = Arc::clone(control.cancel_flag());
@@ -343,22 +343,22 @@ fn run_engine(
         let worker_cancel = Arc::clone(&cancel);
         let spawned = std::thread::Builder::new()
             .name(format!("hardsub-w{worker_index}"))
-            .spawn(move || {
-                loop {
-                    let index = {
-                        queue
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .pop_front()
-                    };
-                    let Some(index) = index else { break };
-                    if worker_cancel.load(Ordering::SeqCst) {
-                        control.update_item(index, |item| item.status = HardsubItemStatus::Cancelled);
-                        continue;
-                    }
-                    let Some(plan_item) = items.get(index) else { continue };
-                    process_item(&control, &paths, config, plan_item, index, &worker_cancel);
+            .spawn(move || loop {
+                let index = {
+                    queue
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .pop_front()
+                };
+                let Some(index) = index else { break };
+                if worker_cancel.load(Ordering::SeqCst) {
+                    control.update_item(index, |item| item.status = HardsubItemStatus::Cancelled);
+                    continue;
                 }
+                let Some(plan_item) = items.get(index) else {
+                    continue;
+                };
+                process_item(&control, &paths, config, plan_item, index, &worker_cancel);
             });
         match spawned {
             Ok(handle) => handles.push(handle),
@@ -395,12 +395,18 @@ fn run_engine(
     }
 
     let _ = ticker.join();
-    emit_to(sink, HardsubEvent::State {
-        snapshot: control.snapshot(),
-    });
-    emit_to(sink, HardsubEvent::Done {
-        summary: control.summary(cancelled),
-    });
+    emit_to(
+        sink,
+        HardsubEvent::State {
+            snapshot: control.snapshot(),
+        },
+    );
+    emit_to(
+        sink,
+        HardsubEvent::Done {
+            summary: control.summary(cancelled),
+        },
+    );
     crate::logging::info(
         "hardsub",
         &format!(
@@ -529,7 +535,10 @@ fn process_item(
             let reason = other.message();
             crate::logging::error(
                 "hardsub",
-                &format!("هاردساب «{}» ناموفق بود: {reason}", plan_item.video_file_name),
+                &format!(
+                    "هاردساب «{}» ناموفق بود: {reason}",
+                    plan_item.video_file_name
+                ),
             );
             control.update_item(index, |item| {
                 item.status = HardsubItemStatus::Failed { reason };
@@ -542,10 +551,7 @@ fn process_item(
 /// workerها آیتم‌های باز را Cancelled می‌کنند و `hardsub:done` می‌فرستند.
 pub fn cancel_active_hardsub(state: &AppState) -> bool {
     let control = {
-        let published = state
-            .hardsub
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let published = state.hardsub.lock().unwrap_or_else(PoisonError::into_inner);
         published.as_ref().map(Arc::clone)
     };
     match control {

@@ -51,23 +51,90 @@ impl VideoEncoder {
     pub fn codec_args(&self, quality: HardsubQuality) -> Vec<&'static str> {
         match self {
             Self::Nvenc => match quality {
-                HardsubQuality::Fast => vec!["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"],
-                HardsubQuality::Balanced => vec!["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "22", "-b:v", "0"],
-                HardsubQuality::High => vec!["-c:v", "h264_nvenc", "-preset", "p6", "-rc", "vbr", "-cq", "20", "-b:v", "0"],
+                HardsubQuality::Fast => vec![
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    "p4",
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    "23",
+                    "-b:v",
+                    "0",
+                ],
+                HardsubQuality::Balanced => vec![
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    "p5",
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    "22",
+                    "-b:v",
+                    "0",
+                ],
+                HardsubQuality::High => vec![
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    "p6",
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    "20",
+                    "-b:v",
+                    "0",
+                ],
             },
             Self::Qsv => match quality {
-                HardsubQuality::Fast => vec!["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "23"],
-                HardsubQuality::Balanced => vec!["-c:v", "h264_qsv", "-preset", "fast", "-global_quality", "22"],
-                HardsubQuality::High => vec!["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "20"],
+                HardsubQuality::Fast => vec![
+                    "-c:v",
+                    "h264_qsv",
+                    "-preset",
+                    "veryfast",
+                    "-global_quality",
+                    "23",
+                ],
+                HardsubQuality::Balanced => vec![
+                    "-c:v",
+                    "h264_qsv",
+                    "-preset",
+                    "fast",
+                    "-global_quality",
+                    "22",
+                ],
+                HardsubQuality::High => vec![
+                    "-c:v",
+                    "h264_qsv",
+                    "-preset",
+                    "medium",
+                    "-global_quality",
+                    "20",
+                ],
             },
             Self::Amf => match quality {
-                HardsubQuality::Fast => vec!["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23", "-qp_b", "23"],
-                HardsubQuality::Balanced => vec!["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "22", "-qp_p", "22", "-qp_b", "22"],
-                HardsubQuality::High => vec!["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "20"],
+                HardsubQuality::Fast => vec![
+                    "-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "23", "-qp_p",
+                    "23", "-qp_b", "23",
+                ],
+                HardsubQuality::Balanced => vec![
+                    "-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "22",
+                    "-qp_p", "22", "-qp_b", "22",
+                ],
+                HardsubQuality::High => vec![
+                    "-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "20",
+                    "-qp_p", "20", "-qp_b", "20",
+                ],
             },
             Self::Libx264 => match quality {
-                HardsubQuality::Fast => vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"],
-                HardsubQuality::Balanced => vec!["-c:v", "libx264", "-preset", "faster", "-crf", "22"],
+                HardsubQuality::Fast => {
+                    vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+                }
+                HardsubQuality::Balanced => {
+                    vec!["-c:v", "libx264", "-preset", "faster", "-crf", "22"]
+                }
                 HardsubQuality::High => vec!["-c:v", "libx264", "-preset", "medium", "-crf", "20"],
             },
         }
@@ -160,7 +227,11 @@ pub fn probe_encoder(ffmpeg: &Path, encoder: VideoEncoder, cancel: &AtomicBool) 
 /// - Override (Nvidia/Intel/Amd): فقط همان انکودر probe می‌شود؛ شکست → CPU
 ///   (تصمیم عمل‌گرا: کاربر به‌جای خطا خروجی می‌گیرد و انکودر واقعی در UI
 ///   شفاف گزارش می‌شود).
-pub fn resolve_encoder(ffmpeg: &Path, setting: HardsubEncoder, cancel: &AtomicBool) -> VideoEncoder {
+pub fn resolve_encoder(
+    ffmpeg: &Path,
+    setting: HardsubEncoder,
+    cancel: &AtomicBool,
+) -> VideoEncoder {
     let order: &[VideoEncoder] = match setting {
         HardsubEncoder::Auto => &[VideoEncoder::Nvenc, VideoEncoder::Qsv, VideoEncoder::Amf],
         HardsubEncoder::Nvidia => &[VideoEncoder::Nvenc],
@@ -228,14 +299,8 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn probe_accepts_and_rejects_by_exit_code() {
-        let ok = write_script(
-            "probe-ok",
-            "@echo off\r\nexit /b 0\r\n",
-        );
-        let bad = write_script(
-            "probe-bad",
-            "@echo off\r\nexit /b 1\r\n",
-        );
+        let ok = write_script("probe-ok", "@echo off\r\nexit /b 0\r\n");
+        let bad = write_script("probe-bad", "@echo off\r\nexit /b 1\r\n");
         let cancel = AtomicBool::new(false);
         assert!(probe_encoder(&ok, VideoEncoder::Nvenc, &cancel));
         assert!(!probe_encoder(&bad, VideoEncoder::Nvenc, &cancel));
@@ -251,10 +316,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn resolve_encoder_overrides_fall_back_to_cpu() {
-        let bad = write_script(
-            "resolve-bad",
-            "@echo off\r\nexit /b 1\r\n",
-        );
+        let bad = write_script("resolve-bad", "@echo off\r\nexit /b 1\r\n");
         let cancel = AtomicBool::new(false);
         assert_eq!(
             resolve_encoder(&bad, HardsubEncoder::Nvidia, &cancel),
@@ -271,10 +333,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn resolve_encoder_auto_stops_at_first_working_gpu() {
-        let ok = write_script(
-            "resolve-ok",
-            "@echo off\r\nexit /b 0\r\n",
-        );
+        let ok = write_script("resolve-ok", "@echo off\r\nexit /b 0\r\n");
         let cancel = AtomicBool::new(false);
         assert_eq!(
             resolve_encoder(&ok, HardsubEncoder::Auto, &cancel),

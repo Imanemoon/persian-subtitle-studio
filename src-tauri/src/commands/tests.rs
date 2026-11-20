@@ -160,8 +160,8 @@ fn make_state() -> Arc<AppState> {
         last_scan: Mutex::new(None),
         ops: Arc::new(Mutex::new(OpsRegistry::default())),
         pipeline: Mutex::new(None),
-            hardsub: Mutex::new(None),
-            hardsub_encoder_cache: Mutex::new(None),
+        hardsub: Mutex::new(None),
+        hardsub_encoder_cache: Mutex::new(None),
         archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
         setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })

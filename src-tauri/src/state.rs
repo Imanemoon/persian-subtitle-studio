@@ -306,8 +306,7 @@ pub struct AppState {
     /// هاردساب فعال (در صورت وجود) — admission از طریق همان اسلات batch.
     pub hardsub: Mutex<Option<Arc<crate::hardsub::HardsubControl>>>,
     /// انکودر اثبات‌شدهٔ هاردساب (کش سشن) — کلید: تنظیم encoder + مسیر ffmpeg.
-    pub hardsub_encoder_cache:
-        Mutex<Option<(String, crate::hardsub::encoder::VideoEncoder)>>,
+    pub hardsub_encoder_cache: Mutex<Option<(String, crate::hardsub::encoder::VideoEncoder)>>,
     /// لغو نصب خودکار ابزارها (معاونت راه‌اندازی) — مستقل از registry عملیات.
     pub setup_cancel: Arc<AtomicBool>,
 }

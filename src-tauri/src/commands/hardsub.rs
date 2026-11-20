@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::hardsub::{
-    cancel_active_hardsub, clear_published_control, encoder, plan, types::*, HardsubControl,
-    EngineConfig, EnginePaths, SinkStore,
+    cancel_active_hardsub, clear_published_control, encoder, plan, types::*, EngineConfig,
+    EnginePaths, HardsubControl, SinkStore,
 };
 use crate::settings::HardsubEncoder;
 use crate::state::{acquire_batch_op, AppState};
@@ -29,10 +29,7 @@ fn emit_event(app: &AppHandle, event: HardsubEvent) -> tauri::Result<()> {
 }
 
 fn hardsub_control(state: &State<'_, AppState>) -> Option<Arc<HardsubControl>> {
-    let published = state
-        .hardsub
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let published = state.hardsub.lock().unwrap_or_else(PoisonError::into_inner);
     published.as_ref().map(Arc::clone)
 }
 
@@ -85,7 +82,9 @@ fn encoder_label(state: &AppState, ffmpeg: &Path) -> String {
         .unwrap_or_else(PoisonError::into_inner)
         .hardsub
         .encoder;
-    resolve_encoder_cached(state, ffmpeg, setting).label().to_string()
+    resolve_encoder_cached(state, ffmpeg, setting)
+        .label()
+        .to_string()
 }
 
 /// پلن هاردساب — بازبینی فایل‌سیستم/ffprobe؛ فقط توصیه است و اجرا پلن
@@ -144,10 +143,7 @@ pub fn start_hardsub(
 
     // ۳) publish — قبل از spawn
     {
-        let mut published = state
-            .hardsub
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut published = state.hardsub.lock().unwrap_or_else(PoisonError::into_inner);
         *published = Some(Arc::clone(&control));
     }
 
@@ -173,7 +169,16 @@ pub fn start_hardsub(
         .spawn(move || {
             let state = app.state::<AppState>();
             let sink = publish_sink(&app);
-            crate::hardsub::enter_worker(&state, worker_run_id, &h2, c2, engine_paths, config, p2, sink);
+            crate::hardsub::enter_worker(
+                &state,
+                worker_run_id,
+                &h2,
+                c2,
+                engine_paths,
+                config,
+                p2,
+                sink,
+            );
         });
 
     match spawned {

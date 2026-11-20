@@ -183,8 +183,8 @@ impl Harness {
             ops: Arc::new(Mutex::new(OpsRegistry::default())),
             archive_provenance: Mutex::new(ProvenanceRegistry::default()),
             pipeline: Mutex::new(None),
-        hardsub: Mutex::new(None),
-        hardsub_encoder_cache: Mutex::new(None),
+            hardsub: Mutex::new(None),
+            hardsub_encoder_cache: Mutex::new(None),
             setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         Harness { state, dir, tools }

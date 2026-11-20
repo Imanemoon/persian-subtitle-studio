@@ -52,8 +52,12 @@ impl BurnError {
     pub fn message(&self) -> String {
         match self {
             Self::Cancelled => "عملیات هاردساب توسط کاربر لغو شد".into(),
-            Self::Invalid(m) | Self::Probe(m) | Self::Extract(m) | Self::Spawn(m)
-            | Self::Unsuccessful(m) | Self::Io(m) => m.clone(),
+            Self::Invalid(m)
+            | Self::Probe(m)
+            | Self::Extract(m)
+            | Self::Spawn(m)
+            | Self::Unsuccessful(m)
+            | Self::Io(m) => m.clone(),
             Self::Timeout => "هاردساب بیش از زمان مجاز طول کشید؛ فرایند متوقف شد".into(),
             Self::Conflict => {
                 "خروجی در فاصلهٔ شروع تا نصب ساخته شد — برای جلوگیری از بازنویسی رد شد".into()
@@ -128,10 +132,7 @@ pub fn burn(request: &BurnRequest) -> Result<BurnOutcome, BurnError> {
     })
 }
 
-fn burn_in_workspace(
-    request: &BurnRequest,
-    workspace: &Path,
-) -> Result<BurnOutcome, BurnError> {
+fn burn_in_workspace(request: &BurnRequest, workspace: &Path) -> Result<BurnOutcome, BurnError> {
     let cancel = request.cancel;
 
     // ۱) آماده‌سازی sub.srt داخل workspace (نام نسبی ساده برای فیلتر)
@@ -156,7 +157,13 @@ fn burn_in_workspace(
             if cancel.load(Ordering::SeqCst) {
                 return Err(BurnError::Cancelled);
             }
-            extract_embedded(request.ffmpeg, request.video, *stream_index, &sub_srt, cancel)?;
+            extract_embedded(
+                request.ffmpeg,
+                request.video,
+                *stream_index,
+                &sub_srt,
+                cancel,
+            )?;
             let validation = validate_file(&sub_srt);
             if !validation.valid || !validation.has_persian {
                 return Err(BurnError::Extract(format!(
@@ -210,9 +217,8 @@ fn burn_in_workspace(
     if fs::symlink_metadata(request.output).is_ok() {
         return Err(BurnError::Conflict);
     }
-    fs::rename(&candidate, request.output).map_err(|error| {
-        BurnError::Io(format!("نصب خروجی هاردساب ناموفق بود: {error}"))
-    })?;
+    fs::rename(&candidate, request.output)
+        .map_err(|error| BurnError::Io(format!("نصب خروجی هاردساب ناموفق بود: {error}")))?;
 
     Ok(BurnOutcome {
         output_path: request.output.to_path_buf(),
@@ -235,13 +241,7 @@ fn extract_embedded(
         .parent()
         .ok_or_else(|| BurnError::Io("workspace بدون والد است".into()))?;
     let mut command = Command::new(ffmpeg);
-    command.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-    ]);
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"]);
     command.arg(video);
     command.arg("-map");
     command.arg(format!("0:{stream_index}")); // index گلوبال
@@ -259,9 +259,11 @@ fn extract_embedded(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| BurnError::Spawn(format!("اجرای FFmpeg برای استخراج Track ناموفق بود: {error}")))?;
+    let mut child = command.spawn().map_err(|error| {
+        BurnError::Spawn(format!(
+            "اجرای FFmpeg برای استخراج Track ناموفق بود: {error}"
+        ))
+    })?;
     let mut stderr_pipe = child.stderr.take().expect("stderr piped");
     let stderr_reader = std::thread::spawn(move || {
         use std::io::Read;
@@ -293,7 +295,9 @@ fn extract_embedded(
                 let _ = child.kill();
                 let _ = child.wait();
                 drop(stderr_reader);
-                return Err(BurnError::Io(format!("انتظار برای FFmpeg ناموفق بود: {error}")));
+                return Err(BurnError::Io(format!(
+                    "انتظار برای FFmpeg ناموفق بود: {error}"
+                )));
             }
         }
     };
@@ -441,14 +445,16 @@ fn run_burn_ffmpeg(
                 let _ = child.wait();
                 drop(stdout_reader);
                 drop(stderr_reader);
-                return Err(BurnError::Io(format!("انتظار برای FFmpeg ناموفق بود: {error}")));
+                return Err(BurnError::Io(format!(
+                    "انتظار برای FFmpeg ناموفق بود: {error}"
+                )));
             }
         }
     };
 
     let stderr = stderr_reader.join().unwrap_or_default();
     let _ = stdout_reader.join(); // stdout کوچک است — join تا آخرین درصد ثبت شود
-    // timeout/لغو داخل حلقه Err برمی‌گردانند؛ اینجا همیشه Some است
+                                  // timeout/لغو داخل حلقه Err برمی‌گردانند؛ اینجا همیشه Some است
     let Some(status) = status else {
         return Err(BurnError::Timeout);
     };
@@ -583,7 +589,10 @@ mod tests {
         assert_eq!(percent_for(1000.0, 0.0), 0);
         assert_eq!(percent_for(1000.0, f64::NAN), 0);
 
-        assert_eq!(progress_percent_from_line("out_time_us=500000", Some(1.0)), Some(50));
+        assert_eq!(
+            progress_percent_from_line("out_time_us=500000", Some(1.0)),
+            Some(50)
+        );
         assert_eq!(
             progress_percent_from_line("out_time_us=500000", None),
             None,
@@ -616,7 +625,8 @@ mod tests {
         "exit /b 0\r\n"
     );
 
-    const FAKE_FFMPEG_FAIL: &str = "@echo off\r\necho Failure reason issued by fake ffmpeg >&2\r\nexit /b 1\r\n";
+    const FAKE_FFMPEG_FAIL: &str =
+        "@echo off\r\necho Failure reason issued by fake ffmpeg >&2\r\nexit /b 1\r\n";
 
     /// ffmpeg جعلی بدون ساخت خروجی — خروجی خالی باید Unsuccessful شود.
     const FAKE_FFMPEG_NO_OUTPUT: &str = "@echo off\r\nexit /b 0\r\n";
@@ -705,17 +715,20 @@ mod tests {
         let video_before = fs::read(&fx.video).unwrap();
         let sub_before = fs::read(&fx.subtitle).unwrap();
 
-        let result = burn(&request(&fx, &ffmpeg, &cancel, Some(Arc::clone(&slot)), None));
+        let result = burn(&request(
+            &fx,
+            &ffmpeg,
+            &cancel,
+            Some(Arc::clone(&slot)),
+            None,
+        ));
         let outcome = result.unwrap_or_else(|error| panic!("burn باید موفق شود: {error:?}"));
 
         // خروجی جدید با محتوای fake ساخته و نصب شده
         assert_eq!(outcome.output_path, fx.output);
         let output_text = fs::read_to_string(&fx.output).unwrap();
         assert!(output_text.contains("HARDSUB-OUTPUT-MARKER"));
-        assert_eq!(
-            outcome.encoder_used,
-            VideoEncoder::Libx264
-        );
+        assert_eq!(outcome.encoder_used, VideoEncoder::Libx264);
         // فایل اصلی و زیرنویس دست‌نخورده
         assert_eq!(fs::read(&fx.video).unwrap(), video_before);
         assert_eq!(fs::read(&fx.subtitle).unwrap(), sub_before);
@@ -741,7 +754,10 @@ mod tests {
         let result = burn(&request(&fx, &ffmpeg, &cancel, None, None));
         match &result {
             Err(BurnError::Unsuccessful(message)) => {
-                assert!(message.contains("Failure reason"), "جزئیات stderr باید بیاید: {message}");
+                assert!(
+                    message.contains("Failure reason"),
+                    "جزئیات stderr باید بیاید: {message}"
+                );
             }
             other => panic!("انتظار Unsuccessful، دریافت: {other:?}"),
         }
@@ -761,7 +777,10 @@ mod tests {
         let cancel = AtomicBool::new(false);
 
         let result = burn(&request(&fx, &ffmpeg, &cancel, None, None));
-        assert!(matches!(result, Err(BurnError::Unsuccessful(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(BurnError::Unsuccessful(_))),
+            "{result:?}"
+        );
         assert!(!fx.output.exists());
         assert!(leftover_workspaces(&fx.dir).is_empty());
     }
@@ -847,7 +866,9 @@ mod tests {
         cancel.store(true, Ordering::SeqCst);
 
         let started_cancel = Instant::now();
-        let result = worker.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        let result = worker
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e));
         assert!(
             started_cancel.elapsed() < Duration::from_secs(15),
             "لغو باید بلافاصله برگردد: {:?}",
@@ -877,7 +898,13 @@ mod tests {
         let cancel = AtomicBool::new(false);
 
         let started = Instant::now();
-        let result = burn(&request(&fx, &ffmpeg, &cancel, None, Some(Duration::from_millis(700))));
+        let result = burn(&request(
+            &fx,
+            &ffmpeg,
+            &cancel,
+            None,
+            Some(Duration::from_millis(700)),
+        ));
         let elapsed = started.elapsed();
         assert!(matches!(result, Err(BurnError::Timeout)), "{result:?}");
         assert!(elapsed >= Duration::from_millis(600), "{elapsed:?}");
