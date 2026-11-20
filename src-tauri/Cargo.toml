@@ -1,6 +1,6 @@
 [package]
 name = "persian-subtitle-studio"
-version = "0.2.0"
+version = "0.2.1"
 description = "SubSync Studio — مدیریت خودکار زیرنویس فارسی سریال‌ها و فیلم‌ها"
 authors = ["iMaN"]
 edition = "2021"
