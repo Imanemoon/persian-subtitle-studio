@@ -52,7 +52,7 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 - زیرنویس‌های موجود skip می‌شوند (با دلیل)، لغو، فرایند FFmpeg را می‌کشد و فایل موقتش را پاک می‌کند
 
 ### دانلود از SubSource و آرشیوها
-- کلید API فقط در **Credential Manager ویندوز** — هرگز در فایل تنظیمات یا کد
+- کلید API اختیاری است — **بدون کلید هم دانلود ناشناس کار می‌کند**؛ کلید شخصی فقط در **Credential Manager ویندوز**، هرگز در فایل تنظیمات یا کد
 - Staging امن با Hard Link، بازبینی تازهٔ فایل‌سیستم، کدهای skip تایپ‌شده
 - پلن آرشیو دو مرحله‌ای: بازرسی امن همهٔ اعضا → استخراج → تطبیق اپیزود → جانمایی؛
   تعارض = هر دو فایل حفظ می‌شوند
@@ -76,7 +76,7 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
    پیش‌نیازها را خودش دانلود و نصب می‌کند**
 ۳. (پیشنهادی) در همان صفحه، پوشهٔ رسانه‌های‌تان را به استثناهای Defender اضافه کنید —
    روی هارد دیسک مکانیکی چند برابر سریع‌تر می‌شود
-۴. برای دانلود از SubSource، کلید API را در تنظیمات ذخیره کنید (در Credential Manager می‌ماند)
+۴. (اختیاری) کلید API حساب شخصی SubSource را در تنظیمات ذخیره کنید — بدون کلید هم دانلود ناشناس کار می‌کند
 
 **پیش‌نیاز سیستم:** Windows 10/11 (64-bit) — اگر WebView2 نصب نباشد، نصاب آن را دانلود می‌کند.
 
@@ -148,8 +148,8 @@ subtitles for your entire video library:
 
 - **Extract embedded Persian subtitles** from MKV/MP4 — dual-layer Persian detection
   (language tag + real content verification), multi-track selection, review for untagged tracks
-- **Download Persian subtitles from SubSource.org** — API key stored only in Windows
-  Credential Manager, safe staging with hard links
+- **Download Persian subtitles from SubSource.org** — works anonymously out of the box
+  (optional personal API key stored only in Windows Credential Manager), safe staging with hard links
 - **Match & extract subtitle archives** (zip/rar/7z) with episode matching and conflict preservation
 - **Sync subtitle timing with FFsubsync** — multi-segment alignment, intro/outro skip,
   low-quality protection, validated offset shown in the UI

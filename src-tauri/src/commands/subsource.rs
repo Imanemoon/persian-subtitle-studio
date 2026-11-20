@@ -72,7 +72,8 @@ enum GroupOutcome {
 
 /// هسته دانلود گروهی — مستقل از Tauri و قابل تست با Fake SubSource.
 ///
-/// `api_key = None` یعنی کلید موجود نیست → توقف کامل قبل از هر تغییر دیسک.
+/// `api_key` اختیاری است: None یا خالی = اجرای ناشناس (sub-rs بدون کلید
+/// جستجو و دانلود می‌کند؛ کلید فقط برای حساب شخصی SubSource است).
 /// `staging_base` فقط برای تست‌هاست؛ در تولید ریشه staging روی ریشه volume
 /// هر گروه ساخته می‌شود.
 ///
@@ -178,14 +179,11 @@ where
         return result;
     }
 
-    // ۱) API key — پیش از هرگونه تغییر روی دیسک
-    let Some(api_key) = api_key
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-    else {
-        result.message = "برای دانلود زیرنویس ابتدا API key را تنظیم کنید (ذخیره امن در Credential Manager سیستم).".into();
-        return result;
-    };
+    // ۱) API key اختیاری — خالی/None = دانلود ناشناس با sub-rs
+    let api_key = api_key.map(|k| k.trim().to_string()).unwrap_or_default();
+    if api_key.is_empty() {
+        crate::logging::info("subsource", "کلید API تنظیم نشده — دانلود ناشناس SubSource");
+    }
 
     // ۲) اعتبارسنجی مجدد پلن در لحظهٔ اجرا — وضعیت دیسک ممکن است از زمان
     //    ساخت پلن تغییر کرده باشد
@@ -689,14 +687,17 @@ pub fn execute_subsource_download(
         }
     }
 
-    // API key پیش از هرگونه تغییر دیسک و پیش از رزرو اسلات
-    let api_key = retrieve_api_key().map_err(|e| format!("خواندن API key: {e}"))?;
-    if api_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        return Err(
-            "برای دانلود زیرنویس ابتدا API key را تنظیم کنید (ذخیره امن در Credential Manager سیستم)."
-                .into(),
-        );
-    }
+    // API key اختیاری — خطای مخزن هم دانلود را متوقف نمی‌کند؛ ناشناس ادامه می‌دهیم
+    let api_key = match retrieve_api_key() {
+        Ok(key) => key.unwrap_or_default().trim().to_string(),
+        Err(e) => {
+            crate::logging::warn(
+                "subsource",
+                &format!("خواندن API key ناموفق بود — دانلود ناشناس ادامه می‌یابد: {e}"),
+            );
+            String::new()
+        }
+    };
 
     // رزرو اتمیک اسلات عملیات گروهی با گارد RAII — همان پرچمی که
     // cancel_subtitle_ops (cancel_all) لغو می‌کند
@@ -708,7 +709,7 @@ pub fn execute_subsource_download(
     let app2 = app.clone();
     std::thread::spawn(move || {
         let st = app2.state::<AppState>();
-        let result = run_download_blocking(&st, &items, api_key, None, &cancel, &mut |p| {
+        let result = run_download_blocking(&st, &items, Some(api_key), None, &cancel, &mut |p| {
             let _ = app2.emit("ops:progress", &p);
         });
         drop(guard); // آزادسازی اسلات در همهٔ مسیرها (RAII)
@@ -790,9 +791,10 @@ mod tests {
         dir
     }
 
-    /// نبود API key باید قبل از هر تغییر دیسک متوقف شود.
+    /// نبود کلید دیگر گِیت نیست — رفتار با فهرست خالی همان مسیر صادقانهٔ
+    /// «هیچ ویدیوی واجد شرایط» است؛ هیچ stagingای ساخته نمی‌شود.
     #[test]
-    fn missing_api_key_aborts_before_any_fs_change() {
+    fn missing_api_key_no_longer_gates_download() {
         let state = make_state();
         let base = unique_dir("key");
 
@@ -808,7 +810,12 @@ mod tests {
 
         assert!(!result.success);
         assert!(!result.cancelled);
-        assert!(result.message.contains("API key"), "{}", result.message);
+        assert!(
+            !result.message.contains("API key"),
+            "پیام قدیمی کلید باید حذف شده باشد: {}",
+            result.message
+        );
+        assert!(result.message.contains("واجد شرایط"), "{}", result.message);
         assert_eq!(result.staged, 0);
         assert!(result.staging_paths.is_empty());
         // هیچ stagingای ساخته نشده باشد
@@ -823,7 +830,7 @@ mod tests {
             .collect();
         assert!(
             leftovers.is_empty(),
-            "قبل از API key نباید staging ساخته شود"
+            "قبل از شروع گروه نباید staging ساخته شود"
         );
 
         let _ = std::fs::remove_dir_all(&base);

@@ -43,14 +43,10 @@ impl Default for BatchOptions {
 }
 
 impl BatchOptions {
-    /// اعتبارسنجی تنظیمات
+    /// اعتبارسنجی تنظیمات — کلید API اختیاری است؛ خالی = دانلود ناشناس.
     pub fn validate(&self) -> Result<(), String> {
         if self.directory.trim().is_empty() {
             return Err("directory خالی است".into());
-        }
-
-        if self.api_key.trim().is_empty() {
-            return Err("API key تنظیم نشده است".into());
         }
 
         if self.top == 0 || self.top > 10 {
@@ -60,18 +56,23 @@ impl BatchOptions {
         Ok(())
     }
 
-    /// تبدیل به آرگومان‌های CLI
+    /// تبدیل به آرگومان‌های CLI — `--api-key` فقط با کلید واقعی ارسال می‌شود؛
+    /// خالی بودن کلید یعنی اجرای ناشناس بدون آن آرگومان.
     pub fn to_cli_args(&self) -> Vec<String> {
         let mut args = vec![
             "--directory".to_string(),
             self.directory.clone(),
-            "--api-key".to_string(),
-            self.api_key.clone(),
             "--top".to_string(),
             self.top.to_string(),
             "--lang".to_string(),
             "fa".to_string(),
         ];
+
+        let key = self.api_key.trim();
+        if !key.is_empty() {
+            args.push("--api-key".to_string());
+            args.push(key.to_string());
+        }
 
         if self.skip_existing {
             args.push("--skip-existing".to_string());
@@ -163,8 +164,12 @@ mod tests {
         let mut opts = BatchOptions::default();
         assert!(opts.validate().is_err()); // directory خالی
 
+        // کلید API اختیاری است — خالی = دانلود ناشناس
         opts.directory = "/tmp/test".into();
-        assert!(opts.validate().is_err()); // api_key خالی
+        assert!(
+            opts.validate().is_ok(),
+            "کلید خالی نباید اعتبارسنجی را رد کند"
+        );
 
         opts.api_key = "test-key".into();
         assert!(opts.validate().is_ok());
@@ -177,6 +182,30 @@ mod tests {
 
         opts.top = 5;
         assert!(opts.validate().is_ok());
+    }
+
+    /// کلید خالی → آرگومان --api-key اصلاً ارسال نمی‌شود (اجرای ناشناس).
+    #[test]
+    fn empty_api_key_omits_arg_entirely() {
+        let opts = BatchOptions {
+            directory: "/videos".into(),
+            api_key: "   ".into(),
+            top: 1,
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(
+            !args.iter().any(|a| a == "--api-key"),
+            "کلید خالی نباید به CLI برسد: {args:?}"
+        );
+        let opts = BatchOptions {
+            directory: "/videos".into(),
+            api_key: "".into(),
+            top: 1,
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(!args.iter().any(|a| a == "--api-key"));
     }
 
     #[test]

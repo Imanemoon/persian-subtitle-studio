@@ -414,7 +414,7 @@ export function SettingsPage() {
       </Card>
 
       <Card className="p-5">
-        <SectionTitle icon={KeyRound} title="SubSource API Key" />
+        <SectionTitle icon={KeyRound} title="SubSource API Key (اختیاری)" />
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="w-40 shrink-0 text-sm text-ink-2">وضعیت کلید</span>
@@ -423,14 +423,16 @@ export function SettingsPage() {
             ) : keyStatus === "stored" ? (
               <Badge tone="success">ذخیره‌شده در Credential Manager</Badge>
             ) : keyStatus === "missing" ? (
-              <Badge tone="warn">ذخیره نشده</Badge>
+              <Badge tone="success">تنظیم نشده — دانلود ناشناس فعال است</Badge>
             ) : (
               <Badge tone="danger">نامشخص — خطا در خواندن وضعیت</Badge>
             )}
           </div>
           <p className="text-xs text-ink-3">
-            این وضعیت فقط یعنی کلیدی روی همین سیستم ذخیره شده است؛ معتبر بودن آن هنگام دانلود توسط
-            SubSource بررسی می‌شود. خود کلید هرگز نمایش داده نمی‌شود و در settings.json نوشته نمی‌شود.
+            کلید کاملاً اختیاری است — بدون آن هم دانلود زیرنویس به‌صورت ناشناس کار
+            می‌کند و سیستم خودکار راه می‌افتد. کلید فقط برای حساب شخصی شما در
+            SubSource است؛ اگر وارد کنید با همان حساب دانلود می‌شود. خود کلید هرگز
+            نمایش داده نمی‌شود و در settings.json نوشته نمی‌شود.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span className="w-40 shrink-0 text-sm text-ink-2">کلید جدید</span>

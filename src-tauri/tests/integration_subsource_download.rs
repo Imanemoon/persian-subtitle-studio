@@ -848,9 +848,9 @@ fn test_batch_operation_concurrency_lock() {
     assert!(acquire_single_op(&reg, "video-path").is_ok());
 }
 
-/// تست ۱۶: عدم وجود API Key مانع از هرگونه تغییر یا ساخت پوشه روی دیسک می‌شود
+/// تست ۱۶: نبود API key دیگر توقف نیست — دانلود ناشناس کامل تا staging
 #[test]
-fn test_missing_api_key_aborts_before_filesystem_changes() {
+fn test_missing_api_key_downloads_anonymously() {
     let fake_exe = get_fake_exe();
     let base_dir = unique_test_dir("no-api-key");
 
@@ -865,9 +865,10 @@ fn test_missing_api_key_aborts_before_filesystem_changes() {
     }];
 
     let staging_base = base_dir.join("staging_area");
+    fs::create_dir_all(&staging_base).unwrap();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    // ارسال None به عنوان API key
+    // ارسال None به عنوان API key — اجرای ناشناس باید کامل شود
     let result = run_download_blocking(
         &state,
         &plan_items,
@@ -877,14 +878,14 @@ fn test_missing_api_key_aborts_before_filesystem_changes() {
         &mut |_| {},
     );
 
-    assert!(!result.success);
-    assert!(result.message.contains("API key"));
-    assert_eq!(result.staged, 0);
-    assert!(result.staging_paths.is_empty());
     assert!(
-        !staging_base.exists(),
-        "Staging directory must not be created"
+        result.success,
+        "دانلود ناشناس باید موفق شود: {}",
+        result.message
     );
+    assert_eq!(result.staged, 1);
+    assert!(!result.staging_paths.is_empty());
+    assert_eq!(result.archive_sources.len(), 1);
 
     let _ = fs::remove_dir_all(&base_dir);
 }

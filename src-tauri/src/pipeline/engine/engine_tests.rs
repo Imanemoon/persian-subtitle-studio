@@ -76,15 +76,24 @@ fn unique_dir(tag: &str) -> PathBuf {
 }
 
 /// pipeline کامل روی ویدیوهای بدون زیرنویس داخلی (فیک ffprobe) و بدون
-/// API key → هر دو NeedsApiKey می‌گیرند و run تا Done جلو می‌رود.
+/// API key → دانلود ناشناس واقعاً تلاش می‌شود؛ با fake subsource که شکست
+/// می‌خورد، هر دو آیتم Failed صادقانه با دلیل دانلود می‌گیرند (هرگز
+/// NeedsApiKey). staging_base تزریقی تا هیچ چیز بیرون dir تمیز نشود.
 #[test]
-fn pipeline_reports_needs_api_key_end_to_end() {
+fn pipeline_without_key_fails_download_honestly() {
     let state = make_pipeline_state();
     let dir = unique_dir("needs-key");
 
     // فیک ffprobe: هیچ streamی — هر دو ویدیو NoEmbeddedSubtitle می‌گیرند
     let probe = write_fake_probe(&dir, "empty", 0, "{\"streams\": []}");
     state.settings.lock().unwrap().tool_paths.ffprobe = Some(probe.to_string_lossy().into_owned());
+
+    // فیک subsource که بلافاصله شکست می‌خورد — تا مسیر ناشناس به‌صورت
+    // قطعی و بدون ابزار واقعی/شبکه اجرا شود
+    let fake_sub = dir.join("fake-subsource.cmd");
+    std::fs::write(&fake_sub, "@echo off\r\nexit /b 1\r\n").unwrap();
+    state.settings.lock().unwrap().tool_paths.subsource =
+        Some(fake_sub.to_string_lossy().into_owned());
 
     let v1 = make_video(&dir, "Show.S01E01.mkv");
     let v2 = make_video(&dir, "Show.S01E02.mkv");
@@ -99,7 +108,7 @@ fn pipeline_reports_needs_api_key_end_to_end() {
     let (sink, events) = events_store();
     let io = PipelineIo {
         key_provider: &missing_key,
-        staging_base: None,
+        staging_base: Some(&dir),
     };
 
     let summary = run_pipeline_body(&state, &control, input, &sink, &io).unwrap();
@@ -107,11 +116,20 @@ fn pipeline_reports_needs_api_key_end_to_end() {
     // وضعیت نهایی و شمارش‌ها
     assert_eq!(summary.status, PipelineStatus::Completed);
     assert_eq!(summary.counts.analyzed, 2);
-    assert_eq!(summary.counts.needs_api_key, 2);
+    assert_eq!(
+        summary.counts.needs_api_key, 0,
+        "کلید اختیاری است — نباید NeedsApiKey تولید شود"
+    );
     assert_eq!(summary.counts.decisions_pending, 0);
-    // هر دو آیتم با outcome NeedsApiKey بسته شده‌اند
+    // هر دو آیتم با شکست صادقانهٔ دانلود بسته شده‌اند — نه پیام کلید
     for item in &summary.items {
-        assert!(matches!(item.outcome, Some(ItemOutcome::NeedsApiKey)));
+        match &item.outcome {
+            Some(ItemOutcome::Failed { reason }) => {
+                assert!(reason.contains("دانلود"), "{}", reason);
+                assert!(!reason.contains("API key"), "{}", reason);
+            }
+            other => panic!("انتظار Failed، دریافت: {other:?}"),
+        }
         assert!(matches!(item.stage_status, StageStatus::Done));
     }
     // رویدادهای کلیدی منتشر شده‌اند — Done توسط run_worker صادر می‌شود نه body
