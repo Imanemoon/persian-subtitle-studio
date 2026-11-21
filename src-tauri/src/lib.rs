@@ -5,6 +5,7 @@ pub mod hardsub;
 pub mod logging;
 pub mod media;
 pub mod models;
+pub mod notify;
 pub mod pipeline;
 pub mod scanner;
 pub mod settings;
@@ -27,6 +28,7 @@ use crate::state::{AppPaths, AppState};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let config_dir = app
                 .path()

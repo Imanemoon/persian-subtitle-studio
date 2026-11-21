@@ -88,6 +88,28 @@ impl Default for HardsubSettings {
     }
 }
 
+/// تنظیمات اعلان‌های سیستمی پایان تسک‌های طولانی.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotificationSettings {
+    /// کلید اصلی — خاموش بودنش همهٔ اعلان‌ها را ساکت می‌کند
+    pub enabled: bool,
+    pub pipeline_done: bool,
+    pub hardsub_done: bool,
+    pub softsub_done: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pipeline_done: true,
+            hardsub_done: true,
+            softsub_done: true,
+        }
+    }
+}
+
 /// تنظیمات SubSource API و دانلود
 ///
 /// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
@@ -144,6 +166,8 @@ pub struct Settings {
     pub processing: ProcessingSettings,
     /// تنظیمات هاردساب (burn-in) — پس از سینک، اختیاری توسط کاربر اجرا می‌شود.
     pub hardsub: HardsubSettings,
+    /// اعلان‌های سیستمی پایان تسک‌های طولانی
+    pub notifications: NotificationSettings,
     pub subsource: SubSourceSettings,
     pub existing_file_behavior: ExistingFileBehavior,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
@@ -162,6 +186,7 @@ impl Default for Settings {
             tool_paths: ToolPathOverrides::default(),
             processing: ProcessingSettings::default(),
             hardsub: HardsubSettings::default(),
+            notifications: NotificationSettings::default(),
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             logs_dir: None,
@@ -566,6 +591,34 @@ mod tests {
         assert_eq!(reloaded.hardsub.encoder, HardsubEncoder::Nvidia);
         assert_eq!(reloaded.hardsub.quality, HardsubQuality::High);
         assert_eq!(reloaded.hardsub.workers, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_settings_without_notifications_default_to_enabled() {
+        let dir = unique_temp_dir("notifications-migration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{ "processing": { "syncWorkers": 2 } }"#;
+        std::fs::write(config_file_path(&dir), json).unwrap();
+
+        let loaded = load(&dir);
+        assert_eq!(
+            loaded.notifications,
+            NotificationSettings::default(),
+            "تنظیمات قدیمی باید اعلان‌ها را فعال پیش‌فرض بگیرد"
+        );
+        assert!(loaded.notifications.enabled);
+        assert!(loaded.notifications.pipeline_done);
+
+        // خاموش کردن صریح کاربر پس از ذخیره و بارگذاری مجدد حفظ می‌شود
+        let mut s = loaded;
+        s.notifications.enabled = false;
+        s.notifications.hardsub_done = false;
+        save(&dir, &s).expect("save");
+        let reloaded = load(&dir);
+        assert!(!reloaded.notifications.enabled);
+        assert!(!reloaded.notifications.hardsub_done);
+        assert!(reloaded.notifications.pipeline_done);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

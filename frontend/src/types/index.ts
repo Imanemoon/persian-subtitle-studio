@@ -172,6 +172,14 @@ export interface ProcessingSettings {
   subtitleOutputMode: "softSub" | "sidecar";
 }
 
+/** تنظیمات اعلان‌های سیستمی پایان تسک‌ها — قرینه NotificationSettings بک‌اند */
+export interface NotificationSettings {
+  enabled: boolean;
+  pipelineDone: boolean;
+  hardsubDone: boolean;
+  softsubDone: boolean;
+}
+
 /** تنظیمات هاردساب — قرینه HardsubSettings بک‌اند */
 export type HardsubEncoder = "auto" | "nvidia" | "intel" | "amd" | "cpu";
 export type HardsubQuality = "fast" | "balanced" | "high";
@@ -190,6 +198,7 @@ export interface Settings {
   toolPaths: ToolPathOverrides;
   processing: ProcessingSettings;
   hardsub: HardsubSettings;
+  notifications: NotificationSettings;
   existingFileBehavior: ExistingFileBehavior;
   logsDir: string | null;
   /** معاونت راه‌اندازی یک‌بار طی شده یا پشت زده شده */

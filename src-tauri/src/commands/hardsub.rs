@@ -24,7 +24,25 @@ fn publish_sink(app: &AppHandle) -> SinkStore {
 fn emit_event(app: &AppHandle, event: HardsubEvent) -> tauri::Result<()> {
     match event {
         HardsubEvent::State { snapshot } => app.emit("hardsub:state", &snapshot),
-        HardsubEvent::Done { summary } => app.emit("hardsub:done", &summary),
+        HardsubEvent::Done { summary } => {
+            // اعلان سیستمی پایان هاردساب — طبق تنظیمات کاربر
+            let counts = &summary.counts;
+            let title = if summary.cancelled {
+                "هاردساب متوقف شد"
+            } else {
+                "هاردساب کامل شد"
+            };
+            crate::notify::notify_task_done(
+                app,
+                crate::notify::KIND_HARDSUB,
+                title,
+                &format!(
+                    "موفق: {} — ناموفق: {} — تعارض: {}",
+                    counts.done, counts.failed, counts.conflicts
+                ),
+            );
+            app.emit("hardsub:done", &summary)
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
+import { Bell, Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
@@ -568,6 +568,40 @@ export function SettingsPage() {
             }
             label="رد کردن سینک در کیفیت پایین تطبیق"
             hint="جلوگیری از خروجی نامطمئن (پیش‌فرض: فعال)"
+          />
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={Bell} title="اعلان‌ها" />
+        <div className="space-y-3">
+          <p className="text-xs leading-6 text-ink-3">
+            وقتی یک تسک طولانی تمام می‌شود (سینک، هاردساب، افزودن زیرنویس نرم)
+            یک اعلان سیستمی ویندوز می‌آید — حتی وقتی پنجره مینیمایز است.
+          </p>
+          <Toggle
+            checked={draft.notifications.enabled}
+            onChange={(v) => patch({ notifications: { ...draft.notifications, enabled: v } })}
+            label="اعلان‌های سیستمی"
+            hint="کلید اصلی همهٔ اعلان‌ها (پیش‌فرض: فعال)"
+          />
+          <Toggle
+            checked={draft.notifications.pipelineDone}
+            onChange={(v) => patch({ notifications: { ...draft.notifications, pipelineDone: v } })}
+            label="پایان سینک"
+            hint="اعلان پس از پایان یا توقف pipeline"
+          />
+          <Toggle
+            checked={draft.notifications.hardsubDone}
+            onChange={(v) => patch({ notifications: { ...draft.notifications, hardsubDone: v } })}
+            label="پایان هاردساب"
+            hint="اعلان پس از پایان حک کردن زیرنویس داخل تصویر"
+          />
+          <Toggle
+            checked={draft.notifications.softsubDone}
+            onChange={(v) => patch({ notifications: { ...draft.notifications, softsubDone: v } })}
+            label="پایان افزودن زیرنویس نرم"
+            hint="اعلان پس از دانلود و جانمایی زیرنویس نرم"
           />
         </div>
       </Card>

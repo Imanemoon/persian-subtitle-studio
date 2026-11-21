@@ -942,13 +942,16 @@ fn download_and_place_core(
             ))
         })
         .ok_or_else(|| "مسیر staging نامعتبر است".to_string())?;
-    if !staged_srt.is_file() {
-        return Err(
-            "دانلود انجام شد اما زیرنویس استخراج‌شده در staging نبود — با فایل محلی تلاش کنید".into(),
-        );
-    }
-    validate_subtitle_for_sidecar(&staged_srt)?;
-    let placed = place_sidecar_copy(&staged_srt, &video)?;
+
+    let placed = if staged_srt.is_file() {
+        validate_subtitle_for_sidecar(&staged_srt)?;
+        place_sidecar_copy(&staged_srt, &video)?
+    } else {
+        // ZIP چند-اپیزودی (پک فصل مثل «all_episods.zip»): sub-rs از اعضای
+        // بی‌نامِ سریال (`S01E02.srt`) اپیزود را نمی‌سازد — موتور آرشیو خودمان
+        // با mچ اپیزود دقیقاً همین را حل می‌کند (همان مسیر pipeline).
+        extract_from_staged_archive(state, source, cancel, on_progress)?
+    };
 
     // staging فقط حامل لینک/آرشیو موقت بود — پس از مصرف پاک می‌شود
     for root in &result.staging_paths {
@@ -960,6 +963,80 @@ fn download_and_place_core(
         }
     }
     Ok(placed)
+}
+
+/// استخراج زیرنویس از ZIPهای staging با موتور آرشیو خودمان — پلن + اجرا؛
+/// وضعیت هر حالت (Ready/Ambiguous/NoMatch) صادقانه به خطای فارسی می‌رود.
+fn extract_from_staged_archive(
+    state: &AppState,
+    source: &crate::subsource::plan::ArchiveSource,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut dyn FnMut(OpsProgress),
+) -> Result<String, String> {
+    use crate::archive::engine::{execute_archive_extraction, plan_archives};
+    use crate::archive::types::{ArchiveExecuteRequest, ArchiveItemStatus, ArchiveSelection};
+
+    let seven_zip = resolve_tool(state, "sevenZip")?;
+    let plan = plan_archives(
+        &seven_zip,
+        std::slice::from_ref(source),
+        cancel,
+        &mut |mut p| {
+            p.kind = SOFTSUB_ADD_EVENT_KIND.into();
+            on_progress(p);
+        },
+    );
+    let Some(item) = plan.items.first() else {
+        return Err("آرشیوی در staging پیدا نشد تا زیرنویس از آن استخراج شود".into());
+    };
+    match item.status {
+        crate::archive::types::ArchivePlanStatus::Ready => {
+            let selection = item.selection.as_ref().map(|sel| ArchiveSelection {
+                archive_file_name: sel.archive_file_name.clone(),
+                member_path: sel.member_path.clone(),
+            });
+            let request = ArchiveExecuteRequest {
+                source: source.clone(),
+                selection,
+            };
+            let exec = execute_archive_extraction(
+                &seven_zip,
+                std::slice::from_ref(&request),
+                cancel,
+                &mut |mut p| {
+                    p.kind = SOFTSUB_ADD_EVENT_KIND.into();
+                    on_progress(p);
+                },
+            );
+            let Some(result_item) = exec.items.first() else {
+                return Err("اجرای استخراج آرشیو نتیجه‌ای نداشت".into());
+            };
+            if result_item.status == ArchiveItemStatus::Placed {
+                let output = result_item
+                    .output_path
+                    .clone()
+                    .ok_or_else(|| "زیرنویس جانمایی شد اما مسیر خروجی گزارش نشد".to_string())?;
+                crate::logging::info(
+                    "subsource",
+                    &format!("زیرنویس از پک چند-اپیزودی استخراج و جانمایی شد: {output}"),
+                );
+                Ok(output)
+            } else {
+                Err(format!(
+                    "استخراج از پک دانلودشده ناموفق بود: {}",
+                    result_item.message
+                ))
+            }
+        }
+        crate::archive::types::ArchivePlanStatus::Ambiguous => Err(format!(
+            "پک دانلودشده چند کاندیدای اپیزود دارد — {} گزینهٔ فایل محلی را استفاده کنید",
+            item.candidates.len()
+        )),
+        crate::archive::types::ArchivePlanStatus::NoMatch => Err(format!(
+            "هیچ عضو زیرنویسی از پک دانلودشده با اپیزود این ویدیو مچ نشد — {}",
+            item.message
+        )),
+    }
 }
 
 /// افزودن زیرنویس نرم با دانلود از SubSource برای یک یا چند ویدیوی
@@ -1082,6 +1159,16 @@ pub fn download_softsub_batch(
             format!("افزودن زیرنویس نرم پایان یافت — موفق: {done}")
         };
         crate::logging::info("subsource", &summary);
+        crate::notify::notify_task_done(
+            &app2,
+            crate::notify::KIND_SOFTSUB,
+            if failed > 0 {
+                "افزودن زیرنویس نرم پایان یافت"
+            } else {
+                "زیرنویس نرم همه اضافه شد"
+            },
+            &summary,
+        );
         let _ = app2.emit(
             "ops:done",
             &OpsProgress {
@@ -1260,6 +1347,104 @@ hello world
         );
         assert!(!result.success);
         assert!(result.message.contains("واجد شرایط"), "{}", result.message);
+    }
+
+    /// تست زنده (#[ignore]): فیکس واقعی پک فصل — قسمت‌هایی که sub-rs از
+    /// ZIP چند-اپیزودی (`all_episods.zip`) اپیزودش را نمی‌سازد، با موتور
+    /// آرشیو خودمان استخراج و هم‌نام جانمایی می‌شوند.
+    /// پیش‌نیاز: sub-rs/7z واقعی + شبکه + SUBSYNC_REAL_HARDSUB_VIDEO.
+    #[test]
+    #[ignore]
+    fn live_softsub_add_extracts_from_season_pack() {
+        let Ok(src) = std::env::var("SUBSYNC_REAL_HARDSUB_VIDEO") else {
+            eprintln!("SKIP: SUBSYNC_REAL_HARDSUB_VIDEO تنظیم نشده");
+            return;
+        };
+        let sub_rs = crate::tools::resolve_tool_path("subsource", &Default::default())
+            .expect("sub-rs واقعی لازم است");
+        let seven_zip = crate::tools::resolve_tool_path("sevenZip", &Default::default())
+            .expect("7-Zip واقعی لازم است");
+        let ffprobe = crate::tools::resolve_tool_path("ffprobe", &Default::default())
+            .expect("ffprobe واقعی لازم است");
+
+        let state = make_state();
+        state.settings.lock().unwrap().tool_paths.subsource =
+            Some(sub_rs.to_string_lossy().into_owned());
+        state.settings.lock().unwrap().tool_paths.seven_zip =
+            Some(seven_zip.to_string_lossy().into_owned());
+        state.settings.lock().unwrap().tool_paths.ffprobe =
+            Some(ffprobe.to_string_lossy().into_owned());
+
+        // دو نسخه از همان قسمتِ مشکل‌دار در پوشهٔ موقت — استخراج باید موفق شود
+        let dir = unique_dir("season-pack");
+        let src = std::path::PathBuf::from(&src);
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Overlord.S01E02.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv".into());
+        let v1 = dir.join(&name);
+        std::fs::copy(&src, &v1).expect("کپی نمونه");
+
+        // ویدیو باید در کتابخانه باشد (قرارداد دانلود) — مثل جریان واقعی پس از pipeline
+        let (season, episode) = crate::scanner::naming::parse_episode(&name)
+            .map(|m| (Some(m.season), Some(m.episode)))
+            .unwrap_or((None, None));
+        state
+            .library
+            .lock()
+            .unwrap()
+            .push(crate::models::VideoEntry {
+                id: v1.to_string_lossy().into_owned(),
+                path: v1.to_string_lossy().into_owned(),
+                file_name: name.clone(),
+                size_bytes: std::fs::metadata(&v1).map(|m| m.len()).unwrap_or(0),
+                modified_ms: None,
+                parent_dir: dir.to_string_lossy().into_owned(),
+                show_name: Some("Overlord".into()),
+                season,
+                episode,
+                sibling_subtitles: Vec::new(),
+                analysis: None,
+            });
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outcome =
+            download_and_place_core(&state, &v1.to_string_lossy(), "", &cancel, &mut |_p| {});
+        let placed = outcome.unwrap_or_else(|e| panic!("پک فصل باید از مسیر آرشیو حل شود: {e}"));
+
+        let expected = dir.join(format!(
+            "{}.fa.srt",
+            v1.file_stem().unwrap().to_string_lossy()
+        ));
+        assert_eq!(
+            std::path::Path::new(&placed),
+            expected,
+            "جانمایی باید دقیقاً هم‌نام ویدیو باشد"
+        );
+        assert!(expected.is_file());
+        let validation = crate::subtitle::validation::validate_file(&expected);
+        assert!(
+            validation.valid && validation.has_persian,
+            "زیرنویس جانمایی باید فارسی معتبر باشد"
+        );
+
+        // staging پاک شده باشد
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(staging::STAGING_DIR_PREFIX)
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "staging باید پاک شود: {leftovers:?}");
+
+        // تعارض: اجرای دوباره → خطای «از قبل موجود» نه بازنویسی
+        let again =
+            download_and_place_core(&state, &v1.to_string_lossy(), "", &cancel, &mut |_p| {});
+        assert!(again.is_err(), "اجرای دوباره باید تعارض بدهد");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// پرچم لغو از قبل فعال → بدون هیچ اجرای SubSource متوقف شود.
