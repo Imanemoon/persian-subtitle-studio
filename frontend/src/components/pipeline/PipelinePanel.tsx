@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   Captions,
@@ -16,6 +16,7 @@ import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
 import { useHardsub } from "../../hooks/useHardsub";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { useTaskFocus } from "../../hooks/useTaskFocus";
 import { api } from "../../lib/api";
 import {
@@ -38,7 +39,7 @@ import type {
   PipelineSummary,
 } from "../../types/pipeline";
 import type { HardsubPlan } from "../../types/hardsub";
-import type { PageId } from "../../types";
+import type { OpsProgress, PageId } from "../../types";
 
 /** آیتم‌هایی که منبع زیرنویس آماده دارند و می‌توانند هاردساب شوند. */
 /** آیتم‌هایی که زیرنویس‌شان داخل تصویر حک شده — کاندید افزودن زیرنویس چسبیده */
@@ -99,6 +100,25 @@ export function PipelinePanel({
   // ---- تنظیم دوباره زیرنویس ----
   const [redoBusy, setRedoBusy] = useState<Set<string>>(new Set());
   const [redoError, setRedoError] = useState<string | null>(null);
+  // خطای reset که داخل thread بک‌اند رخ داده (تا موفقیت دانلود هیچ چیز
+  // خراب نمی‌شود) — از رویداد ops:done همان‌جا به کاربر نشان داده می‌شود
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const un = await listen<OpsProgress>("ops:done", (event) => {
+        const p = event.payload;
+        if (p.kind !== "subtitle-reset") return;
+        if (p.message.includes("ناموفق")) setRedoError(p.message);
+      });
+      if (disposed) un();
+      else unlisten = un;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   if (!snapshot && !summary) return null;
 
