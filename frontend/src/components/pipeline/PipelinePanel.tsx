@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Captions,
   CheckCircle2,
+  Home,
   ChevronDown,
   Film,
   Info,
@@ -81,6 +82,8 @@ export function PipelinePanel({
   const [planError, setPlanError] = useState<string | null>(null);
   // ---- افزودن زیرنویس نرم به هاردساب‌ها ----
   const [softsubPaths, setSoftsubPaths] = useState<string[] | null>(null);
+  // ---- لیست بلند سریالی: ابتدا ۵ مورد، «نمایش همه» بقیه را باز می‌کند ----
+  const [filesExpanded, setFilesExpanded] = useState(false);
 
   if (!snapshot && !summary) return null;
 
@@ -171,18 +174,29 @@ export function PipelinePanel({
               )}
             </div>
           </div>
-          {runActive && (
-            <Button
-              variant="danger"
-              onClick={() => void cancelPipeline()}
-              disabled={busy || cancelling}
-              loading={busy}
-              title="توقف pipeline — فایل‌های اصلی دست‌نخورده می‌مانند"
-            >
-              <Square className="size-3.5" />
-              {cancelling ? "در حال توقف" : "توقف"}
-            </Button>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {!runActive && (
+              <Button
+                onClick={() => onNavigate("home")}
+                title="بازگشت به صفحهٔ اصلی — خلاصه و لیست فایل‌ها بعداً هم اینجا هستند"
+              >
+                <Home className="size-3.5" />
+                خانه
+              </Button>
+            )}
+            {runActive && (
+              <Button
+                variant="danger"
+                onClick={() => void cancelPipeline()}
+                disabled={busy || cancelling}
+                loading={busy}
+                title="توقف pipeline — فایل‌های اصلی دست‌نخورده می‌مانند"
+              >
+                <Square className="size-3.5" />
+                {cancelling ? "در حال توقف" : "توقف"}
+              </Button>
+            )}
+          </div>
         </div>
 
         {message && !summary && (
@@ -314,6 +328,30 @@ export function PipelinePanel({
         )}
       </Card>
 
+      {/* ---- افزودن زیرنویس نرم به هاردساب‌ها — بالای لیست برای دسترسی راحت ---- */}
+      {!runActive && hardsubbedPaths.length > 0 && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-accent/40 p-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-ink-1">
+              {faNum(hardsubbedPaths.length)} مورد زیرنویس داخل تصویر دارند
+            </div>
+            <p className="mt-0.5 text-xs leading-5 text-ink-3">
+              با یک کلیک برای همه‌شان زیرنویس نرم دانلود کنید — هم‌نام هر ویدیو
+              کنارش قرار می‌گیرد؛ سپس با اجرای مجدد سینک، هم‌تراز و SoftSub می‌شود.
+            </p>
+          </div>
+          <Button
+            variant="primary"
+            className="shrink-0"
+            disabled={planLoading}
+            onClick={() => setSoftsubPaths(hardsubbedPaths)}
+          >
+            <Captions className="size-4" />
+            افزودن زیرنویس نرم به همه ({faNum(hardsubbedPaths.length)})
+          </Button>
+        </Card>
+      )}
+
       {/* ---- تصمیم باز: مهم‌ترین کنش کاربر ---- */}
       {decision && (
         <Card className="space-y-3 border-amber-500/40 p-5">
@@ -408,7 +446,7 @@ export function PipelinePanel({
             </div>
           )}
           <div>
-            {items.slice(0, 300).map((item) => (
+            {(filesExpanded ? items.slice(0, 300) : items.slice(0, 5)).map((item) => (
               <ItemRow
                 key={item.videoPath}
                 item={item}
@@ -421,6 +459,16 @@ export function PipelinePanel({
               />
             ))}
           </div>
+          {items.length > 5 && (
+            <button
+              onClick={() => setFilesExpanded((prev) => !prev)}
+              className="w-full border-t border-line px-5 py-2.5 text-center text-xs text-ink-3 transition-colors hover:bg-surface-2/40 hover:text-ink-1"
+            >
+              {filesExpanded
+                ? "نمایش کمتر"
+                : `نمایش همهٔ ${faNum(items.length)} مورد`}
+            </button>
+          )}
           {planError && (
             <p className="flex items-start gap-1.5 border-t border-line px-5 py-2.5 text-xs leading-5 text-red-300">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -563,23 +611,6 @@ export function PipelinePanel({
           <CountsGrid counts={counts} />
 
           <NeedsReview summary={summary} />
-
-          {/* افزودن زیرنویس نرم به هاردساب‌ها — پس از پایان سینک */}
-          {!runActive && hardsubbedPaths.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs leading-5 text-ink-3">
-                {faNum(hardsubbedPaths.length)} مورد زیرنویس‌شان داخل تصویر حک شده
-                است — در صورت تمایل زیرنویس نرم دانلود کنید یا از فایل محلی
-                هم‌نام کنارشان بگذارید.
-              </p>
-              <Button
-                disabled={planLoading}
-                onClick={() => setSoftsubPaths(hardsubbedPaths)}
-              >
-                افزودن زیرنویس نرم ({faNum(hardsubbedPaths.length)})
-              </Button>
-            </div>
-          )}
 
           {/* هاردساب گروهی همهٔ موارد موفق — پس از پایان سینک */}
           {!runActive && eligibleCount > 0 && (

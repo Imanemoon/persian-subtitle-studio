@@ -24,7 +24,30 @@ fn emit_event(app: &AppHandle, event: PipelineEvent) -> tauri::Result<()> {
         PipelineEvent::State { snapshot } => app.emit("pipeline:state", &snapshot),
         PipelineEvent::Item { item } => app.emit("pipeline:item", &item),
         PipelineEvent::Decision { decision } => app.emit("pipeline:decision", &decision),
-        PipelineEvent::Done { summary } => app.emit("pipeline:done", &summary),
+        PipelineEvent::Done { summary } => {
+            // اعلان سیستمی پایان سینک — طبق تنظیمات کاربر (حتی با پنجرهٔ مینیمایز)
+            let counts = &summary.counts;
+            let ok = counts.synced + counts.softsubbed + counts.already_synced;
+            let title = if summary.cancelled {
+                "سینک متوقف شد"
+            } else if summary.status == crate::pipeline::PipelineStatus::Failed {
+                "سینک با خطا پایان یافت"
+            } else {
+                "سینک کامل شد"
+            };
+            crate::notify::notify_task_done(
+                app,
+                crate::notify::KIND_PIPELINE,
+                title,
+                &format!(
+                    "موفق: {} — ناموفق: {} — هاردساب: {}",
+                    ok,
+                    counts.failed + counts.skipped,
+                    counts.hardsubbed
+                ),
+            );
+            app.emit("pipeline:done", &summary)
+        }
         PipelineEvent::LibraryReplaced { entries } => app.emit("library:replaced", &entries),
         PipelineEvent::LibraryEntry { entry } => app.emit("library:entry", &entry),
     }

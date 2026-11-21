@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "حداقل دسترسی‌های لازم برای پنجره اصلی SubSync Studio",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "notification:default"]
 }

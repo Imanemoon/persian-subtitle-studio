@@ -119,6 +119,7 @@ export function SoftsubAddModal({
   const doneCount = paths.filter((p) =>
     (statuses[p] ?? "").startsWith("انجام شد"),
   ).length;
+  const [listExpanded, setListExpanded] = useState(false);
 
   return (
     <Modal
@@ -127,8 +128,8 @@ export function SoftsubAddModal({
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose} disabled={running || busyLocal}>
-            {running ? "بستن (عملیات ادامه دارد)" : "بستن"}
+          <Button onClick={onClose} disabled={busyLocal}>
+            {running ? "ادامه در پس‌زمینه" : "بستن"}
           </Button>
           {!running && (
             <Button variant="primary" onClick={() => void startDownload()}>
@@ -176,7 +177,9 @@ export function SoftsubAddModal({
         {running && (
           <div className="flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-2.5 text-xs text-ink-2">
             <Loader2 className="size-4 shrink-0 animate-spin text-sky-400" />
-            دانلود در جریان است — هر ویدیو جدا دانلود و جانمایی می‌شود.
+            دانلود در جریان است — هر ویدیو جدا دانلود و جانمایی می‌شود. می‌توانید
+            پنجره را با «ادامه در پس‌زمینه» ببندید؛ کار متوقف نمی‌شود و پایان با
+            اعلان گزارش می‌شود.
           </div>
         )}
 
@@ -199,7 +202,7 @@ export function SoftsubAddModal({
         )}
 
         <div className="max-h-56 space-y-1 overflow-y-auto">
-          {paths.map((path) => {
+          {(listExpanded ? paths : paths.slice(0, 5)).map((path) => {
             const status = statuses[path];
             const done = (status ?? "").startsWith("انجام شد");
             const failed = (status ?? "").startsWith("ناموفق");
@@ -228,6 +231,16 @@ export function SoftsubAddModal({
             );
           })}
         </div>
+        {paths.length > 5 && (
+          <button
+            onClick={() => setListExpanded((prev) => !prev)}
+            className="w-full text-center text-xs text-ink-3 transition-colors hover:text-ink-1"
+          >
+            {listExpanded
+              ? "نمایش کمتر"
+              : `نمایش همهٔ ${faNum(paths.length)} مورد`}
+          </button>
+        )}
         {batch && (
           <p className="text-[11px] leading-5 text-ink-3">
             گزینهٔ فایل محلی برای حالت تک‌ویدیو است؛ برای حالت گروهی از دانلود
