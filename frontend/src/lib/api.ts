@@ -141,6 +141,9 @@ export const api = {
     invoke<string>("place_local_subtitle", { videoPath, subtitlePath }),
   downloadSoftsubBatch: (paths: string[]) =>
     invoke<number>("download_softsub_batch", { paths }),
+  /** تنظیم دوباره: حذف زیرنویس فعلی + دانلود تازه + سینک خودکار از اول */
+  resetSubtitle: (videoPath: string) =>
+    invoke<void>("reset_subtitle", { videoPath }),
 
   /** انتخاب یک فایل زیرنویس (srt/ass/ssa/vtt) با دیالوگ بومی */
   pickSubtitle: async (): Promise<string | null> => {

@@ -4,6 +4,7 @@ import {
   Captions,
   CheckCircle2,
   Home,
+  RotateCcw,
   ChevronDown,
   Film,
   Info,
@@ -14,6 +15,7 @@ import {
 import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
 import { useHardsub } from "../../hooks/useHardsub";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { useTaskFocus } from "../../hooks/useTaskFocus";
 import { api } from "../../lib/api";
 import {
@@ -42,6 +44,16 @@ import type { PageId } from "../../types";
 /** آیتم‌هایی که زیرنویس‌شان داخل تصویر حک شده — کاندید افزودن زیرنویس چسبیده */
 function isHardsubbed(item: PipelineItemSnapshot): boolean {
   return item.outcome?.kind === "hardsubbed";
+}
+
+/** آیتم‌هایی که زیرنویس دارند و می‌توان برایشان «تنظیم دوباره» زد */
+function redoEligible(item: PipelineItemSnapshot): boolean {
+  return (
+    item.outcome?.kind === "synced" ||
+    item.outcome?.kind === "softSubbed" ||
+    item.outcome?.kind === "alreadySynced" ||
+    item.outcome?.kind === "hardsubbed"
+  );
 }
 
 function hardsubEligible(item: PipelineItemSnapshot): boolean {
@@ -84,6 +96,9 @@ export function PipelinePanel({
   const { setFocus, openSoftsub } = useTaskFocus();
   // ---- لیست بلند سریالی: ابتدا ۵ مورد، «نمایش همه» بقیه را باز می‌کند ----
   const [filesExpanded, setFilesExpanded] = useState(false);
+  // ---- تنظیم دوباره زیرنویس ----
+  const [redoBusy, setRedoBusy] = useState<Set<string>>(new Set());
+  const [redoError, setRedoError] = useState<string | null>(null);
 
   if (!snapshot && !summary) return null;
 
@@ -118,6 +133,29 @@ export function PipelinePanel({
       setPlanError(String(e));
     } finally {
       setPlanLoading(false);
+    }
+  };
+
+  /** تنظیم دوباره: تأیید → حذف زیرنویس فعلی + دانلود تازه + سینک خودکار از اول */
+  const redoSubtitle = async (videoPath: string) => {
+    const confirmed = await ask(
+      "زیرنویس فعلی این ویدیو حذف می‌شود؛ زیرنویس تازه از SubSource دانلود و از اول سینک می‌شود. ادامه؟",
+      { title: "تنظیم دوباره زیرنویس", kind: "warning" },
+    );
+    if (!confirmed) return;
+    setRedoError(null);
+    setRedoBusy((prev) => new Set(prev).add(videoPath));
+    try {
+      await api.resetSubtitle(videoPath);
+      // پایان و سینک خودکار از رویدادهای ops (subtitle-reset) و pipeline می‌آید
+    } catch (e) {
+      setRedoError(String(e));
+    } finally {
+      setRedoBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(videoPath);
+        return next;
+      });
     }
   };
 
@@ -459,6 +497,9 @@ export function PipelinePanel({
                 onHardsub={() => void requestHardsub([item.videoPath])}
                 showSoftsub={!runActive && isHardsubbed(item)}
                 onSoftsub={() => openSoftsub([item.videoPath])}
+                showRedo={!runActive && redoEligible(item)}
+                redoBusy={redoBusy.has(item.videoPath)}
+                onRedo={() => void redoSubtitle(item.videoPath)}
               />
             ))}
           </div>
@@ -476,6 +517,12 @@ export function PipelinePanel({
             <p className="flex items-start gap-1.5 border-t border-line px-5 py-2.5 text-xs leading-5 text-red-300">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               {planError}
+            </p>
+          )}
+          {redoError && (
+            <p className="flex items-start gap-1.5 border-t border-line px-5 py-2.5 text-xs leading-5 text-red-300">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              {redoError}
             </p>
           )}
         </Card>
@@ -788,6 +835,9 @@ function ItemRow({
   onHardsub,
   showSoftsub,
   onSoftsub,
+  showRedo,
+  redoBusy,
+  onRedo,
 }: {
   item: PipelineItemSnapshot;
   showActions: boolean;
@@ -796,6 +846,9 @@ function ItemRow({
   onHardsub: () => void;
   showSoftsub: boolean;
   onSoftsub: () => void;
+  showRedo: boolean;
+  redoBusy: boolean;
+  onRedo: () => void;
 }) {
   const state = itemRowState(item);
   const detail = item.outcome ? outcomeDetail(item.outcome) : null;
@@ -877,6 +930,24 @@ function ItemRow({
       </summary>
       <div className="space-y-1 px-5 pb-3 ps-9 text-xs leading-6 text-ink-3">
         <div>مرحله: {PIPELINE_STAGE_LABELS[item.stage]}</div>
+        {showRedo && (
+          <div className="pt-1">
+            <Button
+              variant="ghost"
+              className="h-7 px-2.5 text-xs"
+              disabled={redoBusy}
+              loading={redoBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRedo();
+              }}
+              title="زیرنویس فعلی حذف و زیرنویس تازه دانلود و از اول سینک می‌شود"
+            >
+              <RotateCcw className="size-3.5" />
+              تنظیم دوباره
+            </Button>
+          </div>
+        )}
         {detail && <div>{detail}</div>}
         {reason && <div>{reason}</div>}
         {item.offsetSeconds != null && (
