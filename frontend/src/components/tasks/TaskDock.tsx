@@ -34,7 +34,7 @@ export function TaskDock({
 }) {
   const { runActive, snapshot, summary } = usePipeline();
   const hardsub = useHardsub();
-  const { focus, setFocus, softsubPaths, softsubTask, openSoftsub } = useTaskFocus();
+  const { focus, setFocus, softsubPaths, softsubTask, openSoftsub, resetTask } = useTaskFocus();
 
   /** آیا کاربر همین الان نمای این تسک را باز دارد؟ — آنگاه از dock حذف می‌شود */
   const viewingPipelineView = page === "home" && focus === "pipeline";
@@ -102,6 +102,21 @@ export function TaskDock({
       running: false,
       onClick: () => {
         setFocus("hardsub");
+        onNavigate("home");
+      },
+    });
+  }
+
+  // ---- تسک تنظیم دوباره زیرنویس ----
+  if (resetTask.active) {
+    items.push({
+      key: "subtitle-reset",
+      icon: <Captions className="size-4 shrink-0 text-amber-400" />,
+      title: "تنظیم دوباره زیرنویس",
+      detail: resetTask.message || "در جریان…",
+      running: true,
+      onClick: () => {
+        setFocus("pipeline");
         onNavigate("home");
       },
     });

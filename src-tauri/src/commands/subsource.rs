@@ -889,13 +889,29 @@ pub fn place_local_subtitle(
 /// هستهٔ دانلود + جانمایی برای یک ویدیو: run_download_blocking روی همان
 /// ویدیو → استخراج‌شدهٔ sub-rs در staging → کپی هم‌نام کنار ویدیو واقعی →
 /// پاک‌سازی staging. خروجی: مسیر زیرنویس جانمایی‌شده.
-fn download_and_place_core(
+/// زیرنویس دانلودشده در staging — یا استخراج‌شدهٔ خود sub-rs یا نیازمند
+/// استخراج از ZIP پک-فصل با موتور آرشیو.
+enum StagedSubtitle {
+    Extracted(std::path::PathBuf),
+    NeedsArchiveExtraction,
+}
+
+/// هستهٔ دانلود برای یک ویدیو — خروجی: زیرنویس در staging + ریشه‌های
+/// staging برای پاک‌سازی بعدی. هیچ چیزی کنار ویدیوی واقعی نمی‌گذارد.
+fn fetch_staged_subtitle(
     state: &AppState,
     video_path: &str,
     api_key: &str,
     cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(OpsProgress),
-) -> Result<String, String> {
+) -> Result<
+    (
+        StagedSubtitle,
+        crate::subsource::plan::ArchiveSource,
+        Vec<String>,
+    ),
+    String,
+> {
     let video = std::path::PathBuf::from(video_path);
     let file_name = video
         .file_name()
@@ -948,18 +964,20 @@ fn download_and_place_core(
         })
         .ok_or_else(|| "مسیر staging نامعتبر است".to_string())?;
 
-    let placed = if staged_srt.is_file() {
-        validate_subtitle_for_sidecar(&staged_srt)?;
-        place_sidecar_copy(&staged_srt, &video)?
+    let staged = if staged_srt.is_file() {
+        StagedSubtitle::Extracted(staged_srt)
     } else {
         // ZIP چند-اپیزودی (پک فصل مثل «all_episods.zip»): sub-rs از اعضای
         // بی‌نامِ سریال (`S01E02.srt`) اپیزود را نمی‌سازد — موتور آرشیو خودمان
         // با mچ اپیزود دقیقاً همین را حل می‌کند (همان مسیر pipeline).
-        extract_from_staged_archive(state, source, cancel, on_progress)?
+        StagedSubtitle::NeedsArchiveExtraction
     };
+    Ok((staged, source.clone(), result.staging_paths))
+}
 
-    // staging فقط حامل لینک/آرشیو موقت بود — پس از مصرف پاک می‌شود
-    for root in &result.staging_paths {
+/// پاک‌سازی ریشه‌های staging پس از مصرف — بهترین تلاش، خطا فقط لاگ.
+fn cleanup_staging(staging_paths: &[String]) {
+    for root in staging_paths {
         if let Err(e) = std::fs::remove_dir_all(root) {
             crate::logging::warn(
                 "subsource",
@@ -967,6 +985,28 @@ fn download_and_place_core(
             );
         }
     }
+}
+
+fn download_and_place_core(
+    state: &AppState,
+    video_path: &str,
+    api_key: &str,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut dyn FnMut(OpsProgress),
+) -> Result<String, String> {
+    let video = std::path::PathBuf::from(video_path);
+    let (staged, source, staging_paths) =
+        fetch_staged_subtitle(state, video_path, api_key, cancel, on_progress)?;
+    let placed = match staged {
+        StagedSubtitle::Extracted(staged_srt) => {
+            validate_subtitle_for_sidecar(&staged_srt)?;
+            place_sidecar_copy(&staged_srt, &video)?
+        }
+        StagedSubtitle::NeedsArchiveExtraction => {
+            extract_from_staged_archive(state, &source, cancel, on_progress)?
+        }
+    };
+    cleanup_staging(&staging_paths);
     Ok(placed)
 }
 
@@ -1203,6 +1243,218 @@ pub fn download_softsub_batch(
     Ok(total)
 }
 
+// ===== تنظیم دوباره زیرنویس — از اول: حذف قدیمی + دانلود تازه + سینک =====
+//
+// وقتی کاربر می‌بیند زیرنویس ویدیو خراب/نامرتبط است، با یک دکمه:
+// ۱. زیرنویس تازه از SubSource دانلود می‌شود (اول به staging — منبع فعلی
+//    تا موفقیت دانلود دست‌نخورده می‌ماند)
+// ۲. sidecarهای ساخته‌شدهٔ قبلی برنامه (`<stem>.fa.srt` / `.fa.synced.srt`)
+//    حذف و زیرنویس تازه هم‌نام جانمایی می‌شود
+// ۳. pipeline روی همان ویدیو به‌صورت خودکار اجرا می‌شود → سینک واقعی از
+//    اول → SoftSub (جایگزینی Track قبلی) یا جانمایی sidecar
+
+pub const SUBTITLE_RESET_EVENT_KIND: &str = "subtitle-reset";
+
+/// فقط یک تنظیم دوباره هم‌زمان.
+static SUBTITLE_RESET_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// حذف sidecarهای ساخته‌شدهٔ قبلی برنامه برای یک ویدیو — خروجی: تعداد حذف.
+/// فقط نام‌های متعلق به برنامه حذف می‌شوند؛ هیچ فایل دیگری لمس نمی‌شود.
+fn delete_stale_sidecars(video: &Path) -> usize {
+    let Some(stem) = video.file_stem() else {
+        return 0;
+    };
+    let Some(dir) = video.parent() else {
+        return 0;
+    };
+    let mut removed = 0;
+    for name in [
+        format!("{}.fa.srt", stem.to_string_lossy()),
+        format!("{}.fa.synced.srt", stem.to_string_lossy()),
+    ] {
+        let path = dir.join(&name);
+        if path.is_file() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    removed += 1;
+                    crate::logging::info(
+                        "subsource",
+                        &format!("زیرنویس قبلی برای تنظیم دوباره حذف شد: {}", path.display()),
+                    );
+                }
+                Err(e) => crate::logging::warn(
+                    "subsource",
+                    &format!("حذف «{}» ناموفق بود: {e}", path.display()),
+                ),
+            }
+        }
+    }
+    removed
+}
+
+/// تنظیم دوباره زیرنویس یک ویدیو — پس از پایان، pipeline همان ویدیو به‌صورت
+/// خودکار اجرا می‌شود (سینک واقعی از اول). رویدادها با kind `subtitle-reset`.
+#[tauri::command]
+pub fn reset_subtitle(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    video_path: String,
+) -> Result<(), String> {
+    let video = std::path::PathBuf::from(video_path.trim());
+    validate_video_for_sidecar(&video)?;
+    if get_entry(&state, &video.to_string_lossy()).is_none() {
+        return Err(
+            "این ویدیو در کتابخانه اسکن‌شده نیست — ابتدا پوشه را انتخاب و سینک کنید.".into(),
+        );
+    }
+
+    if SUBTITLE_RESET_IN_FLIGHT
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("یک تنظیم دوباره در جریان است؛ صبر کنید تا تمام شود.".into());
+    }
+
+    let guard = acquire_batch_op(&state.ops)?;
+    let cancel = Arc::clone(&guard.cancel);
+
+    // کلید اختیاری — ناشناس هم دانلود می‌شود
+    let api_key = match retrieve_api_key() {
+        Ok(key) => key.unwrap_or_default().trim().to_string(),
+        Err(e) => {
+            crate::logging::warn(
+                "subsource",
+                &format!("خواندن API key ناموفق بود — دانلود ناشناس ادامه می‌یابد: {e}"),
+            );
+            String::new()
+        }
+    };
+    let _ = resolve_tool(&state, "subsource")?; // پیام فارسی زودهنگام نبود ابزار
+
+    let app2 = app.clone();
+    let video2 = video.clone();
+    std::thread::spawn(move || {
+        let video_path = video2.to_string_lossy().into_owned();
+        let emit = |message: &str| {
+            let _ = app2.emit(
+                "ops:progress",
+                &OpsProgress {
+                    kind: SUBTITLE_RESET_EVENT_KIND.into(),
+                    current: 0,
+                    total: 0,
+                    video_path: video_path.clone(),
+                    message: message.into(),
+                },
+            );
+        };
+        let finish = |message: &str| {
+            let _ = app2.emit(
+                "ops:done",
+                &OpsProgress {
+                    kind: SUBTITLE_RESET_EVENT_KIND.into(),
+                    current: 0,
+                    total: 0,
+                    video_path: String::new(),
+                    message: message.into(),
+                },
+            );
+        };
+
+        let outcome = (|| -> Result<String, String> {
+            // ۱) دانلود زیرنویس تازه به staging — منبع فعلی هنوز دست‌نخورده
+            emit("دانلود زیرنویس تازه از SubSource…");
+            let st = app2.state::<AppState>();
+            let (staged, source, staging_paths) =
+                fetch_staged_subtitle(&st, &video_path, &api_key, &cancel, &mut |mut p| {
+                    p.kind = SUBTITLE_RESET_EVENT_KIND.into();
+                    p.current = 0;
+                    p.total = 0;
+                    p.video_path = video_path.clone();
+                    emit(&p.message);
+                })?;
+
+            // ۲) حذف زیرنویس‌های قبلی — فقط پس از موفقیت دانلود
+            emit("حذف زیرنویس قبلی…");
+            let removed = delete_stale_sidecars(&video2);
+
+            // ۳) جانمایی زیرنویس تازه هم‌نام ویدیو
+            emit("جانمایی زیرنویس تازه…");
+            let st = app2.state::<AppState>();
+            let placed = match staged {
+                StagedSubtitle::Extracted(staged_srt) => {
+                    validate_subtitle_for_sidecar(&staged_srt)?;
+                    place_sidecar_copy(&staged_srt, &video2)?
+                }
+                StagedSubtitle::NeedsArchiveExtraction => {
+                    extract_from_staged_archive(&st, &source, &cancel, &mut |p| {
+                        // پیشرفت آرشیو هم با همان kind می‌رود
+                        let mut p = p;
+                        p.kind = SUBTITLE_RESET_EVENT_KIND.into();
+                        p.video_path = video_path.clone();
+                        emit(&p.message);
+                    })?;
+                    video2
+                        .parent()
+                        .map(|dir| {
+                            dir.join(format!(
+                                "{}.fa.srt",
+                                video2.file_stem().unwrap_or_default().to_string_lossy()
+                            ))
+                            .to_string_lossy()
+                            .into_owned()
+                        })
+                        .unwrap_or_default()
+                }
+            };
+            cleanup_staging(&staging_paths);
+            crate::logging::info(
+                "subsource",
+                &format!(
+                    "تنظیم دوباره: زیرنویس تازه جانمایی شد ({placed}) — {removed} زیرنویس قبلی حذف شد"
+                ),
+            );
+            Ok(placed)
+        })();
+
+        match &outcome {
+            Ok(placed) => emit(&format!("زیرنویس تازه آماده است: {placed} — سینک از نو…")),
+            Err(reason) => {
+                finish(&format!("تنظیم دوباره ناموفق بود: {reason}"));
+                crate::logging::warn("subsource", &format!("تنظیم دوباره ناموفق: {reason}"));
+                SUBTITLE_RESET_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+                drop(guard);
+                return;
+            }
+        }
+
+        // ۴) سینک از اول — اجرای خودکار pipeline روی همین ویدیو
+        drop(guard); // اسلات reset آزاد تا pipeline اسلات تازه بگیرد
+        let input = crate::pipeline::PipelineInput::Files {
+            paths: vec![video_path.clone()],
+        };
+        let st = app2.state::<AppState>();
+        let started = crate::commands::pipeline::start_pipeline(app2.clone(), st, input);
+        SUBTITLE_RESET_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+        match started {
+            Ok(_) => finish("زیرنویس تازه جانمایی شد و سینک از نو شروع شد."),
+            Err(e) => {
+                // مثلاً pipeline دیگری در جریان است — تنظیم دوباره خودش موفق بوده
+                finish(&format!(
+                    "زیرنویس تازه جانمایی شد اما سینک خودکار شروع نشد ({e}) — دستی سینک را اجرا کنید."
+                ));
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// مجموعه کوچک تست‌های هسته (بدون فرایند واقعی — برای اجرای فرایند واقعی
 /// `tests/integration_subsource_download.rs` را ببینید).
 #[cfg(test)]
@@ -1238,6 +1490,30 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// حذف sidecarهای قبلی — فقط فایل‌های متعلق به برنامه؛ غایب‌ها نادیده
+    #[test]
+    fn delete_stale_sidecars_removes_only_app_generated_files() {
+        let base = unique_dir("stale-sidecars");
+        let video = base.join("Show.S01E01.mkv");
+        std::fs::write(&video, b"VIDEO").unwrap();
+        let fa = base.join("Show.S01E01.fa.srt");
+        std::fs::write(&fa, b"OLD").unwrap();
+        let synced = base.join("Show.S01E01.fa.synced.srt");
+        std::fs::write(&synced, b"OLD-SYNCED").unwrap();
+        let other = base.join("Show.S01E01.english.srt");
+        std::fs::write(&other, b"KEEP-ME").unwrap();
+
+        let removed = delete_stale_sidecars(&video);
+        assert_eq!(removed, 2, "هر دو sidecar برنامه باید حذف شوند");
+        assert!(!fa.exists());
+        assert!(!synced.exists());
+        assert!(other.exists(), "زیرنویس غیر برنامه نباید حذف شود");
+
+        // دوباره → صفر (غایب‌ها نادیده)
+        assert_eq!(delete_stale_sidecars(&video), 0);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     const SRT_FA: &str = "1

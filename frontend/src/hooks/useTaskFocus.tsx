@@ -30,6 +30,8 @@ interface TaskFocusState {
   openSoftsub: (paths: string[]) => void;
   closeSoftsub: () => void;
   softsubTask: SoftsubTaskState;
+  /** وضعیت زندهٔ تنظیم دوباره زیرنویس (حذف + دانلود تازه + سینک خودکار) */
+  resetTask: { active: boolean; message: string };
 }
 
 const EMPTY_SOFTSUB: SoftsubTaskState = {
@@ -53,6 +55,10 @@ export function TaskFocusProvider({ children }: { children: ReactNode }) {
   const [focus, setFocus] = useState<TaskFocusKind>(null);
   const [softsubPaths, setSoftsubPaths] = useState<string[] | null>(null);
   const [softsubTask, setSoftsubTask] = useState<SoftsubTaskState>(EMPTY_SOFTSUB);
+  const [resetTask, setResetTask] = useState<{ active: boolean; message: string }>({
+    active: false,
+    message: "",
+  });
   const doneRef = useRef(false);
 
   const openSoftsub = useCallback((paths: string[]) => {
@@ -94,6 +100,21 @@ export function TaskFocusProvider({ children }: { children: ReactNode }) {
           }));
         }),
       );
+      // ---- تنظیم دوباره زیرنویس ----
+      unlisteners.push(
+        await listen<OpsProgress>("ops:progress", (event) => {
+          const p = event.payload;
+          if (p.kind !== "subtitle-reset") return;
+          setResetTask({ active: true, message: p.message });
+        }),
+      );
+      unlisteners.push(
+        await listen<OpsProgress>("ops:done", (event) => {
+          const p = event.payload;
+          if (p.kind !== "subtitle-reset") return;
+          setResetTask({ active: false, message: p.message });
+        }),
+      );
       if (disposed) unlisteners.forEach((u) => u());
     })();
     return () => {
@@ -109,6 +130,7 @@ export function TaskFocusProvider({ children }: { children: ReactNode }) {
     openSoftsub,
     closeSoftsub,
     softsubTask,
+    resetTask,
   };
 
   return <TaskFocusContext.Provider value={value}>{children}</TaskFocusContext.Provider>;
