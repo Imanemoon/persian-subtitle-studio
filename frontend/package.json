@@ -1,7 +1,7 @@
 {
   "name": "persian-subtitle-studio",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "SubSync Studio — مدیریت خودکار زیرنویس فارسی سریال‌ها و فیلم‌ها",
   "type": "module",
   "scripts": {
