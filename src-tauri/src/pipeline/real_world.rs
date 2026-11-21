@@ -813,7 +813,7 @@ fn real_hardsub_named_video_skips_download_and_reports_hardsubbed() {
     assert_no_softsub_leftover(&video);
 }
 
-/// آزمون H2 — جریان کامل «افزودن زیرنویس نرم» روی همان ویدیوی هاردساب:
+/// آزمون H2 — جریان کامل «افزودن زیرنویس چسبیده» روی همان ویدیوی هاردساب:
 /// place_sidecar_copy واقعی (هم‌نام ویدیو) → سینک واقعی ffsubsync → remux
 /// SoftSub داخل ویدیو — دقیقاً همان مسیری که کاربر از UI طی می‌کند.
 #[test]
@@ -834,7 +834,7 @@ fn real_hardsub_with_placed_sidecar_syncs_and_softsubs() {
     let video = h.copy_external(&src_path, &name);
     let before = h.video_hash(&video);
 
-    // زیرنویس نرم «به‌دست‌آمده» با خطای زمانی — اول در مسیر موقت، بعد از
+    // زیرنویس چسبیده «به‌دست‌آمده» با خطای زمانی — اول در مسیر موقت، بعد از
     // مسیر تولید واقعی (place_sidecar_copy) هم‌نام کنار ویدیو جانمایی می‌شود
     let staging_src = video.parent().unwrap().join("candidate.fa.srt");
     fs::write(
@@ -857,7 +857,7 @@ fn real_hardsub_with_placed_sidecar_syncs_and_softsubs() {
         "جانمایی باید دقیقاً هم‌نام ویدیو باشد"
     );
 
-    // اجرای مجدد pipeline — همان جریان کاربر پس از افزودن زیرنویس نرم
+    // اجرای مجدد pipeline — همان جریان کاربر پس از افزودن زیرنویس چسبیده
     let run = run_real_pipeline(
         Arc::clone(&h.state),
         vec![video.to_string_lossy().into_owned()],

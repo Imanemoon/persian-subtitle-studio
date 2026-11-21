@@ -135,7 +135,7 @@ export const api = {
   getHardsubState: () => invoke<HardsubSnapshot | null>("get_hardsub_state"),
   isHardsubActive: () => invoke<boolean>("is_hardsub_active"),
 
-  // ---- افزودن زیرنویس نرم برای ویدیوهای هاردساب‌دار ----
+  // ---- افزودن زیرنویس چسبیده برای ویدیوهای هاردساب‌دار ----
   // هر دو مسیر خروجی <stem>.fa.srt هم‌نام ویدیو می‌سازند و هرگز بازنویسی نمی‌کنند
   placeLocalSubtitle: (videoPath: string, subtitlePath: string) =>
     invoke<string>("place_local_subtitle", { videoPath, subtitlePath }),

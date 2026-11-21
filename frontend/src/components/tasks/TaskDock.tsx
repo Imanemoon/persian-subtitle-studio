@@ -25,15 +25,25 @@ interface DockItem {
  * «خانه» ترک می‌کند، وضعیت همهٔ تسک‌های فعال اینجا دیده می‌شود و با کلیک،
  * نمای همان تسک دوباره باز می‌شود.
  */
-export function TaskDock({ onNavigate }: { onNavigate: (page: PageId) => void }) {
+export function TaskDock({
+  onNavigate,
+  page,
+}: {
+  onNavigate: (page: PageId) => void;
+  page: PageId;
+}) {
   const { runActive, snapshot, summary } = usePipeline();
   const hardsub = useHardsub();
-  const { setFocus, softsubTask, openSoftsub } = useTaskFocus();
+  const { focus, setFocus, softsubPaths, softsubTask, openSoftsub } = useTaskFocus();
+
+  /** آیا کاربر همین الان نمای این تسک را باز دارد؟ — آنگاه از dock حذف می‌شود */
+  const viewingPipelineView = page === "home" && focus === "pipeline";
+  const viewingHardsubView = page === "home" && focus === "hardsub";
 
   const items: DockItem[] = [];
 
   // ---- تسک سینک (pipeline) ----
-  if (runActive && snapshot) {
+  if (!viewingPipelineView && runActive && snapshot) {
     const percent =
       snapshot.total > 0
         ? Math.min(100, Math.round((snapshot.completed / snapshot.total) * 100))
@@ -49,7 +59,7 @@ export function TaskDock({ onNavigate }: { onNavigate: (page: PageId) => void })
         onNavigate("home");
       },
     });
-  } else if (summary) {
+  } else if (summary && !viewingPipelineView) {
     items.push({
       key: "pipeline-summary",
       icon: <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />,
@@ -64,7 +74,7 @@ export function TaskDock({ onNavigate }: { onNavigate: (page: PageId) => void })
   }
 
   // ---- تسک هاردساب ----
-  if (hardsub.runActive && hardsub.snapshot) {
+  if (!viewingHardsubView && hardsub.runActive && hardsub.snapshot) {
     const percent =
       hardsub.snapshot.total > 0
         ? Math.min(
@@ -83,7 +93,7 @@ export function TaskDock({ onNavigate }: { onNavigate: (page: PageId) => void })
         onNavigate("home");
       },
     });
-  } else if (hardsub.summary) {
+  } else if (hardsub.summary && !viewingHardsubView) {
     items.push({
       key: "hardsub-summary",
       icon: <CheckCircle2 className="size-4 shrink-0 text-sky-400" />,
@@ -97,12 +107,12 @@ export function TaskDock({ onNavigate }: { onNavigate: (page: PageId) => void })
     });
   }
 
-  // ---- تسک افزودن زیرنویس نرم ----
-  if (softsubTask.active) {
+  // ---- تسک افزودن زیرنویس چسبیده ----
+  if (softsubTask.active && softsubPaths === null) {
     items.push({
       key: "softsub",
       icon: <Captions className="size-4 shrink-0 text-amber-400" />,
-      title: "افزودن زیرنویس نرم",
+      title: "افزودن زیرنویس چسبیده",
       detail:
         softsubTask.total > 0
           ? `${faNum(softsubTask.current)} از ${faNum(softsubTask.total)}`

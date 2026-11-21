@@ -13,7 +13,7 @@ import type { OpsProgress } from "../types";
 /** نوع تسک قابل‌فوکوس — نمای آن در صفحهٔ Home رندر می‌شود. */
 export type TaskFocusKind = "pipeline" | "hardsub" | null;
 
-/** وضعیت زندهٔ تسک افزودن زیرنویس نرم — از رویدادهای ops با kind اختصاصی. */
+/** وضعیت زندهٔ تسک افزودن زیرنویس چسبیده — از رویدادهای ops با kind اختصاصی. */
 export interface SoftsubTaskState {
   active: boolean;
   current: number;
@@ -43,7 +43,7 @@ const EMPTY_SOFTSUB: SoftsubTaskState = {
 const TaskFocusContext = createContext<TaskFocusState | null>(null);
 
 /**
- * فوکوس نمای تسک + وضعیت زندهٔ افزودن زیرنویس نرم.
+ * فوکوس نمای تسک + وضعیت زندهٔ افزودن زیرنویس چسبیده.
  *
  * کاربر می‌تواند نمای یک تسک را با «خانه» ترک کند و کار در پس‌زمینه ادامه
  * یابد؛ جعبهٔ شناور تسک‌ها (TaskDock) وضعیت همهٔ تسک‌های فعال را نشان می‌دهد

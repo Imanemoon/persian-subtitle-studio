@@ -7,9 +7,6 @@ import { TaskDock } from "./components/tasks/TaskDock";
 import { SoftsubAddModal } from "./components/pipeline/SoftsubAddModal";
 import { Header } from "./components/Header";
 import { Home } from "./pages/Home";
-import { Library } from "./pages/Library";
-import { Processing } from "./pages/Processing";
-import { Logs } from "./pages/Logs";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { api } from "./lib/api";
@@ -68,9 +65,9 @@ function Shell() {
 
   return (
     <div dir="rtl" className="flex h-screen flex-col bg-surface-0 text-ink-1">
-      <Header page={page} onNavigate={setPage} />
+      <Header onNavigate={setPage} />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <TaskDock onNavigate={setPage} />
+        <TaskDock onNavigate={setPage} page={page} />
         <SoftsubAddModal
           open={softsubPaths !== null}
           paths={softsubPaths ?? []}
@@ -78,9 +75,6 @@ function Shell() {
         />
         {page === "setup" && <SetupPage onEnter={() => void enterApp()} />}
         {page === "home" && <Home onNavigate={setPage} />}
-        {page === "library" && <Library />}
-        {page === "processing" && <Processing onNavigate={setPage} />}
-        {page === "logs" && <Logs />}
         {page === "settings" && <SettingsPage />}
       </main>
     </div>
