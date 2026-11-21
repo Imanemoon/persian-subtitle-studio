@@ -134,4 +134,22 @@ export const api = {
   cancelHardsub: () => invoke<boolean>("cancel_hardsub"),
   getHardsubState: () => invoke<HardsubSnapshot | null>("get_hardsub_state"),
   isHardsubActive: () => invoke<boolean>("is_hardsub_active"),
+
+  // ---- افزودن زیرنویس نرم برای ویدیوهای هاردساب‌دار ----
+  // هر دو مسیر خروجی <stem>.fa.srt هم‌نام ویدیو می‌سازند و هرگز بازنویسی نمی‌کنند
+  placeLocalSubtitle: (videoPath: string, subtitlePath: string) =>
+    invoke<string>("place_local_subtitle", { videoPath, subtitlePath }),
+  downloadSoftsubBatch: (paths: string[]) =>
+    invoke<number>("download_softsub_batch", { paths }),
+
+  /** انتخاب یک فایل زیرنویس (srt/ass/ssa/vtt) با دیالوگ بومی */
+  pickSubtitle: async (): Promise<string | null> => {
+    const picked = await open({
+      multiple: false,
+      filters: [
+        { name: "Subtitle", extensions: ["srt", "ass", "ssa", "vtt"] },
+      ],
+    });
+    return typeof picked === "string" ? picked : null;
+  },
 };

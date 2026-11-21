@@ -101,7 +101,7 @@ impl SubSourceCli {
     /// - `CliExitCode` اگر CLI با کد غیر صفر خارج شود
     pub fn run_batch(&self, options: &BatchOptions) -> SubSourceResult<BatchResult> {
         let token = CancellationToken::new();
-        self.run_batch_with_cancellation(options, &token)
+        self.run_batch_with_cancellation(options, &token, &mut |_| {})
     }
 
     /// اجرای batch download با قابلیت cancellation
@@ -109,6 +109,8 @@ impl SubSourceCli {
     /// # Arguments
     /// * `options` - تنظیمات اجرا
     /// * `cancel_token` - token برای لغو عملیات
+    /// * `on_stdout_line` - هر خط stdout لحظه‌ای اینجا می‌آید (پیشرفت زندهٔ
+    ///   CLI بدون خروجی ساختاریافته دارد؛ فراخوانی روی thread صداکننده است)
     ///
     /// # Returns
     /// نتیجه اجرا یا خطای `ProcessTerminated` در صورت لغو
@@ -116,6 +118,7 @@ impl SubSourceCli {
         &self,
         options: &BatchOptions,
         cancel_token: &CancellationToken,
+        on_stdout_line: &mut dyn FnMut(&str),
     ) -> SubSourceResult<BatchResult> {
         // اعتبارسنجی
         options.validate().map_err(SubSourceError::Other)?;
@@ -177,7 +180,7 @@ impl SubSourceCli {
         }
 
         // خواندن stdout و stderr در threadهای جدا
-        let mut stdout_pipe = match child.stdout.take() {
+        let stdout_pipe = match child.stdout.take() {
             Some(pipe) => pipe,
             None => {
                 Self::terminate_child(&mut child);
@@ -197,11 +200,18 @@ impl SubSourceCli {
             }
         };
 
+        // stdout خط‌به‌خط از thread خواننده به کانال می‌رود؛ حلقهٔ انتظارِ
+        // لغو هر تیک خطوط رسیده را تخلیه و به callback می‌دهد — پیشرفت زندهٔ
+        // CLI بدون خروجی ساختاریافته همین‌طور به UI می‌رسد.
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
         let stdout_thread = std::thread::spawn(move || {
-            use std::io::Read;
-            let mut s = String::new();
-            let _ = stdout_pipe.read_to_string(&mut s);
-            s
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stdout_pipe);
+            for line in reader.lines().map_while(Result::ok) {
+                if line_tx.send(line).is_err() {
+                    break; // گیرنده بسته شده (لغو/خطا) — خواندن بی‌معناست
+                }
+            }
         });
 
         let stderr_thread = std::thread::spawn(move || {
@@ -211,11 +221,45 @@ impl SubSourceCli {
             s
         });
 
-        // انتظار برای اتمام با پشتیبانی از cancellation.
-        // در خطا، wait_with_cancellation خودش Child را kill/wait می‌کند؛
-        // بنابراین reader threadها همیشه به EOF می‌رسند و join بدون deadlock انجام می‌شود.
-        let status_result = Self::wait_with_cancellation(&mut child, cancel_token);
-        let stdout_raw = stdout_thread.join().unwrap_or_default();
+        // انتظار برای اتمام با پشتیبانی از cancellation + تخلیهٔ خطوط stdout.
+        // در خطا، حلقهٔ زیر خودش Child را kill/wait می‌کند؛ بنابراین reader
+        // threadها همیشه به EOF می‌رسند و join بدون deadlock انجام می‌شود.
+        let mut stdout_raw = String::new();
+        let status_result = loop {
+            while let Ok(line) = line_rx.try_recv() {
+                on_stdout_line(&line);
+                stdout_raw.push_str(&line);
+                stdout_raw.push('\n');
+            }
+            if cancel_token.is_cancelled() {
+                Self::terminate_child(&mut child);
+                break Err(SubSourceError::ProcessTerminated("عملیات لغو شد".into()));
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // خطوط باقی‌ماندهٔ بافر تا EOF — بعد از مرگ فرایند لوله بسته می‌شود
+                    while let Ok(line) = line_rx.try_recv() {
+                        on_stdout_line(&line);
+                        stdout_raw.push_str(&line);
+                        stdout_raw.push('\n');
+                    }
+                    break Ok(status);
+                }
+                Ok(None) => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    Self::terminate_child(&mut child);
+                    break Err(SubSourceError::ProcessError(format!("wait error: {e}")));
+                }
+            }
+        };
+        let _ = stdout_thread.join();
+        while let Ok(line) = line_rx.try_recv() {
+            on_stdout_line(&line);
+            stdout_raw.push_str(&line);
+            stdout_raw.push('\n');
+        }
         let stderr_raw = stderr_thread.join().unwrap_or_default();
         let status = status_result?;
         let duration = start.elapsed().as_secs_f64();
@@ -260,36 +304,6 @@ impl SubSourceCli {
                 code: exit_code,
                 stderr,
             })
-        }
-    }
-
-    /// انتظار برای اتمام process با پشتیبانی از cancellation
-    fn wait_with_cancellation(
-        child: &mut Child,
-        cancel_token: &CancellationToken,
-    ) -> SubSourceResult<std::process::ExitStatus> {
-        use std::time::Duration;
-
-        loop {
-            // بررسی cancellation
-            if cancel_token.is_cancelled() {
-                Self::terminate_child(child);
-                return Err(SubSourceError::ProcessTerminated("عملیات لغو شد".into()));
-            }
-
-            // تلاش برای بررسی وضعیت process (non-blocking)
-            match child.try_wait() {
-                Ok(Some(status)) => return Ok(status),
-                Ok(None) => {
-                    // هنوز در حال اجراست، کمی صبر کن
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    // حتی در خطای try_wait نباید Child رها شود.
-                    Self::terminate_child(child);
-                    return Err(SubSourceError::ProcessError(format!("wait error: {e}")));
-                }
-            }
         }
     }
 

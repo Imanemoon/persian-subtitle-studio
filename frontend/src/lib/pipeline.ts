@@ -84,6 +84,8 @@ export function outcomeBadge(outcome: ItemOutcome): {
       return { tone: "success", label: "سینک شد" };
     case "softSubbed":
       return { tone: "success", label: "SoftSub شد" };
+    case "hardsubbed":
+      return { tone: "info", label: "زیرنویس داخل تصویر (هاردساب)" };
     case "alreadySynced":
       return { tone: "success", label: "از قبل سینک‌شده" };
     case "unchangedLowQuality":
@@ -179,6 +181,8 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
       const name = fileBaseName(outcome.videoPath);
       return name ? `زیرنویس فارسی داخل ${name} قرار گرفت` : "زیرنویس فارسی داخل ویدیو قرار گرفت";
     }
+    case "hardsubbed":
+      return "زیرنویس فارسی داخل تصویر حک شده است؛ از اقدام «افزودن زیرنویس نرم» می‌توانید دانلود یا فایل محلی را هم‌نام ویدیو کنارش قرار دهید.";
     case "outputConflict": {
       const name = fileBaseName(outcome.preservedPath);
       return name

@@ -724,6 +724,30 @@ pub(crate) fn run_pipeline_body(
         .map(|(i, _)| i)
         .collect();
 
+    // ویدیوهای هاردساب‌دار (قرارداد نام‌گذاری) — دانلود برایشان بی‌معناست:
+    // زیرنویس داخل تصویر حک شده و کاربر می‌تواند بعداً زیرنویس نرم اضافه کند
+    let (hardsub_idxs, needer_idxs): (Vec<usize>, Vec<usize>) =
+        needer_idxs.into_iter().partition(|&i| {
+            crate::scanner::naming::name_suggests_fa_hardsub(&items[i].video_file_name)
+        });
+    for &i in &hardsub_idxs {
+        items[i].stage = PipelineStage::Downloading;
+        items[i].outcome = Some(ItemOutcome::Hardsubbed);
+        items[i].stage_status = StageStatus::Done;
+        counts.hardsubbed += 1;
+    }
+    if !hardsub_idxs.is_empty() {
+        crate::logging::info(
+            "pipeline",
+            &format!(
+                "{} ویدیو با نشانهٔ هاردساب فارسی از دانلود کنار گذاشته شد",
+                hardsub_idxs.len()
+            ),
+        );
+        sync_all(control, sink, &items);
+        ensure_running()?;
+    }
+
     if !needer_idxs.is_empty() {
         match (io.key_provider)() {
             Err(err) => {

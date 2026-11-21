@@ -156,7 +156,7 @@ fn test_cancellation_support() {
         cancel_clone.cancel();
     });
 
-    let result = cli.run_batch_with_cancellation(&opts, &cancel_token);
+    let result = cli.run_batch_with_cancellation(&opts, &cancel_token, &mut |_| {});
     assert!(matches!(result, Err(SubSourceError::ProcessTerminated(_))));
 
     let _ = std::fs::remove_dir_all(&test_dir);
@@ -354,7 +354,7 @@ fn test_process_kill_and_wait() {
     });
 
     let start = std::time::Instant::now();
-    let result = cli.run_batch_with_cancellation(&opts, &cancel_token);
+    let result = cli.run_batch_with_cancellation(&opts, &cancel_token, &mut |_| {});
     let elapsed = start.elapsed();
 
     // باید سریع لغو شود (نه 15 ثانیه کامل)

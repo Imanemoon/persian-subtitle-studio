@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   AlertTriangle,
+  Captions,
   CheckCircle2,
   ChevronDown,
   Film,
@@ -12,6 +13,7 @@ import {
 import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
 import { useHardsub } from "../../hooks/useHardsub";
+import { SoftsubAddModal } from "./SoftsubAddModal";
 import { api } from "../../lib/api";
 import {
   DECISION_KIND_TEXT,
@@ -36,6 +38,11 @@ import type { HardsubPlan } from "../../types/hardsub";
 import type { PageId } from "../../types";
 
 /** آیتم‌هایی که منبع زیرنویس آماده دارند و می‌توانند هاردساب شوند. */
+/** آیتم‌هایی که زیرنویس‌شان داخل تصویر حک شده — کاندید افزودن زیرنویس نرم */
+function isHardsubbed(item: PipelineItemSnapshot): boolean {
+  return item.outcome?.kind === "hardsubbed";
+}
+
 function hardsubEligible(item: PipelineItemSnapshot): boolean {
   return (
     item.outcome?.kind === "synced" ||
@@ -72,12 +79,15 @@ export function PipelinePanel({
   const [plan, setPlan] = useState<HardsubPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  // ---- افزودن زیرنویس نرم به هاردساب‌ها ----
+  const [softsubPaths, setSoftsubPaths] = useState<string[] | null>(null);
 
   if (!snapshot && !summary) return null;
 
   const eligiblePaths = items.filter(hardsubEligible).map((item) => item.videoPath);
   const eligibleCount = eligiblePaths.length;
   const checkedCount = eligiblePaths.filter((p) => checked.has(p)).length;
+  const hardsubbedPaths = items.filter(isHardsubbed).map((item) => item.videoPath);
 
   const toggleChecked = (path: string) => {
     setChecked((prev) => {
@@ -406,6 +416,8 @@ export function PipelinePanel({
                 checked={checked.has(item.videoPath)}
                 onToggle={() => toggleChecked(item.videoPath)}
                 onHardsub={() => void requestHardsub([item.videoPath])}
+                showSoftsub={!runActive && isHardsubbed(item)}
+                onSoftsub={() => setSoftsubPaths([item.videoPath])}
               />
             ))}
           </div>
@@ -417,6 +429,13 @@ export function PipelinePanel({
           )}
         </Card>
       )}
+
+      {/* ---- افزودن زیرنویس نرم به هاردساب‌ها ---- */}
+      <SoftsubAddModal
+        open={softsubPaths !== null}
+        paths={softsubPaths ?? []}
+        onClose={() => setSoftsubPaths(null)}
+      />
 
       {/* ---- دیالوگ تأیید هاردساب — پلن تازه از بک‌اند ---- */}
       <Modal
@@ -544,6 +563,23 @@ export function PipelinePanel({
           <CountsGrid counts={counts} />
 
           <NeedsReview summary={summary} />
+
+          {/* افزودن زیرنویس نرم به هاردساب‌ها — پس از پایان سینک */}
+          {!runActive && hardsubbedPaths.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs leading-5 text-ink-3">
+                {faNum(hardsubbedPaths.length)} مورد زیرنویس‌شان داخل تصویر حک شده
+                است — در صورت تمایل زیرنویس نرم دانلود کنید یا از فایل محلی
+                هم‌نام کنارشان بگذارید.
+              </p>
+              <Button
+                disabled={planLoading}
+                onClick={() => setSoftsubPaths(hardsubbedPaths)}
+              >
+                افزودن زیرنویس نرم ({faNum(hardsubbedPaths.length)})
+              </Button>
+            </div>
+          )}
 
           {/* هاردساب گروهی همهٔ موارد موفق — پس از پایان سینک */}
           {!runActive && eligibleCount > 0 && (
@@ -722,12 +758,16 @@ function ItemRow({
   checked,
   onToggle,
   onHardsub,
+  showSoftsub,
+  onSoftsub,
 }: {
   item: PipelineItemSnapshot;
   showActions: boolean;
   checked: boolean;
   onToggle: () => void;
   onHardsub: () => void;
+  showSoftsub: boolean;
+  onSoftsub: () => void;
 }) {
   const state = itemRowState(item);
   const detail = item.outcome ? outcomeDetail(item.outcome) : null;
@@ -781,6 +821,21 @@ function ItemRow({
           >
             <Film className="size-3.5" />
             هاردساب
+          </Button>
+        )}
+        {showSoftsub && (
+          <Button
+            variant="ghost"
+            className="h-7 shrink-0 px-2.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onSoftsub();
+            }}
+            title="دانلود یا انتخاب فایل زیرنویس نرم — هم‌نام کنار ویدیو"
+          >
+            <Captions className="size-3.5" />
+            زیرنویس نرم
           </Button>
         )}
         <span
@@ -855,6 +910,7 @@ function NeedsReview({ summary }: { summary: PipelineSummary }) {
 
 const COUNT_LABELS: Array<[keyof PipelineCounts, string]> = [
   ["softsubbed", "SoftSub شده"],
+  ["hardsubbed", "هاردساب (داخل تصویر)"],
   ["synced", "سینک شد"],
   ["alreadySynced", "از قبل سینک‌شده"],
   ["unchangedLowQuality", "کیفیت پایین"],

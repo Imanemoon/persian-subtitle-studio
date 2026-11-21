@@ -122,6 +122,8 @@ pub fn run() {
             commands::subsource::plan_subsource_download,
             commands::subsource::execute_subsource_download,
             commands::subsource::is_download_active,
+            commands::subsource::place_local_subtitle,
+            commands::subsource::download_softsub_batch,
             commands::archive::plan_archive_extraction,
             commands::archive::execute_archive_extraction,
             commands::archive::is_archive_active,
