@@ -829,22 +829,30 @@ fn test_staging_build_failure_rolls_back_cleanly() {
     let _ = fs::remove_dir_all(&base_dir);
 }
 
-/// تست ۱۵: جلوگیری از تداخل عملیات گروهی با عملیات تکی و سایر عملیات‌های گروهی
+/// تست ۱۵: تداخل عملیات گروهی با تکی رد می‌شود؛ تسک گروهی تا سقف ۳ هم‌زمان
+/// مجاز است و چهارم با پیام روشن رد می‌شود؛ آزادسازی اسلات جا باز می‌کند.
 #[test]
 fn test_batch_operation_concurrency_lock() {
     let reg = Arc::new(Mutex::new(OpsRegistry::default()));
 
-    // ۱) رزرو گروهی
-    let guard = acquire_batch_op(&reg).expect("Batch op acquire should succeed");
+    // ۱) سه رزرو گروهی هم‌زمان مجاز است
+    let guard1 = acquire_batch_op(&reg).expect("Batch op acquire should succeed");
+    let guard2 = acquire_batch_op(&reg).expect("second batch slot");
+    let guard3 = acquire_batch_op(&reg).expect("third batch slot");
 
-    // ۲) تلاش برای رزرو تکی یا گروهی دیگر باید رد شود
+    // ۲) تلاش برای رزرو تکی یا گروهی چهارم باید رد شود
     assert!(acquire_single_op(&reg, "video-path").is_err());
-    assert!(acquire_batch_op(&reg).is_err());
+    let fourth = acquire_batch_op(&reg);
+    assert!(fourth.is_err(), "چهارم باید با سقف ۳ رد شود");
 
-    // ۳) آزادسازی اسلات
-    drop(guard);
+    // ۳) آزادسازی یک اسلات → جا برای تسک بعدی
+    drop(guard2);
+    let g4 = acquire_batch_op(&reg).expect("after releasing one slot");
+    drop(g4);
 
-    // ۴) اکنون هر دو قابل دریافت هستند
+    // ۴) آزادسازی همه → تکی هم قابل دریافت است
+    drop(guard1);
+    drop(guard3);
     assert!(acquire_single_op(&reg, "video-path").is_ok());
 }
 

@@ -191,15 +191,28 @@ mod tests {
 
         let guard = acquire_batch_op(&ops).unwrap();
         assert!(archive_ops_active(&ops), "پلن باید به‌عنوان فعالیت دیده شود");
-        // عملیات گروهی دوم (پلن/اجرا/دانلود دیگر) رد می‌شود.
-        assert!(acquire_batch_op(&ops).is_err());
-        // عملیات تکی هم حین پلن مجاز نیست.
+        // تسک گروهی دوم و سوم اکنون مجازند (تا سقف ۳ هم‌زمان)؛ چهارم رد می‌شود.
+        let g2 = acquire_batch_op(&ops).expect("دوم");
+        let g3 = acquire_batch_op(&ops).expect("سوم");
+        assert!(
+            acquire_batch_op(&ops).is_err(),
+            "چهارم باید با سقف ۳ رد شود"
+        );
+        // عملیات تکی هم حین هر تسک گروهی مجاز نیست.
         assert!(acquire_single_op(&ops, "video").is_err());
 
         // cancel_subtitle_ops از همین Registry استفاده می‌کند.
         assert!(ops.lock().unwrap().cancel_all());
         assert!(guard.cancel.load(Ordering::SeqCst));
+        assert!(g2.cancel.load(Ordering::SeqCst));
+        assert!(g3.cancel.load(Ordering::SeqCst));
 
+        // آزادسازی یکی → جا برای تسک بعدی با پرچم تازه
+        drop(g2);
+        let next_slot = acquire_batch_op(&ops).unwrap();
+        assert!(!next_slot.cancel.load(Ordering::SeqCst));
+        drop(next_slot);
+        drop(g3);
         drop(guard);
         assert!(!archive_ops_active(&ops));
         let next = acquire_batch_op(&ops).unwrap();

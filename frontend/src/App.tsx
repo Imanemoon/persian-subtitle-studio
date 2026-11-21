@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { AppDataProvider, useAppData } from "./hooks/useAppData";
 import { PipelineProvider } from "./hooks/usePipeline";
 import { HardsubProvider } from "./hooks/useHardsub";
+import { TaskFocusProvider, useTaskFocus } from "./hooks/useTaskFocus";
+import { TaskDock } from "./components/tasks/TaskDock";
+import { SoftsubAddModal } from "./components/pipeline/SoftsubAddModal";
 import { Header } from "./components/Header";
 import { Home } from "./pages/Home";
 import { Library } from "./pages/Library";
@@ -17,7 +20,9 @@ export default function App() {
     <AppDataProvider>
       <PipelineProvider>
         <HardsubProvider>
-          <Shell />
+          <TaskFocusProvider>
+            <Shell />
+          </TaskFocusProvider>
         </HardsubProvider>
       </PipelineProvider>
     </AppDataProvider>
@@ -34,6 +39,7 @@ export default function App() {
 function Shell() {
   const [page, setPage] = useState<PageId>("home");
   const { settings, tools, toolsLoading, reloadSettings } = useAppData();
+  const { softsubPaths, closeSoftsub } = useTaskFocus();
   const decidedRef = useRef(false);
 
   useEffect(() => {
@@ -64,6 +70,12 @@ function Shell() {
     <div dir="rtl" className="flex h-screen flex-col bg-surface-0 text-ink-1">
       <Header page={page} onNavigate={setPage} />
       <main className="min-h-0 flex-1 overflow-y-auto">
+        <TaskDock onNavigate={setPage} />
+        <SoftsubAddModal
+          open={softsubPaths !== null}
+          paths={softsubPaths ?? []}
+          onClose={closeSoftsub}
+        />
         {page === "setup" && <SetupPage onEnter={() => void enterApp()} />}
         {page === "home" && <Home onNavigate={setPage} />}
         {page === "library" && <Library />}

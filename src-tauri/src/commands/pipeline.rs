@@ -73,6 +73,19 @@ pub fn start_pipeline(
     let guard = acquire_batch_op(&state.ops)?;
     let emit_app = app.clone();
 
+    // فقط یک pipeline هم‌زمان (اسلات control تکی است) — تسک‌های دیگر انواع
+    // (هاردساب/افزودن زیرنویس) می‌توانند هم‌زمان اجرا شوند
+    {
+        let published = state
+            .pipeline
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if published.is_some() {
+            drop(guard);
+            return Err("یک pipeline در حال اجراست؛ صبر کنید تا تمام شود.".into());
+        }
+    }
+
     let run_id = crate::sync::new_pipeline_run_id();
     let control = Arc::new(PipelineControl::from_guard(
         &guard,

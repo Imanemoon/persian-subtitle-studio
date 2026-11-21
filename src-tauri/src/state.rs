@@ -42,6 +42,10 @@ struct ScanReservation {
     token: u64,
 }
 
+/// حداکثر تسک‌های گروهی هم‌زمان — هر نوع تسک (pipeline/هاردساب/افزودن
+/// زیرنویس نرم) یک اسلات می‌گیرد؛ درخواست چهارم با پیام روشن رد می‌شود.
+pub const MAX_CONCURRENT_BATCH_TASKS: usize = 3;
+
 /// وضعیت عملیات جاری — همهٔ admissionها و رزروها اتمیک زیر همین Mutex.
 /// هر رزرو یک توکن یکتا دارد؛ Drop گارد فقط رزروِ هم‌توکن خودش را آزاد می‌کند.
 ///
@@ -50,10 +54,11 @@ struct ScanReservation {
 /// - اسکن ↔ عملیات تکی: متقابلاً رد (همان دلیل)
 /// - عملیات گروهی ↔ عملیات تکی: متقابلاً رد (رفتار قدیمی)
 /// - عملیات تکی روی ویدیوی دیگر: مجاز
-/// - فقط یک pipeline در آینده از همین اسلات گروهی عبور می‌کند
+/// - تا ۳ تسک گروهی هم‌زمان از این اسلات‌ها عبور می‌کنند (هر نوع تسک یکی)
 #[derive(Debug, Default)]
 pub struct OpsRegistry {
-    batch: Option<BatchReservation>,
+    /// تا ۳ تسک گروهی هم‌زمان — هر رزرو پرچم و توکن مستقل دارد.
+    batches: Vec<BatchReservation>,
     single_ops: HashMap<String, SingleReservation>,
     scan_op: Option<ScanReservation>,
 }
@@ -61,12 +66,9 @@ pub struct OpsRegistry {
 impl OpsRegistry {
     // ---- primitives (خصوصی؛ فقط admission helperهای همین ماژول صدا می‌زنند) ----
 
-    /// ثبت عملیات گروهی — همهٔ پیش‌شرط‌ها قبل از هر mutation بررسی و سپس
-    /// رزرو اتمیک زیر همان قفل انجام می‌شود.
+    /// ثبت عملیات گروهی — تا سقف ۳ تسک هم‌زمان؛ همهٔ پیش‌شرط‌ها قبل از هر
+    /// mutation بررسی و سپس رزرو اتمیک زیر همان قفل انجام می‌شود.
     fn reserve_batch(&mut self) -> Result<BatchReservation, String> {
-        if self.batch.is_some() {
-            return Err("یک عملیات گروهی در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
-        }
         if self.scan_op.is_some() {
             return Err("یک اسکن در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
         }
@@ -76,29 +78,33 @@ impl OpsRegistry {
                 self.single_ops.len()
             ));
         }
+        if self.batches.len() >= MAX_CONCURRENT_BATCH_TASKS {
+            return Err(format!(
+                "حداکثر {} تسک هم‌زمان پشتیبانی می‌شود؛ صبر کنید یکی از تسک‌ها تمام شود.",
+                MAX_CONCURRENT_BATCH_TASKS
+            ));
+        }
         let reservation = BatchReservation {
             cancel: Arc::new(AtomicBool::new(false)),
             token: next_token(),
         };
-        self.batch = Some(reservation.clone());
+        self.batches.push(reservation.clone());
         Ok(reservation)
     }
 
     /// آزادسازی فقط رزروِ هم‌توکن — گارد قدیم‌تر رزرو جدیدتر را نمی‌زند.
     fn release_batch(&mut self, token: u64) {
-        if let Some(reservation) = &self.batch {
-            if reservation.token == token {
-                self.batch = None;
-            }
-        }
+        self.batches
+            .retain(|reservation| reservation.token != token);
     }
 
     /// ثبت عملیات تکی روی یک ویدیو — اتمیک زیر قفل.
     fn reserve_single(&mut self, video_path: &str) -> Result<SingleReservation, String> {
-        if self.batch.is_some() {
-            return Err(
-                "یک عملیات گروهی در حال اجراست؛ صبر کنید یا ابتدا آن را متوقف کنید.".into(),
-            );
+        if !self.batches.is_empty() {
+            return Err(format!(
+                "{} تسک گروهی در حال اجراست؛ صبر کنید یا ابتدا آن‌ها را متوقف کنید.",
+                self.batches.len()
+            ));
         }
         if self.scan_op.is_some() {
             return Err("یک اسکن در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
@@ -129,8 +135,11 @@ impl OpsRegistry {
         if self.scan_op.is_some() {
             return Err("یک اسکن در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
         }
-        if self.batch.is_some() {
-            return Err("یک عملیات گروهی در حال اجراست؛ ابتدا آن را متوقف کنید.".into());
+        if !self.batches.is_empty() {
+            return Err(format!(
+                "{} تسک گروهی در حال اجراست؛ ابتدا آن‌ها را تمام یا متوقف کنید.",
+                self.batches.len()
+            ));
         }
         if !self.single_ops.is_empty() {
             return Err(format!(
@@ -157,9 +166,9 @@ impl OpsRegistry {
 
     // ---- سطح عمومی Registry ----
 
-    /// آیا عملیات گروهی (دانلود/آرشیو/آینده: pipeline) فعالی جریان دارد؟
+    /// آیا عملیات گروهی (دانلود/آرشیو/pipeline) فعالی جریان دارد؟
     pub fn has_active_batch(&self) -> bool {
-        self.batch.is_some()
+        !self.batches.is_empty()
     }
 
     /// لغو عملیات‌های پوشش داده‌شدهٔ قرارداد فعلی (گروهی + تکی‌ها).
@@ -169,7 +178,7 @@ impl OpsRegistry {
     /// `request_scan_cancel` (stop_scan) انجام می‌شود.
     pub fn cancel_all(&mut self) -> bool {
         let mut any = false;
-        if let Some(reservation) = &self.batch {
+        for reservation in &self.batches {
             reservation.cancel.store(true, Ordering::SeqCst);
             any = true;
         }
@@ -398,24 +407,38 @@ mod tests {
         assert!(acquire_single_op(&reg, "v").is_ok());
     }
 
-    /// گارد گروهی (RAII): Drop اسلات را آزاد می‌کند؛ لغو از cancel_all روی
-    /// همان پرچم ثبت‌شده اثر می‌گذارد؛ panic هم اسلات را آزاد می‌کند.
+    /// گارد گروهی (RAII): تا سقف ۳ تسک هم‌زمان پذیرفته می‌شود، چهارم رد
+    /// می‌شود؛ Drop هر گارد فقط رزروِ هم‌توکن خودش را آزاد می‌کند؛ لغو از
+    /// cancel_all روی پرچم‌های همه اثر می‌گذارد؛ panic هم اسلات را آزاد می‌کند.
     #[test]
     fn batch_guard_releases_slot_on_drop_and_panic() {
         let reg = registry();
 
-        let guard = acquire_batch_op(&reg).unwrap();
+        let g1 = acquire_batch_op(&reg).unwrap();
+        let g2 = acquire_batch_op(&reg).unwrap();
+        let g3 = acquire_batch_op(&reg).unwrap();
         assert!(acquire_single_op(&reg, "v").is_err());
-        assert!(acquire_batch_op(&reg).is_err());
+        let fourth = acquire_batch_op(&reg);
+        assert!(
+            fourth.is_err(),
+            "تسک چهارم باید با سقف ۳ رد شود: {:?}",
+            fourth
+        );
         assert!(acquire_scan_op(&reg).is_err());
 
         assert!(reg.lock().unwrap().cancel_all());
-        assert!(guard.cancel.load(Ordering::SeqCst));
+        assert!(g1.cancel.load(Ordering::SeqCst));
+        assert!(g2.cancel.load(Ordering::SeqCst));
+        assert!(g3.cancel.load(Ordering::SeqCst));
 
-        drop(guard);
-        let g2 = acquire_batch_op(&reg).unwrap();
-        assert!(!g2.cancel.load(Ordering::SeqCst));
+        // آزادسازی یکی از سه اسلات → جا برای تسک بعدی با پرچم تازه
         drop(g2);
+        let g4 = acquire_batch_op(&reg).unwrap();
+        assert!(!g4.cancel.load(Ordering::SeqCst));
+        drop(g4);
+        drop(g1);
+        drop(g3);
+        assert!(acquire_batch_op(&reg).is_ok());
 
         let handle = {
             let reg = reg.clone();
@@ -580,10 +603,10 @@ mod tests {
         drop(again);
 
         let batch = acquire_batch_op(&reg).unwrap();
-        let batch_token = reg.lock().unwrap().batch.as_ref().unwrap().token;
+        let batch_token = reg.lock().unwrap().batches[0].token;
         drop(batch);
         lock_registry(&reg).release_batch(batch_token);
-        assert!(reg.lock().unwrap().batch.is_none());
+        assert!(reg.lock().unwrap().batches.is_empty());
     }
 
     /// قفل مسموم: پاک‌سازی panic نمی‌کند و admission بعدی سالم کار می‌کند.

@@ -48,7 +48,7 @@ export function Processing({ onNavigate }: { onNavigate: (page: PageId) => void 
       {/* هاردساب فعال یا نتیجهٔ آن — مستقل از pipeline */}
       {(hardsub.runActive || hardsub.snapshot || hardsub.summary) && (
         <div className="flex justify-center">
-          <HardsubPanel />
+          <HardsubPanel onNavigate={onNavigate} />
         </div>
       )}
 

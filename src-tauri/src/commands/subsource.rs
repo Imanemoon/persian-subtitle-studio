@@ -782,6 +782,11 @@ pub fn is_download_active(state: State<'_, AppState>) -> bool {
 /// kind رویدادهای پیشرفت افزودن زیرنویس نرم — فرانت بر اساس آن فیلتر می‌کند.
 pub const SOFTSUB_ADD_EVENT_KIND: &str = "softsub-add";
 
+/// فقط یک عملیات افزودن زیرنویس نرم هم‌زمان — static تک‌نمونه‌ای (قرینهٔ
+/// INSTALL_IN_FLIGHT معاونت راه‌اندازی)؛ بدون تغییر AppState.
+static SOFTSUB_BATCH_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// ویدیوی معمولیِ غیرخالی با پسوند ویدیویی معتبر.
 fn validate_video_for_sidecar(video: &Path) -> Result<(), String> {
     let file_name = video
@@ -1077,6 +1082,18 @@ pub fn download_softsub_batch(
     let sub_exe = resolve_tool(&state, "subsource")?;
     let _ = sub_exe; // resolve فقط برای پیام فارسی زودهنگام نبود ابزار است
 
+    // تک‌نمونه‌ای: عملیات افزودن زیرنویس نرم دوم رد می‌شود
+    if SOFTSUB_BATCH_IN_FLIGHT
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("یک عملیات افزودن زیرنویس نرم در جریان است؛ صبر کنید تا تمام شود.".into());
+    }
     let guard = acquire_batch_op(&state.ops)?;
     let cancel = Arc::clone(&guard.cancel);
     let total = paths.len() as u64;
@@ -1153,6 +1170,8 @@ pub fn download_softsub_batch(
             }
         }
         drop(guard);
+        // پرچم تک‌نمونه‌ای در پایان thread آزاد می‌شود
+        SOFTSUB_BATCH_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         let summary = if failed > 0 {
             format!("افزودن زیرنویس نرم پایان یافت — موفق: {done}، ناموفق: {failed}")
         } else {

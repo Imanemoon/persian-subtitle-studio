@@ -128,6 +128,15 @@ pub fn start_hardsub(
     let guard = acquire_batch_op(&state.ops)?;
     let emit_app = app.clone();
 
+    // فقط یک هاردساب هم‌زمان (اسلات control تکی است)
+    {
+        let published = state.hardsub.lock().unwrap_or_else(PoisonError::into_inner);
+        if published.is_some() {
+            drop(guard);
+            return Err("یک عملیات هاردساب در حال اجراست؛ صبر کنید تا تمام شود.".into());
+        }
+    }
+
     let settings = state
         .settings
         .lock()
