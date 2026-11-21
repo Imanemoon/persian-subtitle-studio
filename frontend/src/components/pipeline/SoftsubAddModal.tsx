@@ -17,7 +17,7 @@ import type { OpsProgress } from "../../types";
 const KIND = "softsub-add";
 
 /**
- * افزودن زیرنویس نرم برای ویدیوهای هاردساب‌دار — دانلود از SubSource یا
+ * افزودن زیرنویس چسبیده برای ویدیوهای هاردساب‌دار — دانلود از SubSource یا
  * فایل محلی؛ هر دو خروجی را هم‌نام ویدیو (`<stem>.fa.srt`) کنارش می‌گذارند
  * و هرگز بازنویسی نمی‌کنند. پس از جانمایی، اجرای مجدد سینک آن را هم‌تراز
  * و (در حالت پیش‌فرض) SoftSub می‌کند.
@@ -124,7 +124,7 @@ export function SoftsubAddModal({
   return (
     <Modal
       open={open}
-      title="افزودن زیرنویس نرم به ویدیوی هاردساب‌دار"
+      title="افزودن زیرنویس چسبیده به ویدیوی هاردساب‌دار"
       onClose={onClose}
       footer={
         <>
@@ -142,7 +142,7 @@ export function SoftsubAddModal({
     >
       <div className="space-y-3 text-sm">
         <p className="text-xs leading-6 text-ink-2">
-          زیرنویس این ویدیوها داخل تصویر حک شده است. با افزودن زیرنویس نرم، فایل
+          زیرنویس این ویدیوها داخل تصویر حک شده است. با افزودن زیرنویس چسبیده، فایل
           <span dir="ltr" className="mx-1 font-mono">
             &lt;نام ویدیو&gt;.fa.srt
           </span>
@@ -197,7 +197,7 @@ export function SoftsubAddModal({
         )}
         {doneCount > 0 && (
           <p className="text-xs text-emerald-300/90">
-            {faNum(doneCount)} مورد زیرنویس نرم گرفت.
+            {faNum(doneCount)} مورد زیرنویس چسبیده گرفت.
           </p>
         )}
 

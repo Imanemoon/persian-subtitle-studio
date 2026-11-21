@@ -67,7 +67,7 @@ static FA_NAME_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 // نشانه‌های زیرنویس هاردساب (چسبیده به تصویر) در نام ویدیو — قرارداد
 // شناخته‌شدهٔ گروه‌های رلیز فارسی: Farsi.Sub / Farsi.Subbed / HardSub.
-// مرز قبل/بعد سخت‌گیرانه است تا «Farsi.Subs» (پک زیرنویس نرم) و
+// مرز قبل/بعد سخت‌گیرانه است تا «Farsi.Subs» (پک زیرنویس چسبیده) و
 // «Subtitle.Off» جعلی نشوند؛ کدک/کیفیت بعد از sub اجازه ندارد حروف اضافه بگیرد.
 static FA_HARDSUB_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -437,7 +437,7 @@ mod tests {
         }
     }
 
-    /// جعلی‌های متعارف نباید هاردساب شمرده شوند — «Subs» پک زیرنویس نرم است
+    /// جعلی‌های متعارف نباید هاردساب شمرده شوند — «Subs» پک زیرنویس چسبیده است
     /// و «Subtitle» تنها با واژهٔ پیشین فارسی معنا دارد.
     #[test]
     fn does_not_flag_softsub_or_unrelated_names() {

@@ -576,7 +576,7 @@ export function SettingsPage() {
         <SectionTitle icon={Bell} title="اعلان‌ها" />
         <div className="space-y-3">
           <p className="text-xs leading-6 text-ink-3">
-            وقتی یک تسک طولانی تمام می‌شود (سینک، هاردساب، افزودن زیرنویس نرم)
+            وقتی یک تسک طولانی تمام می‌شود (سینک، هاردساب، افزودن زیرنویس چسبیده)
             یک اعلان سیستمی ویندوز می‌آید — حتی وقتی پنجره مینیمایز است.
           </p>
           <Toggle
@@ -600,8 +600,8 @@ export function SettingsPage() {
           <Toggle
             checked={draft.notifications.softsubDone}
             onChange={(v) => patch({ notifications: { ...draft.notifications, softsubDone: v } })}
-            label="پایان افزودن زیرنویس نرم"
-            hint="اعلان پس از دانلود و جانمایی زیرنویس نرم"
+            label="پایان افزودن زیرنویس چسبیده"
+            hint="اعلان پس از دانلود و جانمایی زیرنویس چسبیده"
           />
         </div>
       </Card>

@@ -770,19 +770,19 @@ pub fn is_download_active(state: State<'_, AppState>) -> bool {
     }
 }
 
-// ===== افزودن زیرنویس نرم برای ویدیوهای هاردساب‌دار =====
+// ===== افزودن زیرنویس چسبیده برای ویدیوهای هاردساب‌دار =====
 //
 // ویدیوهایی که زیرنویس‌شان داخل تصویر حک شده (قرارداد نام‌گذاری گروه‌های
-// رلیز) پس از pipeline با دو گزینه به زیرنویس نرم مجهز می‌شوند:
+// رلیز) پس از pipeline با دو گزینه به زیرنویس چسبیده مجهز می‌شوند:
 // ۱. دانلود از SubSource → استخراج در staging → کپی هم‌نام کنار ویدیو
 // ۲. فایل محلی کاربر → کپی هم‌نام کنار ویدیو
 // هر دو مسیر هرگز بازنویسی نمی‌کنند و خروجی `<stem>.fa.srt` است تا سینک
 // بعدی همان جریان عادی sidecar را ادامه دهد.
 
-/// kind رویدادهای پیشرفت افزودن زیرنویس نرم — فرانت بر اساس آن فیلتر می‌کند.
+/// kind رویدادهای پیشرفت افزودن زیرنویس چسبیده — فرانت بر اساس آن فیلتر می‌کند.
 pub const SOFTSUB_ADD_EVENT_KIND: &str = "softsub-add";
 
-/// فقط یک عملیات افزودن زیرنویس نرم هم‌زمان — static تک‌نمونه‌ای (قرینهٔ
+/// فقط یک عملیات افزودن زیرنویس چسبیده هم‌زمان — static تک‌نمونه‌ای (قرینهٔ
 /// INSTALL_IN_FLIGHT معاونت راه‌اندازی)؛ بدون تغییر AppState.
 static SOFTSUB_BATCH_IN_FLIGHT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -863,12 +863,12 @@ pub(crate) fn place_sidecar_copy(subtitle: &Path, video: &Path) -> Result<String
     }
     crate::logging::info(
         "subsource",
-        &format!("زیرنویس نرم کنار ویدیو قرار گرفت: {}", target.display()),
+        &format!("زیرنویس چسبیده کنار ویدیو قرار گرفت: {}", target.display()),
     );
     Ok(target.to_string_lossy().into_owned())
 }
 
-/// افزودن زیرنویس نرم از فایل محلی کاربر — هم‌نام ویدیو، بدون بازنویسی.
+/// افزودن زیرنویس چسبیده از فایل محلی کاربر — هم‌نام ویدیو، بدون بازنویسی.
 #[tauri::command]
 pub fn place_local_subtitle(
     state: State<'_, AppState>,
@@ -1044,7 +1044,7 @@ fn extract_from_staged_archive(
     }
 }
 
-/// افزودن زیرنویس نرم با دانلود از SubSource برای یک یا چند ویدیوی
+/// افزودن زیرنویس چسبیده با دانلود از SubSource برای یک یا چند ویدیوی
 /// هاردساب‌دار — هر ویدیو جدا دانلود و هم‌نام کنارش جانمایی می‌شود.
 /// رویدادها با kind `softsub-add` منتشر می‌شوند (ops:progress / ops:done).
 #[tauri::command]
@@ -1082,7 +1082,7 @@ pub fn download_softsub_batch(
     let sub_exe = resolve_tool(&state, "subsource")?;
     let _ = sub_exe; // resolve فقط برای پیام فارسی زودهنگام نبود ابزار است
 
-    // تک‌نمونه‌ای: عملیات افزودن زیرنویس نرم دوم رد می‌شود
+    // تک‌نمونه‌ای: عملیات افزودن زیرنویس چسبیده دوم رد می‌شود
     if SOFTSUB_BATCH_IN_FLIGHT
         .compare_exchange(
             false,
@@ -1092,14 +1092,14 @@ pub fn download_softsub_batch(
         )
         .is_err()
     {
-        return Err("یک عملیات افزودن زیرنویس نرم در جریان است؛ صبر کنید تا تمام شود.".into());
+        return Err("یک عملیات افزودن زیرنویس چسبیده در جریان است؛ صبر کنید تا تمام شود.".into());
     }
     let guard = acquire_batch_op(&state.ops)?;
     let cancel = Arc::clone(&guard.cancel);
     let total = paths.len() as u64;
     crate::logging::info(
         "subsource",
-        &format!("افزودن زیرنویس نرم برای {total} ویدیو شروع شد"),
+        &format!("افزودن زیرنویس چسبیده برای {total} ویدیو شروع شد"),
     );
 
     let app2 = app.clone();
@@ -1122,7 +1122,7 @@ pub fn download_softsub_batch(
                     current: index as u64 + 1,
                     total,
                     video_path: path.clone(),
-                    message: format!("در حال دانلود زیرنویس نرم: {name}"),
+                    message: format!("در حال دانلود زیرنویس چسبیده: {name}"),
                 },
             );
             let mut progress_events: Vec<OpsProgress> = Vec::new();
@@ -1154,7 +1154,7 @@ pub fn download_softsub_batch(
                     failed += 1;
                     crate::logging::warn(
                         "subsource",
-                        &format!("افزودن زیرنویس نرم «{name}» ناموفق: {reason}"),
+                        &format!("افزودن زیرنویس چسبیده «{name}» ناموفق: {reason}"),
                     );
                     let _ = app2.emit(
                         "ops:progress",
@@ -1173,18 +1173,18 @@ pub fn download_softsub_batch(
         // پرچم تک‌نمونه‌ای در پایان thread آزاد می‌شود
         SOFTSUB_BATCH_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         let summary = if failed > 0 {
-            format!("افزودن زیرنویس نرم پایان یافت — موفق: {done}، ناموفق: {failed}")
+            format!("افزودن زیرنویس چسبیده پایان یافت — موفق: {done}، ناموفق: {failed}")
         } else {
-            format!("افزودن زیرنویس نرم پایان یافت — موفق: {done}")
+            format!("افزودن زیرنویس چسبیده پایان یافت — موفق: {done}")
         };
         crate::logging::info("subsource", &summary);
         crate::notify::notify_task_done(
             &app2,
             crate::notify::KIND_SOFTSUB,
             if failed > 0 {
-                "افزودن زیرنویس نرم پایان یافت"
+                "افزودن زیرنویس چسبیده پایان یافت"
             } else {
-                "زیرنویس نرم همه اضافه شد"
+                "زیرنویس چسبیده همه اضافه شد"
             },
             &summary,
         );

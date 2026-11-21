@@ -39,7 +39,7 @@ import type { HardsubPlan } from "../../types/hardsub";
 import type { PageId } from "../../types";
 
 /** آیتم‌هایی که منبع زیرنویس آماده دارند و می‌توانند هاردساب شوند. */
-/** آیتم‌هایی که زیرنویس‌شان داخل تصویر حک شده — کاندید افزودن زیرنویس نرم */
+/** آیتم‌هایی که زیرنویس‌شان داخل تصویر حک شده — کاندید افزودن زیرنویس چسبیده */
 function isHardsubbed(item: PipelineItemSnapshot): boolean {
   return item.outcome?.kind === "hardsubbed";
 }
@@ -80,7 +80,7 @@ export function PipelinePanel({
   const [plan, setPlan] = useState<HardsubPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
-  // ---- افزودن زیرنویس نرم به هاردساب‌ها — مودال global از context ----
+  // ---- افزودن زیرنویس چسبیده به هاردساب‌ها — مودال global از context ----
   const { setFocus, openSoftsub } = useTaskFocus();
   // ---- لیست بلند سریالی: ابتدا ۵ مورد، «نمایش همه» بقیه را باز می‌کند ----
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -331,7 +331,7 @@ export function PipelinePanel({
         )}
       </Card>
 
-      {/* ---- افزودن زیرنویس نرم به هاردساب‌ها — بالای لیست برای دسترسی راحت ---- */}
+      {/* ---- افزودن زیرنویس چسبیده به هاردساب‌ها — بالای لیست برای دسترسی راحت ---- */}
       {!runActive && hardsubbedPaths.length > 0 && (
         <Card className="flex flex-wrap items-center justify-between gap-3 border-accent/40 p-4">
           <div className="min-w-0">
@@ -339,7 +339,7 @@ export function PipelinePanel({
               {faNum(hardsubbedPaths.length)} مورد زیرنویس داخل تصویر دارند
             </div>
             <p className="mt-0.5 text-xs leading-5 text-ink-3">
-              با یک کلیک برای همه‌شان زیرنویس نرم دانلود کنید — هم‌نام هر ویدیو
+              با یک کلیک برای همه‌شان زیرنویس چسبیده دانلود کنید — هم‌نام هر ویدیو
               کنارش قرار می‌گیرد؛ سپس با اجرای مجدد سینک، هم‌تراز و SoftSub می‌شود.
             </p>
           </div>
@@ -350,7 +350,7 @@ export function PipelinePanel({
             onClick={() => openSoftsub(hardsubbedPaths)}
           >
             <Captions className="size-4" />
-            افزودن زیرنویس نرم به همه ({faNum(hardsubbedPaths.length)})
+            افزودن زیرنویس چسبیده به همه ({faNum(hardsubbedPaths.length)})
           </Button>
         </Card>
       )}
@@ -481,7 +481,7 @@ export function PipelinePanel({
         </Card>
       )}
 
-      {/* ---- افزودن زیرنویس نرم به هاردساب‌ها ---- */}
+      {/* ---- افزودن زیرنویس چسبیده به هاردساب‌ها ---- */}
       {/* ---- دیالوگ تأیید هاردساب — پلن تازه از بک‌اند ---- */}
       <Modal
         open={plan !== null}
@@ -860,10 +860,10 @@ function ItemRow({
               e.preventDefault();
               onSoftsub();
             }}
-            title="دانلود یا انتخاب فایل زیرنویس نرم — هم‌نام کنار ویدیو"
+            title="دانلود یا انتخاب فایل زیرنویس چسبیده — هم‌نام کنار ویدیو"
           >
             <Captions className="size-3.5" />
-            زیرنویس نرم
+            زیرنویس چسبیده
           </Button>
         )}
         <span

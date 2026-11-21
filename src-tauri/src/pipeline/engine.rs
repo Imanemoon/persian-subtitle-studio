@@ -725,7 +725,7 @@ pub(crate) fn run_pipeline_body(
         .collect();
 
     // ویدیوهای هاردساب‌دار (قرارداد نام‌گذاری) — دانلود برایشان بی‌معناست:
-    // زیرنویس داخل تصویر حک شده و کاربر می‌تواند بعداً زیرنویس نرم اضافه کند
+    // زیرنویس داخل تصویر حک شده و کاربر می‌تواند بعداً زیرنویس چسبیده اضافه کند
     let (hardsub_idxs, needer_idxs): (Vec<usize>, Vec<usize>) =
         needer_idxs.into_iter().partition(|&i| {
             crate::scanner::naming::name_suggests_fa_hardsub(&items[i].video_file_name)

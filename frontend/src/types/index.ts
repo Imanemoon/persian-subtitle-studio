@@ -205,7 +205,7 @@ export interface Settings {
   setupCompleted: boolean;
 }
 
-export type PageId = "home" | "setup" | "library" | "processing" | "logs" | "settings";
+export type PageId = "home" | "setup" | "settings";
 
 /** انتخاب کاربر در صفحهٔ خانه — پوشه یا چند فایل، هر دو با هم نه */
 export type HomeSelection =

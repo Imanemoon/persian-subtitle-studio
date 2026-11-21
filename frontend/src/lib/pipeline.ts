@@ -182,7 +182,7 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
       return name ? `زیرنویس فارسی داخل ${name} قرار گرفت` : "زیرنویس فارسی داخل ویدیو قرار گرفت";
     }
     case "hardsubbed":
-      return "زیرنویس فارسی داخل تصویر حک شده است؛ از اقدام «افزودن زیرنویس نرم» می‌توانید دانلود یا فایل محلی را هم‌نام ویدیو کنارش قرار دهید.";
+      return "زیرنویس فارسی داخل تصویر حک شده است؛ از اقدام «افزودن زیرنویس چسبیده» می‌توانید دانلود یا فایل محلی را هم‌نام ویدیو کنارش قرار دهید.";
     case "outputConflict": {
       const name = fileBaseName(outcome.preservedPath);
       return name
