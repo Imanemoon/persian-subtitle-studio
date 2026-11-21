@@ -10,7 +10,9 @@ import {
 } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { usePipeline } from "../hooks/usePipeline";
+import { useHardsub } from "../hooks/useHardsub";
 import { HardsubPanel } from "../components/hardsub/HardsubPanel";
+import { useTaskFocus } from "../hooks/useTaskFocus";
 import { PipelinePanel } from "../components/pipeline/PipelinePanel";
 import {
   fileBaseName,
@@ -105,6 +107,8 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     actionError,
     clearActionError,
   } = usePipeline();
+  const { focus, setFocus } = useTaskFocus();
+  const hardsub = useHardsub();
   const [notice, setNotice] = useState<string | null>(null);
   /** ریشهٔ اسکنی که همین صفحه برای شناسایی شروع کرده — برای تفکیک از اسکن دیگر */
   const [detectingRoot, setDetectingRoot] = useState<string | null>(null);
@@ -168,14 +172,19 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   };
 
-  // نمای pipeline — run فعال یا خلاصهٔ پایان (تا «بستن خلاصه») + هاردساب اختیاری
-  if (runActive || summary) {
+  // نمای تسک — فقط وقتی کاربر روی همان تسک فوکوس دارد؛ ترک آن با دکمهٔ
+  // «خانه» (کار در پس‌زمینه ادامه می‌یابد و از جعبهٔ تسک‌ها دوباره باز می‌شود)
+  if (focus === "pipeline" && (runActive || summary)) {
     return (
       <div className="flex h-full flex-col items-center overflow-y-auto px-6 py-8">
         <PipelinePanel onNavigate={onNavigate} />
-        <div className="mt-5 flex w-full justify-center">
-          <HardsubPanel />
-        </div>
+      </div>
+    );
+  }
+  if (focus === "hardsub" && (hardsub.runActive || hardsub.snapshot || hardsub.summary)) {
+    return (
+      <div className="flex h-full flex-col items-center overflow-y-auto px-6 py-8">
+        <HardsubPanel onNavigate={onNavigate} />
       </div>
     );
   }
@@ -200,11 +209,15 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const handleStartSync = () => {
     setNotice(null);
     if (selection?.kind === "files") {
-      void startPipeline(selection.paths);
+      void startPipeline(selection.paths).then((ok) => {
+        if (ok) setFocus("pipeline");
+      });
       return;
     }
     if (folderDetection.status === "done" && folderDetection.paths.length > 0) {
-      void startPipeline(folderDetection.paths);
+      void startPipeline(folderDetection.paths).then((ok) => {
+        if (ok) setFocus("pipeline");
+      });
     }
   };
 

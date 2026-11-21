@@ -1872,11 +1872,14 @@ fn cancel_pipeline_spares_unrelated_single_ops() {
     let single = acquire_single_op(&other_state.ops, "C:\\other\\video.mkv").expect("single");
     assert!(!single.cancel.load(Ordering::SeqCst));
 
-    // admission: در حین pipeline فعال، عملیات تکی/گروهی دیگر در همان registry رد می‌شود
+    // admission: در حین pipeline فعال، عملیات تکی رد می‌شود؛ تسک گروهی دوم
+    // اکنون مجاز است (تا سقف ۳ هم‌زمان) — گارد موقت بلافاصله رها می‌شود
     assert!(
-        acquire_batch_op(&h.state.ops).is_err(),
-        "slot batch همچنان اشغال است"
+        h.state.ops.lock().unwrap().has_active_batch(),
+        "اسلات pipeline باید اشغال باشد"
     );
+    let second = acquire_batch_op(&h.state.ops).expect("تسک گروهی دوم اکنون مجاز است");
+    drop(second);
     assert!(
         acquire_single_op(&h.state.ops, "C:\\other\\video2.mkv").is_err(),
         "عملیات تکی در حین batch باید رد شود"

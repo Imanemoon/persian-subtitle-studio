@@ -14,7 +14,7 @@ import {
 import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
 import { useHardsub } from "../../hooks/useHardsub";
-import { SoftsubAddModal } from "./SoftsubAddModal";
+import { useTaskFocus } from "../../hooks/useTaskFocus";
 import { api } from "../../lib/api";
 import {
   DECISION_KIND_TEXT,
@@ -80,8 +80,8 @@ export function PipelinePanel({
   const [plan, setPlan] = useState<HardsubPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
-  // ---- افزودن زیرنویس نرم به هاردساب‌ها ----
-  const [softsubPaths, setSoftsubPaths] = useState<string[] | null>(null);
+  // ---- افزودن زیرنویس نرم به هاردساب‌ها — مودال global از context ----
+  const { setFocus, openSoftsub } = useTaskFocus();
   // ---- لیست بلند سریالی: ابتدا ۵ مورد، «نمایش همه» بقیه را باز می‌کند ----
   const [filesExpanded, setFilesExpanded] = useState(false);
 
@@ -175,15 +175,18 @@ export function PipelinePanel({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {!runActive && (
-              <Button
-                onClick={() => onNavigate("home")}
-                title="بازگشت به صفحهٔ اصلی — خلاصه و لیست فایل‌ها بعداً هم اینجا هستند"
-              >
-                <Home className="size-3.5" />
-                خانه
-              </Button>
-            )}
+            <Button
+              onClick={() => {
+                // ترک نمای تسک — کار در پس‌زمینه ادامه می‌یابد و از جعبهٔ
+                // تسک‌ها (کنار برنامه) دوباره باز می‌شود
+                setFocus(null);
+                onNavigate("home");
+              }}
+              title="بازگشت به خانه — تسک در پس‌زمینه ادامه می‌یابد"
+            >
+              <Home className="size-3.5" />
+              خانه
+            </Button>
             {runActive && (
               <Button
                 variant="danger"
@@ -344,7 +347,7 @@ export function PipelinePanel({
             variant="primary"
             className="shrink-0"
             disabled={planLoading}
-            onClick={() => setSoftsubPaths(hardsubbedPaths)}
+            onClick={() => openSoftsub(hardsubbedPaths)}
           >
             <Captions className="size-4" />
             افزودن زیرنویس نرم به همه ({faNum(hardsubbedPaths.length)})
@@ -455,7 +458,7 @@ export function PipelinePanel({
                 onToggle={() => toggleChecked(item.videoPath)}
                 onHardsub={() => void requestHardsub([item.videoPath])}
                 showSoftsub={!runActive && isHardsubbed(item)}
-                onSoftsub={() => setSoftsubPaths([item.videoPath])}
+                onSoftsub={() => openSoftsub([item.videoPath])}
               />
             ))}
           </div>
@@ -479,12 +482,6 @@ export function PipelinePanel({
       )}
 
       {/* ---- افزودن زیرنویس نرم به هاردساب‌ها ---- */}
-      <SoftsubAddModal
-        open={softsubPaths !== null}
-        paths={softsubPaths ?? []}
-        onClose={() => setSoftsubPaths(null)}
-      />
-
       {/* ---- دیالوگ تأیید هاردساب — پلن تازه از بک‌اند ---- */}
       <Modal
         open={plan !== null}

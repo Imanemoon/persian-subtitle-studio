@@ -8,7 +8,10 @@ import {
   Square,
 } from "lucide-react";
 import { Button, Card } from "../ui";
+import { Home } from "lucide-react";
 import { useHardsub } from "../../hooks/useHardsub";
+import { useTaskFocus } from "../../hooks/useTaskFocus";
+import type { PageId } from "../../types";
 import { faNum, formatDuration } from "../../lib/format";
 import type { HardsubCounts, HardsubItemStatus } from "../../types/hardsub";
 
@@ -83,9 +86,14 @@ const COUNT_LABELS: Array<[keyof HardsubCounts, string]> = [
  * درصد فقط وقتی مدت ویدیو معلوم است و هرگز ۱۰۰ نمایش داده نمی‌شود تا
  * اعتبارسنجی نهایی و نصب، وضعیت Done بسازد.
  */
-export function HardsubPanel() {
+export function HardsubPanel({
+  onNavigate,
+}: {
+  onNavigate?: (page: PageId) => void;
+}) {
   const { snapshot, summary, runActive, busy, actionError, cancelHardsub, dismiss } =
     useHardsub();
+  const { setFocus } = useTaskFocus();
   const [cancelBusy, setCancelBusy] = useState(false);
 
   if (!snapshot && !summary) return null;
@@ -140,22 +148,34 @@ export function HardsubPanel() {
               </div>
             </div>
           </div>
-          {runActive && (
+          <div className="flex shrink-0 items-center gap-2">
             <Button
-              variant="danger"
-              onClick={async () => {
-                setCancelBusy(true);
-                await cancelHardsub();
-                setCancelBusy(false);
+              onClick={() => {
+                setFocus(null);
+                onNavigate?.("home");
               }}
-              disabled={busy || data.cancelling || cancelBusy}
-              loading={busy || cancelBusy}
-              title="توقف هاردساب — فایل‌های اصلی دست‌نخورده می‌مانند"
+              title="بازگشت به خانه — تسک در پس‌زمینه ادامه می‌یابد"
             >
-              <Square className="size-3.5" />
-              {data.cancelling ? "در حال توقف" : "توقف"}
+              <Home className="size-3.5" />
+              خانه
             </Button>
-          )}
+            {runActive && (
+              <Button
+                variant="danger"
+                onClick={async () => {
+                  setCancelBusy(true);
+                  await cancelHardsub();
+                  setCancelBusy(false);
+                }}
+                disabled={busy || data.cancelling || cancelBusy}
+                loading={busy || cancelBusy}
+                title="توقف هاردساب — فایل‌های اصلی دست‌نخورده می‌مانند"
+              >
+                <Square className="size-3.5" />
+                {data.cancelling ? "در حال توقف" : "توقف"}
+              </Button>
+            )}
+          </div>
         </div>
 
         {data.total > 0 && (
