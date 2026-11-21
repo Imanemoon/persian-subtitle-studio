@@ -138,6 +138,24 @@ impl RealHarness {
         dest
     }
 
+    /// کپی از هر مسیر مطلق خارجی (مثلاً ویدیوی واقعی آرشیو کاربر) به
+    /// workspace ایزوله — منبع فقط خوانده می‌شود.
+    fn copy_external(&self, source: &Path, rename_to: &str) -> PathBuf {
+        assert!(
+            source.is_file(),
+            "منبع خارجی موجود نیست: {}",
+            source.display()
+        );
+        let dest = self.run_root.join(rename_to);
+        fs::copy(source, &dest).expect("کپی نمونهٔ خارجی");
+        assert_eq!(
+            sha256_file(source),
+            sha256_file(&dest),
+            "کپی باید بایت‌به‌بایت با منبع یکسان باشد"
+        );
+        dest
+    }
+
     fn video_hash(&self, video: &Path) -> String {
         sha256_file(video)
     }
@@ -745,6 +763,116 @@ fn real_b1_no_key_downloads_anonymously() {
         );
     }
     assert_no_softsub_leftover(&video);
+}
+
+/// آزمون H — ویدیوی واقعی با قرارداد نام هاردساب فارسی (مثل Film2Media):
+/// دانلود انجام نمی‌شود و آیتم با Hardsubbed صادقانه بسته می‌شود.
+/// ورودی: SUBSYNC_REAL_HARDSUB_VIDEO = مسیر یک ویدیوی واقعی هاردساب‌دار.
+#[test]
+#[ignore = "فقط اجرای دستی real-world — به SUBSYNC_REAL_HARDSUB_VIDEO و ابزارهای واقعی نیاز دارد"]
+fn real_hardsub_named_video_skips_download_and_reports_hardsubbed() {
+    let Ok(src) = std::env::var("SUBSYNC_REAL_HARDSUB_VIDEO") else {
+        eprintln!("SKIP: SUBSYNC_REAL_HARDSUB_VIDEO تنظیم نشده — این تست اختیاری است");
+        return;
+    };
+    let h = RealHarness::new("real-hardsub", SubtitleOutputMode::SoftSub, true);
+    let src_path = std::path::PathBuf::from(&src);
+    let name = src_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Overlord.IV.S04E13.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv".into());
+    let video = h.copy_external(&src_path, &name);
+    let before = h.video_hash(&video);
+
+    let run = run_real_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert_eq!(
+        run.summary.counts.hardsubbed, 1,
+        "ویدیوی هاردساب باید در شمارش خودش بیاید: {:?}",
+        run.summary.counts
+    );
+    assert_eq!(
+        run.summary.counts.downloaded, 0,
+        "برای هاردساب نباید دانلود رخ دهد"
+    );
+    assert!(
+        matches!(run.outcome_of(&video), ItemOutcome::Hardsubbed),
+        "انتظار Hardsubbed: {:?}",
+        run.outcome_of(&video)
+    );
+    assert_eq!(h.video_hash(&video), before, "ویدیو نباید دست بخورد");
+    assert!(
+        run.summary.staged_paths.is_empty(),
+        "برای هاردساب نباید staging ساخته شود"
+    );
+    assert_no_softsub_leftover(&video);
+}
+
+/// آزمون H2 — جریان کامل «افزودن زیرنویس نرم» روی همان ویدیوی هاردساب:
+/// place_sidecar_copy واقعی (هم‌نام ویدیو) → سینک واقعی ffsubsync → remux
+/// SoftSub داخل ویدیو — دقیقاً همان مسیری که کاربر از UI طی می‌کند.
+#[test]
+#[ignore = "فقط اجرای دستی real-world — به SUBSYNC_REAL_HARDSUB_VIDEO و ابزارهای واقعی نیاز دارد"]
+fn real_hardsub_with_placed_sidecar_syncs_and_softsubs() {
+    let Ok(src) = std::env::var("SUBSYNC_REAL_HARDSUB_VIDEO") else {
+        eprintln!("SKIP: SUBSYNC_REAL_HARDSUB_VIDEO تنظیم نشده — این تست اختیاری است");
+        return;
+    };
+    // skip_low_quality=false — زیرنویس مصنوعی روی دیالوگ واقعی score منفی
+    // می‌گیرد (یافتهٔ مستند آزمون B2)؛ هدف تست مسیر سینک/remux است نه گیت کیفیت
+    let h = RealHarness::new("real-hardsub-softsub", SubtitleOutputMode::SoftSub, false);
+    let src_path = std::path::PathBuf::from(&src);
+    let name = src_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Overlord.IV.S04E13.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv".into());
+    let video = h.copy_external(&src_path, &name);
+    let before = h.video_hash(&video);
+
+    // زیرنویس نرم «به‌دست‌آمده» با خطای زمانی — اول در مسیر موقت، بعد از
+    // مسیر تولید واقعی (place_sidecar_copy) هم‌نام کنار ویدیو جانمایی می‌شود
+    let staging_src = video.parent().unwrap().join("candidate.fa.srt");
+    fs::write(
+        &staging_src,
+        synthetic_fa_srt(ffprobe_duration(&video), 3.2),
+    )
+    .unwrap();
+    let placed = crate::commands::subsource::place_sidecar_copy(&staging_src, &video)
+        .expect("جانمایی هم‌نام باید موفق شود");
+    let _ = fs::remove_file(&staging_src);
+    let sidecar = video.parent().unwrap().join(
+        video
+            .file_stem()
+            .map(|s| format!("{}.fa.srt", s.to_string_lossy()))
+            .unwrap(),
+    );
+    assert_eq!(
+        std::path::Path::new(&placed),
+        sidecar,
+        "جانمایی باید دقیقاً هم‌نام ویدیو باشد"
+    );
+
+    // اجرای مجدد pipeline — همان جریان کاربر پس از افزودن زیرنویس نرم
+    let run = run_real_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(
+        matches!(run.outcome_of(&video), ItemOutcome::SoftSubbed { .. }),
+        "با sidecar هم‌نام، انتظار سینک واقعی و SoftSub: {:?}",
+        run.outcome_of(&video)
+    );
+    assert_ne!(h.video_hash(&video), before, "SoftSub باید داخل ویدیو برود");
+    assert_no_softsub_leftover(&video);
+    decode_ok(&video).expect("خروجی SoftSub باید decode سالم داشته باشد");
 }
 
 /// آزمون B2 — ویدیو بدون Track داخلی؛ زیرنویس فارسی «به‌دست‌آمده» (مثل خروجی

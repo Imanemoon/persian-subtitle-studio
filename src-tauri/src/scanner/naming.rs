@@ -65,6 +65,27 @@ static FA_NAME_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:^|[^a-z])(?:persian|farsi|fas|per|fa)(?:[^a-z]|$)|فارسی").unwrap()
 });
 
+// نشانه‌های زیرنویس هاردساب (چسبیده به تصویر) در نام ویدیو — قرارداد
+// شناخته‌شدهٔ گروه‌های رلیز فارسی: Farsi.Sub / Farsi.Subbed / HardSub.
+// مرز قبل/بعد سخت‌گیرانه است تا «Farsi.Subs» (پک زیرنویس نرم) و
+// «Subtitle.Off» جعلی نشوند؛ کدک/کیفیت بعد از sub اجازه ندارد حروف اضافه بگیرد.
+static FA_HARDSUB_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:^|[\s._\-\[(])(?:hard[\s._-]?sub|(?:farsi|persian|fa)[\s._-]?sub(?:bed|title)?)(?:[\s._\-\])]|$)",
+    )
+    .unwrap()
+});
+
+/// آیا نام فایل ویدیو نشانهٔ زیرنویس فارسی هاردساب (داخل تصویر حک‌شده) دارد؟
+///
+/// این تشخیص نام‌مبناست (OCR تصویر در دسترس نیست) و فقط وقتی معنا دارد که
+/// ویدیو هیچ منبع زیرنویس دیگری (Track داخلی/sidecar) نداشته باشد — بالادست
+/// در pipeline همین‌طور مصرف می‌شود. گزارش‌های کاربر: Film2Media/WorldMkv و
+/// گروه‌های مشابه «Farsi.Sub» یعنی زیرنویس چسبیده.
+pub fn name_suggests_fa_hardsub(file_name: &str) -> bool {
+    FA_HARDSUB_NAME_RE.is_match(file_name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeMatch {
     pub season: u32,
@@ -395,6 +416,46 @@ mod tests {
 
     fn ep(name: &str) -> Option<(u32, u32)> {
         parse_episode(name).map(|m| (m.season, m.episode))
+    }
+
+    /// تشخیص هاردساب نام‌مبنا — قراردادهای واقعی گروه‌های رلیز فارسی.
+    /// نمونه‌های مثبت از آرشیو واقعی کاربر (Film2Media و مشابه).
+    #[test]
+    fn detects_hardsub_release_conventions() {
+        for name in [
+            "Overlord.IV.S04E13.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv",
+            "Liar.Game.S01E01.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv",
+            "Show.S01E01.1080p.WEB-DL.Farsi.Subbed.Film2Media.mkv",
+            "Movie.2023.Farsi.HardSub.1080p.mkv",
+            "Movie.HardSub.720p.mkv",
+            "Movie.Hard-Sub.mkv",
+            "Movie.FarsiSub.mkv",
+            "Movie.Persian.Sub.mkv",
+            "show fa sub S01E01.mkv",
+        ] {
+            assert!(name_suggests_fa_hardsub(name), "باید هاردساب باشد: {name}");
+        }
+    }
+
+    /// جعلی‌های متعارف نباید هاردساب شمرده شوند — «Subs» پک زیرنویس نرم است
+    /// و «Subtitle» تنها با واژهٔ پیشین فارسی معنا دارد.
+    #[test]
+    fn does_not_flag_softsub_or_unrelated_names() {
+        for name in [
+            "Show.S01E01.1080p.WEB-DL.x264.mkv",
+            "Show.S01E01.Farsi.Dubbed.1080p.mkv",
+            "Movie.2023.1080p.BluRay.mkv",
+            "Show.S01E01.Farsi.Subs.Pack.mkv",
+            "SubsPlease.Show.S01E01.mkv",
+            "Movie.Farsi.Dub.mkv",
+            "Movie.Subtitle.Off.mkv",
+            "",
+        ] {
+            assert!(
+                !name_suggests_fa_hardsub(name),
+                "نباید هاردساب باشد: {name}"
+            );
+        }
     }
 
     #[test]

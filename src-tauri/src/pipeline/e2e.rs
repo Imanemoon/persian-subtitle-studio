@@ -1175,6 +1175,45 @@ fn missing_api_key_downloads_anonymously_and_syncs() {
     assert_eq!(h.video_bytes(&video), before);
 }
 
+/// سناریو ۷c: نام قرارداد هاردساب (Farsi.Sub) → دانلود انجام نمی‌شود و
+/// آیتم با Hardsubbed بسته می‌شود — زیرنویس داخل تصویر حک شده است.
+#[test]
+fn hardsub_named_video_skips_download_and_reports_hardsubbed() {
+    let h = Harness::new("hardsub-detect");
+    h.set_ffs("success");
+    // اگر دانلود (اشتباهی) رخ دهد آرشیو می‌نویسد — نباید رخ دهد
+    h.set_subsource_tool("write-manifest-archives");
+    h.set_seven_zip_tool();
+    let video = h.video("Show.S01E09.1080p.WEB-DL.Farsi.Sub.Film2Media.mkv");
+    h.probe_json(&video, JSON_NONE);
+    let before = h.video_bytes(&video);
+
+    let run = run_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        Some(h.dir.clone()),
+    );
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(matches!(run.outcome(&video), ItemOutcome::Hardsubbed));
+    assert_eq!(
+        run.summary.counts.hardsubbed, 1,
+        "هاردساب باید در شمارش خودش بیاید"
+    );
+    assert_eq!(
+        run.summary.counts.downloaded, 0,
+        "برای هاردساب نباید دانلود رخ دهد"
+    );
+    assert_eq!(run.summary.counts.needs_api_key, 0);
+    assert!(
+        run.summary.staged_paths.is_empty(),
+        "برای هاردساب نباید staging ساخته شود"
+    );
+    assert_eq!(h.video_bytes(&video), before);
+}
+
 /// سناریو ۷b: خطای مخزن کلید ≠ «کلید تنظیم نشده» — جدا و صادقانه.
 #[test]
 fn keystore_failure_is_reported_separately_from_missing_key() {

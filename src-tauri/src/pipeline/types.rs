@@ -85,6 +85,10 @@ pub enum ItemOutcome {
     SoftSubbed {
         video_path: String,
     },
+    /// زیرنویس فارسی داخل تصویر حک شده است (قرارداد نام‌گذاری گروه‌های رلیز
+    /// مثل Film2Media) — دانلود خودکار بی‌معناست؛ کاربر می‌تواند پس از اجرا
+    /// از اقدام «افزودن زیرنویس نرم» دانلود یا فایل محلی را هم‌نام ویدیو بگذارد.
+    Hardsubbed,
     /// کیفیت هم‌ترازی پایین بود — ورودی دست‌نخورده ماند
     UnchangedLowQuality,
     /// برای دانلود به API key نیاز دارد (فقط ویدیوهای واقعاً نیازمند دانلود)
@@ -177,6 +181,7 @@ pub struct PipelineCounts {
     pub archives_placed: u64,
     pub synced: u64,
     pub softsubbed: u64,
+    pub hardsubbed: u64,
     pub unchanged_low_quality: u64,
     pub already_synced: u64,
     pub conflicts: u64,

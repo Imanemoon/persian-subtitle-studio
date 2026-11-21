@@ -40,6 +40,8 @@ export type ItemOutcome =
   | { kind: "outputConflict"; preservedPath: string }
   | { kind: "synced"; outputPath: string }
   | { kind: "softSubbed"; videoPath: string }
+  /** زیرنویس فارسی داخل تصویر حک شده (قرارداد نام‌گذاری گروه‌های رلیز) */
+  | { kind: "hardsubbed" }
   | { kind: "unchangedLowQuality" }
   | { kind: "needsApiKey" }
   | { kind: "keyStoreUnavailable"; reason: string }
@@ -83,6 +85,7 @@ export interface PipelineCounts {
   archivesPlaced: number;
   synced: number;
   softsubbed: number;
+  hardsubbed: number;
   unchangedLowQuality: number;
   alreadySynced: number;
   conflicts: number;
