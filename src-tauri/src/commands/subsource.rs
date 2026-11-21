@@ -896,6 +896,141 @@ enum StagedSubtitle {
     NeedsArchiveExtraction,
 }
 
+/// زیرنویس دانلودی ممکن است cp1256 (ANSI فارسی) باشد — قبل از اعتبارسنجی،
+/// فایل staging به UTF-8 نرمال می‌شود؛ شکست تبدیل = همان خطای قبلی با
+/// توضیح. فقط فایل‌های staging متعلق به خود برنامه بازنویسی می‌شوند.
+fn normalize_downloaded_subtitle_file(path: &Path) -> Result<(), String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("خواندن زیرنویس دانلودشده ناموفق بود: {e}"))?;
+    if bytes.len() as u64 > crate::archive::types::MAX_SUBTITLE_BYTES {
+        return Err("زیرنویس دانلودشده بیش از حد مجاز بزرگ است".into());
+    }
+    let validation = crate::subtitle::validation::validate_file(path);
+    if validation.valid && validation.has_persian {
+        return Ok(()); // از قبل سالم
+    }
+    let Some(text) = crate::subtitle::encoding::convert_windows1256_if_needed(&bytes) else {
+        return Err(format!(
+            "زیرنویس معتبر و فارسی نیست: {}",
+            validation
+                .error
+                .unwrap_or_else(|| "محتوای فارسی تأیید نشد".into())
+        ));
+    };
+    std::fs::write(path, text.as_bytes())
+        .map_err(|e| format!("بازنویسی زیرنویس با UTF-8 ناموفق بود: {e}"))?;
+    let revalidated = crate::subtitle::validation::validate_file(path);
+    if !revalidated.valid || !revalidated.has_persian {
+        return Err(format!(
+            "زیرنویس پس از تبدیل encoding هم معتبر نشد: {}",
+            revalidated
+                .error
+                .unwrap_or_else(|| "محتوای فارسی تأیید نشد".into())
+        ));
+    }
+    crate::logging::info(
+        "subsource",
+        &format!(
+            "زیرنویس دانلودشده cp1256 بود و به UTF-8 تبدیل شد: {}",
+            path.display()
+        ),
+    );
+    Ok(())
+}
+
+/// نرمال‌سازی ZIPهای پک-فصلِ staging: اعضای متنی با encoding legacy
+/// (cp1256) به UTF-8 بازنویسی می‌شوند تا فاز کاندیدای آرشیو آن‌ها را رد نکند.
+/// بهترین تلاش — خطا فقط لاگ می‌شود (پلن به هر حال مسیر شکست خودش را دارد).
+fn normalize_staged_zip_archives(source: &crate::subsource::plan::ArchiveSource) {
+    let sub_dir = std::path::Path::new(&source.staging_root)
+        .join(&source.relative_video_dir)
+        .join("sub");
+    let Ok(entries) = std::fs::read_dir(&sub_dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let is_zip = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("zip"))
+            .unwrap_or(false);
+        if !is_zip {
+            continue;
+        }
+        match normalize_zip_file(&path) {
+            Ok(true) => crate::logging::info(
+                "subsource",
+                &format!("ZIP پک-فصل به UTF-8 نرمال شد: {}", path.display()),
+            ),
+            Ok(false) => {}
+            Err(e) => crate::logging::warn(
+                "subsource",
+                &format!("نرمال‌سازی ZIP ناموفق بود ({}): {e}", path.display()),
+            ),
+        }
+    }
+}
+
+/// بازنویسی اعضای متنی یک ZIP پس از تبدیل cp1256 — خروجی: آیا تغییری کرد؟
+fn normalize_zip_file(path: &Path) -> Result<bool, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("باز کردن ZIP ناموفق بود: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("خواندن ZIP ناموفق بود: {e}"))?;
+    if archive.is_empty() {
+        return Ok(false);
+    }
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(archive.len());
+    let mut changed = false;
+    for index in 0..archive.len() {
+        let mut member = archive
+            .by_index(index)
+            .map_err(|e| format!("خواندن عضو ZIP ناموفق بود: {e}"))?;
+        let name = member.name().to_string();
+        if name.ends_with('/') {
+            continue; // پوشه — در بازنویسی بازساخته نمی‌شود
+        }
+        let mut data = Vec::new();
+        member
+            .read_to_end(&mut data)
+            .map_err(|e| format!("خواندن محتوای عضو ناموفق بود: {e}"))?;
+        let is_text = matches!(
+            name.rsplit('.').next().unwrap_or(""),
+            "srt" | "ass" | "ssa" | "vtt" | "txt"
+        );
+        if is_text {
+            if let Some(text) = crate::subtitle::encoding::convert_windows1256_if_needed(&data) {
+                data = text.into_bytes();
+                changed = true;
+            }
+        }
+        entries.push((name, data));
+    }
+    if !changed {
+        return Ok(false);
+    }
+    drop(archive);
+    let temp = path.with_extension("zip.norm");
+    let out_file =
+        std::fs::File::create(&temp).map_err(|e| format!("ساخت ZIP موقت ناموفق بود: {e}"))?;
+    let mut writer = zip::ZipWriter::new(out_file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, data) in &entries {
+        writer
+            .start_file(name.clone(), options)
+            .map_err(|e| format!("نوشتن عضو ZIP ناموفق بود: {e}"))?;
+        std::io::Write::write_all(&mut writer, data)
+            .map_err(|e| format!("نوشتن محتوای عضو ناموفق بود: {e}"))?;
+    }
+    writer
+        .finish()
+        .map_err(|e| format!("پایان ZIP موقت ناموفق بود: {e}"))?;
+    std::fs::rename(&temp, path).map_err(|e| format!("جایگزینی ZIP نرمال‌شده ناموفق بود: {e}"))?;
+    Ok(true)
+}
+
 /// هستهٔ دانلود برای یک ویدیو — خروجی: زیرنویس در staging + ریشه‌های
 /// staging برای پاک‌سازی بعدی. هیچ چیزی کنار ویدیوی واقعی نمی‌گذارد.
 fn fetch_staged_subtitle(
@@ -999,10 +1134,12 @@ fn download_and_place_core(
         fetch_staged_subtitle(state, video_path, api_key, cancel, on_progress)?;
     let placed = match staged {
         StagedSubtitle::Extracted(staged_srt) => {
+            normalize_downloaded_subtitle_file(&staged_srt)?;
             validate_subtitle_for_sidecar(&staged_srt)?;
             place_sidecar_copy(&staged_srt, &video)?
         }
         StagedSubtitle::NeedsArchiveExtraction => {
+            normalize_staged_zip_archives(&source);
             extract_from_staged_archive(state, &source, cancel, on_progress)?
         }
     };
@@ -1388,10 +1525,12 @@ pub fn reset_subtitle(
             let st = app2.state::<AppState>();
             let placed = match staged {
                 StagedSubtitle::Extracted(staged_srt) => {
+                    normalize_downloaded_subtitle_file(&staged_srt)?;
                     validate_subtitle_for_sidecar(&staged_srt)?;
                     place_sidecar_copy(&staged_srt, &video2)?
                 }
                 StagedSubtitle::NeedsArchiveExtraction => {
+                    normalize_staged_zip_archives(&source);
                     extract_from_staged_archive(&st, &source, &cancel, &mut |p| {
                         // پیشرفت آرشیو هم با همان kind می‌رود
                         let mut p = p;
@@ -1490,6 +1629,107 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// بایت‌های cp1256 نمونه — همان فیکسچر تست encoding (زیرنویس فارسی)
+    const SAMPLE_CP1256_BYTES_FOR_ZIP: &[u8] = &[
+        0x31, 0x0A, 0x30, 0x30, 0x3A, 0x30, 0x30, 0x3A, 0x30, 0x31, 0x2C, 0x30, 0x30, 0x30, 0x20,
+        0x2D, 0x2D, 0x3E, 0x20, 0x30, 0x30, 0x3A, 0x30, 0x30, 0x3A, 0x30, 0x32, 0x2C, 0x30, 0x30,
+        0x30, 0x0A, 0xD3, 0xE1, 0xC7, 0xE3, 0x20, 0xCF, 0xE4, 0xED, 0xC7, 0x20, 0x97, 0x20, 0xD2,
+        0xED, 0xD1, 0xE4, 0xE6, 0xED, 0xD3, 0x20, 0xDD, 0xC7, 0xD1, 0xD3, 0xED, 0x20, 0xC8, 0xD1,
+        0xC7, 0xED, 0x20, 0xCA, 0xD3, 0xCA, 0x20, 0xCA, 0xC8, 0xCF, 0xED, 0xE1, 0x20, 0xC7, 0xE4,
+        0xDF, 0xE6, 0xCF, 0xED, 0xE4, 0x90, 0x0A, 0x0A, 0x32, 0x0A, 0x30, 0x30, 0x3A, 0x30, 0x30,
+        0x3A, 0x30, 0x32, 0x2C, 0x31, 0x30, 0x30, 0x20, 0x2D, 0x2D, 0x3E, 0x20, 0x30, 0x30, 0x3A,
+        0x30, 0x30, 0x3A, 0x30, 0x33, 0x2C, 0x35, 0x30, 0x30, 0x0A, 0xCE, 0xD8, 0x20, 0xCF, 0xE6,
+        0xE3, 0x20, 0xC8, 0xD1, 0xC7, 0xED, 0x20, 0xC7, 0xD8, 0xE3, 0xED, 0xE4, 0xC7, 0xE4, 0x20,
+        0xC7, 0xD2, 0x20, 0xCA, 0xDA, 0xCF, 0xC7, 0xCF, 0x20, 0xDF, 0xC7, 0xDD, 0xED, 0x20, 0xCD,
+        0xD1, 0xE6, 0xDD, 0x0A,
+    ];
+
+    /// نرمال‌سازی ZIP پک-فصل: عضو cp1256 → UTF-8 (بدون تغییر عضو سالم)
+    #[test]
+    fn normalize_zip_file_converts_legacy_members() {
+        use std::io::Write;
+        let base = unique_dir("zip-norm");
+        let sub_dir = base.join("sub");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let zip_path = sub_dir.join("pack.zip");
+
+        // ساخت ZIP با دو عضو: ANSI فارسی + باینری خام
+        let out_file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(out_file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer
+            .start_file("S01E02.srt".to_string(), options)
+            .unwrap();
+        writer.write_all(SAMPLE_CP1256_BYTES_FOR_ZIP).unwrap();
+        writer.start_file("cover.bin".to_string(), options).unwrap();
+        writer.write_all(&[0x00, 0xFF, 0x00, 0xFF]).unwrap();
+        drop(writer.finish().unwrap());
+
+        let source = crate::subsource::plan::ArchiveSource {
+            video_path: base.join("Show.S01E02.mkv").to_string_lossy().into_owned(),
+            video_file_name: "Show.S01E02.mkv".into(),
+            staging_root: base.to_string_lossy().into_owned(),
+            relative_video_path: "Show.S01E02.mkv".into(),
+            relative_video_dir: String::new(),
+            season: Some(1),
+            episode: Some(2),
+        };
+        normalize_staged_zip_archives(&source);
+
+        // عضو متنی باید UTF-8 فارسی شده باشد؛ باینری دست‌نخورده
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut text = Vec::new();
+        {
+            let mut srt = archive.by_name("S01E02.srt").unwrap();
+            std::io::Read::read_to_end(&mut srt, &mut text).unwrap();
+        }
+        let text = String::from_utf8(text).expect("عضو متنی باید UTF-8 باشد");
+        assert!(text.contains("سلام"), "محتوای تبدیل‌شده: {text}");
+        let mut raw = Vec::new();
+        {
+            let mut bin = archive.by_name("cover.bin").unwrap();
+            std::io::Read::read_to_end(&mut bin, &mut raw).unwrap();
+        }
+        assert_eq!(raw, vec![0x00, 0xFF, 0x00, 0xFF]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// تست واقعی با فایل ANSI حفظ‌شده از دانلود کاربر (Resident Evil —
+    /// همان شکست گزارش‌شده): normalize باید cp1256 → UTF-8 کند و فارسی تأیید شود.
+    /// ورودی: SUBSYNC_REAL_ANSI_SRT (مسیر یک srt واقعی cp1256).
+    #[test]
+    #[ignore]
+    fn live_normalize_converts_real_ansi_subtitle() {
+        let Ok(src) = std::env::var("SUBSYNC_REAL_ANSI_SRT") else {
+            eprintln!("SKIP: SUBSYNC_REAL_ANSI_SRT تنظیم نشده");
+            return;
+        };
+        let base = unique_dir("ansi-real");
+        let target =
+            base.join("Resident.Evil.2026.1080p.WEB-DL.6CH.YIFY.Farsi.Sub.Film2Media.fa.srt");
+        std::fs::copy(&src, &target).expect("کپی فایل واقعی");
+
+        // قبل از normalize: validate شکست می‌خورد (encoding)
+        let before = crate::subtitle::validation::validate_file(&target);
+        assert!(
+            !before.valid,
+            "فایل اصلی باید غیرمعتبر (ANSI) باشد: {:?}",
+            before
+        );
+
+        normalize_downloaded_subtitle_file(&target).expect("تبدیل باید موفق شود");
+
+        let after = crate::subtitle::validation::validate_file(&target);
+        assert!(
+            after.valid && after.has_persian,
+            "پس از تبدیل باید فارسی معتبر باشد: {:?}",
+            after
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// حذف sidecarهای قبلی — فقط فایل‌های متعلق به برنامه؛ غایب‌ها نادیده

@@ -107,14 +107,15 @@ export function TaskDock({
     });
   }
 
-  // ---- تسک تنظیم دوباره زیرنویس ----
-  if (resetTask.active) {
+  // ---- تسک تنظیم دوباره زیرنویس — نتیجهٔ ناموفق باید دیده شود ----
+  if (resetTask.active || (resetTask.failed && resetTask.message)) {
+    const failed = resetTask.failed;
     items.push({
       key: "subtitle-reset",
-      icon: <Captions className="size-4 shrink-0 text-amber-400" />,
-      title: "تنظیم دوباره زیرنویس",
+      icon: <Captions className={`size-4 shrink-0 ${failed ? "text-red-400" : "text-amber-400"}`} />,
+      title: failed ? "تنظیم دوباره ناموفق بود" : "تنظیم دوباره زیرنویس",
       detail: resetTask.message || "در جریان…",
-      running: true,
+      running: resetTask.active,
       onClick: () => {
         setFocus("pipeline");
         onNavigate("home");

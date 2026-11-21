@@ -2,6 +2,10 @@
 //!
 //! رنج‌های اصلی فارسی: U+0600–06FF، U+FB50–FDFF، U+FE70–FEFF
 
+/// حداقل حروف فارسی برای پذیرش تبدیل cp1256 — فایل بدون فارسی نباید
+/// بازنویسی شود (heuristic ضعیف‌تر از محتوای واقعی نیست).
+const MIN_PERSIAN_CHARS_FOR_CONVERSION: usize = 10;
+
 /// بایت‌ها را با تشخیص BOM/Encoding به متن تبدیل می‌کند.
 /// خروجی: (نام Encoding، متن)
 pub fn decode_bytes(bytes: &[u8]) -> (&'static str, String) {
@@ -23,6 +27,57 @@ pub fn decode_bytes(bytes: &[u8]) -> (&'static str, String) {
             "نامشخص (UTF-8 معتبر نیست)",
             String::from_utf8_lossy(bytes).into_owned(),
         ),
+    }
+}
+
+/// تبدیل بایت‌های cp1256 به متن — بدون هیچ heuristic؛ فراخواننده تصمیم می‌گیرد.
+pub const CP1256_HIGH: [char; 128] = [
+    '€', 'پ', '‚', 'ƒ', '„', '…', '†', '‡', // 0x80
+    'ˆ', '‰', 'ٹ', '‹', 'Œ', 'چ', 'ژ', 'ڈ', // 0x88
+    'گ', '‘', '’', '“', '”', '•', '–', '—', // 0x90
+    'ک', '™', 'ڑ', '›', 'œ', '\u{200c}', '\u{200d}', 'ں', // 0x98
+    '\u{a0}', '،', '¢', '£', '¤', '¥', '¦', '§', // 0xA0
+    '¨', '©', 'ھ', '«', '¬', '\u{ad}', '®', '¯', // 0xA8
+    '°', '±', '²', '³', '´', 'µ', '¶', '·', // 0xB0
+    '¸', '¹', '؛', '»', '¼', '½', '¾', '؟', // 0xB8
+    'ہ', 'ء', 'آ', 'أ', 'ؤ', 'إ', 'ئ', 'ا', // 0xC0
+    'ب', 'ة', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', // 0xC8
+    'ذ', 'ر', 'ز', 'س', 'ش', 'ص', 'ض', '×', // 0xD0
+    'ط', 'ظ', 'ع', 'غ', 'ـ', 'ف', 'ق', 'ك', // 0xD8
+    'à', 'ل', 'â', 'م', 'ن', 'ه', 'و', 'ç', // 0xE0
+    'è', 'é', 'ê', 'ë', 'ى', 'ي', 'î', 'ï', // 0xE8
+    'ً', 'ٌ', 'ٍ', 'َ', 'ô', 'ُ', 'ِ', '÷', // 0xF0
+    'ّ', 'ù', 'ْ', 'û', 'ü', '\u{200e}', '\u{200f}', 'ے', // 0xF8
+];
+
+pub fn decode_windows1256(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b < 0x80 {
+            out.push(b as char);
+        } else {
+            out.push(CP1256_HIGH[(b - 0x80) as usize]);
+        }
+    }
+    out
+}
+
+/// آیا این بایت‌ها با cp1256 قابل خواندن‌اند و حرف فارسی کافی دارند؟
+/// فقط برای زیرنویس‌های دانلودی صدا زده می‌شود؛ فایل‌های محلی کاربر هرگز
+/// بازنویسی نمی‌شوند. UTF-8 سالم → None (نیازی به تبدیل نیست).
+pub fn convert_windows1256_if_needed(bytes: &[u8]) -> Option<String> {
+    if std::str::from_utf8(bytes).is_ok() {
+        return None;
+    }
+    let text = decode_windows1256(bytes);
+    let persian = text
+        .chars()
+        .filter(|c| ('\u{0600}'..='\u{06FF}').contains(c))
+        .count();
+    if persian >= MIN_PERSIAN_CHARS_FOR_CONVERSION {
+        Some(text)
+    } else {
+        None
     }
 }
 
