@@ -1476,7 +1476,9 @@ pub(crate) fn run_pipeline_body(
                 }
             }
             SS::UnchangedLowQuality => {
-                rt.outcome = Some(ItemOutcome::UnchangedLowQuality);
+                rt.outcome = Some(ItemOutcome::UnchangedLowQuality {
+                    reason: outcome.summary.clone(),
+                });
                 counts.unchanged_low_quality += 1;
                 rt.stage_status = StageStatus::Done;
             }
@@ -1565,7 +1567,9 @@ fn interim_outcome(outcome: &crate::sync::SyncOutcome) -> Option<ItemOutcome> {
         SS::Synced => outcome.output_path.as_ref().map(|p| ItemOutcome::Synced {
             output_path: p.to_string_lossy().into_owned(),
         }),
-        SS::UnchangedLowQuality => Some(ItemOutcome::UnchangedLowQuality),
+        SS::UnchangedLowQuality => Some(ItemOutcome::UnchangedLowQuality {
+            reason: outcome.summary.clone(),
+        }),
         SS::Cancelled => None,
         _ => Some(ItemOutcome::Failed {
             reason: outcome.diagnostic.clone(),

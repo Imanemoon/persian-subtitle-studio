@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::types::{
-    SyncRequest, CAPTURE_CAP_BYTES, LOG_TAIL_LIMIT_BYTES, LOW_QUALITY_MARKER, OFFSET_MARKER,
+    SyncConfig, SyncRequest, CAPTURE_CAP_BYTES, LOG_TAIL_LIMIT_BYTES, LOW_QUALITY_MARKER,
+    OFFSET_MARKER, QUALITY_MAX_OFFSET_SECONDS, SEARCH_MAX_OFFSET_SECONDS,
 };
 
 #[cfg(windows)]
@@ -23,16 +24,66 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 // ساخت آرگومان‌ها
 // ---------------------------------------------------------------------
 
+/// استراتژی اجرای ffsubsync — در یک run تا دو استراتژی پشت‌سرهم امتحان می‌شوند
+/// (ترتیب در `sync_strategies`): اول مرجع کامل، بعد (در صورت فعال بودن
+/// multi_segment در تنظیمات) نمونه‌برداری صوت.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncStrategy {
+    /// حالت کامل — ffsubsync خودش بهترین مرجع را برمی‌دارد: اگر ویدیو Track
+    /// زیرنویس متنی داخلی داشته باشد، همان مرجع می‌شود (هم‌ترازیِ
+    /// زیرنویس‌به‌زیرنویس — پایدار، دقیق و بدون نویز صوت) وگرنه VAD کامل صوت.
+    /// شواهد واقعی: روی فایل 6CH پر موسیقی، فقط همین مسیر آفست 0.000 با اسکور
+    /// ۵۶۵k داد؛ مسیر نمونه‌برداری برای همان فایل چهار آفست متفاوت و ناپایدار
+    /// (+36.11، +32.6، ‎-8.64، ‎-297.39) پیدا کرده بود.
+    FullReference,
+    /// نمونه‌برداری چندsegmentای صوت (رفتار قبلی) — سریع‌تر اما پرنویزتر؛
+    /// فقط تلاش دوم برای نجات مواردی که مرجع کامل ردشان کرد.
+    MultiSegmentAudio,
+}
+
+impl SyncStrategy {
+    /// برچسب فارسی برای پیام پیشرفت و خلاصهٔ تلاش‌ها.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            SyncStrategy::FullReference => "مرجع کامل (Track داخلی/VAD کامل صوت)",
+            SyncStrategy::MultiSegmentAudio => "نمونه‌برداری صوت",
+        }
+    }
+}
+
+/// ترتیب استراتژی‌های یک run — مرجع کامل همیشه اول؛ نمونه‌برداری صوت فقط وقتی
+/// کاربر multi_segment را روشن گذاشته به‌عنوان تلاش دوم اضافه می‌شود.
+pub(crate) fn sync_strategies(config: &SyncConfig) -> Vec<SyncStrategy> {
+    let mut strategies = vec![SyncStrategy::FullReference];
+    if config.multi_segment {
+        strategies.push(SyncStrategy::MultiSegmentAudio);
+    }
+    strategies
+}
+
 /// آرگومان‌های دقیق ffs — هر آرگومان جدا، بدون هیچ shell.
 ///
 /// قرارداد تأییدشدهٔ ffsubsync 0.5.1:
-/// `ffs <video> -i <sub> -o <out> [--multi-segment-sync --segment-count N]
-///  [--skip-intro-outro] [--skip-sync-on-low-quality] --parallel-workers 1
-///  --output-encoding utf-8 [--ffmpeg-path <ffmpeg>] --log-dir-path <dir>`
+/// - FullReference:
+///   `ffs <video> -i <sub> -o <out> [--skip-sync-on-low-quality
+///   --quality-max-offset-seconds 30] --max-offset-seconds 60
+///   --output-encoding utf-8 [--ffmpeg-path <ffmpeg>] --log-dir-path <dir>`
+/// - MultiSegmentAudio (همان موارد بالا +):
+///   `--multi-segment-sync --segment-count N [--skip-intro-outro]
+///   --parallel-workers 1`
 ///
-/// `--parallel-workers 1` همیشه اعمال می‌شود — تعداد workerهای سطح ویدیو را
-/// pipeline کنترل می‌کند، نه هر فرایند.
-pub fn build_cli_args(request: &SyncRequest, output: &Path, log_dir: &Path) -> Vec<OsString> {
+/// `--max-offset-seconds` و `--quality-max-offset-seconds` هر دو صریح پین
+/// می‌شوند (پیش‌فرض‌های 0.5.1). آستانهٔ کیفیت عمداً از دامنهٔ جستجو کوچک‌تر
+/// می‌ماند: اسکور خام FFT نرمال‌شده نیست و روی صدای پرنویز آفست‌های کاذبِ
+/// ۳۰–۶۰ ثانیه‌ای را برنده می‌کند (رسانهٔ واقعی: آفست «36.1s» که در واقع
+/// زیرنویس از قبل سینک بود). `--parallel-workers` فقط برای نمونه‌برداری صوت
+/// معنا دارد و همان‌جا پین می‌شود.
+pub fn build_cli_args(
+    request: &SyncRequest,
+    strategy: SyncStrategy,
+    output: &Path,
+    log_dir: &Path,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         request.video_path.as_os_str().to_os_string(),
         "-i".into(),
@@ -41,20 +92,30 @@ pub fn build_cli_args(request: &SyncRequest, output: &Path, log_dir: &Path) -> V
         output.as_os_str().to_os_string(),
     ];
 
-    if request.config.multi_segment {
+    if request.config.skip_sync_on_low_quality {
+        args.push("--skip-sync-on-low-quality".into());
+        // آستانهٔ گیت کیفیت پین‌شده — هیچ‌وقت به 60 بالا برده نمی‌شود؛
+        // آفست‌های بزرگِ صوتی معمولاً پیک کاذب‌اند (توضیح const در types.rs).
+        args.push("--quality-max-offset-seconds".into());
+        args.push(QUALITY_MAX_OFFSET_SECONDS.to_string().into());
+    }
+
+    // دامنهٔ جستجوی آفست — صریح و همیشه، تا از پیش‌فرض‌های آیندهٔ ffsubsync
+    // جدا بمانیم.
+    args.push("--max-offset-seconds".into());
+    args.push(SEARCH_MAX_OFFSET_SECONDS.to_string().into());
+
+    if strategy == SyncStrategy::MultiSegmentAudio {
         args.push("--multi-segment-sync".into());
         args.push("--segment-count".into());
         args.push(request.config.effective_segment_count().to_string().into());
-    }
-    if request.config.skip_intro_outro {
-        args.push("--skip-intro-outro".into());
-    }
-    if request.config.skip_sync_on_low_quality {
-        args.push("--skip-sync-on-low-quality".into());
+        if request.config.skip_intro_outro {
+            args.push("--skip-intro-outro".into());
+        }
+        args.push("--parallel-workers".into());
+        args.push("1".into());
     }
 
-    args.push("--parallel-workers".into());
-    args.push("1".into());
     args.push("--output-encoding".into());
     args.push("utf-8".into());
 
@@ -434,18 +495,18 @@ mod tests {
     }
 
     #[test]
-    fn cli_args_map_settings_and_enforce_single_worker() {
+    fn full_reference_args_omit_multi_segment_flags() {
         let output = PathBuf::from("C:\\tmp\\out\\Show.S01E01.fa.synced.srt");
         let log_dir = PathBuf::from("C:\\tmp\\ws\\logs");
 
-        // همهٔ پرچم‌ها خاموش — هیچ پرچم اختیاری نباید بیاید
+        // همهٔ پرچم‌ها خاموش — هیچ پرچم اختیاریِ مرتبط با گیت/segment نباید بیاید
         let off = SyncConfig {
-            multi_segment: false,
+            multi_segment: true,
             segment_count: 6,
-            skip_intro_outro: false,
+            skip_intro_outro: true,
             skip_sync_on_low_quality: false,
         };
-        let args = build_cli_args(&request(off, None), &output, &log_dir);
+        let args = build_cli_args(&request(off, None), SyncStrategy::FullReference, &output, &log_dir);
         let texts: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -457,21 +518,18 @@ mod tests {
         assert!(texts
             .windows(2)
             .any(|w| w[0] == "-o" && w[1].contains("fa.synced.srt")));
+        // حالت مرجع کامل هیچ پرچم نمونه‌برداری‌ای نمی‌گیرد — ffsubsync خودش
+        // Track زیرنویس داخلی را (در صورت وجود) مرجع برمی‌دارد
         assert!(!texts.iter().any(|t| t.contains("multi-segment")));
         assert!(!texts.iter().any(|t| t.contains("segment-count")));
         assert!(!texts.iter().any(|t| t.contains("skip-intro-outro")));
-        assert!(!texts.iter().any(|t| t.contains("skip-sync-on-low-quality")));
+        assert!(!texts.iter().any(|t| t.contains("parallel-workers")));
+        assert!(!texts.iter().any(|t| t.contains("quality-max-offset-seconds")));
         assert!(!texts.iter().any(|t| t.contains("ffmpeg-path")));
-        // --parallel-workers 1 همیشه و فقط یک‌بار
-        assert_eq!(
-            texts.iter().filter(|t| *t == "--parallel-workers").count(),
-            1
-        );
-        let idx = texts
-            .iter()
-            .position(|t| t == "--parallel-workers")
-            .unwrap();
-        assert_eq!(texts[idx + 1], "1");
+        // دامنهٔ جستجو همیشه صریح پین می‌شود — مستقل از تنظیم کیفیت
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--max-offset-seconds" && w[1] == "60"));
         assert!(texts
             .windows(2)
             .any(|w| w[0] == "--output-encoding" && w[1] == "utf-8"));
@@ -479,7 +537,7 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "--log-dir-path" && w[1].contains("logs")));
 
-        // همهٔ پرچم‌ها روشن + ffmpeg
+        // گیت کیفیت روشن + ffmpeg — آستانهٔ پین‌شدهٔ 30، بدون پرچم‌های segment
         let on = SyncConfig {
             multi_segment: true,
             segment_count: 6,
@@ -488,6 +546,44 @@ mod tests {
         };
         let args = build_cli_args(
             &request(on, Some(PathBuf::from("C:\\ffmpeg\\ffmpeg.exe"))),
+            SyncStrategy::FullReference,
+            &output,
+            &log_dir,
+        );
+        let texts: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!texts.iter().any(|t| t.contains("multi-segment")));
+        assert!(!texts.iter().any(|t| t.contains("segment-count")));
+        assert!(!texts.iter().any(|t| t.contains("skip-intro-outro")));
+        assert!(!texts.iter().any(|t| t.contains("parallel-workers")));
+        assert!(texts.iter().any(|t| t == "--skip-sync-on-low-quality"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--quality-max-offset-seconds" && w[1] == "30"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--max-offset-seconds" && w[1] == "60"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--ffmpeg-path" && w[1] == "C:\\ffmpeg\\ffmpeg.exe"));
+    }
+
+    #[test]
+    fn multi_segment_args_map_settings_and_enforce_single_worker() {
+        let output = PathBuf::from("C:\\tmp\\out\\Show.S01E01.fa.synced.srt");
+        let log_dir = PathBuf::from("C:\\tmp\\ws\\logs");
+
+        let on = SyncConfig {
+            multi_segment: true,
+            segment_count: 6,
+            skip_intro_outro: true,
+            skip_sync_on_low_quality: true,
+        };
+        let args = build_cli_args(
+            &request(on, Some(PathBuf::from("C:\\ffmpeg\\ffmpeg.exe"))),
+            SyncStrategy::MultiSegmentAudio,
             &output,
             &log_dir,
         );
@@ -503,24 +599,98 @@ mod tests {
         assert!(texts.iter().any(|t| t == "--skip-sync-on-low-quality"));
         assert!(texts
             .windows(2)
+            .any(|w| w[0] == "--quality-max-offset-seconds" && w[1] == "30"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--max-offset-seconds" && w[1] == "60"));
+        assert!(texts
+            .windows(2)
             .any(|w| w[0] == "--ffmpeg-path" && w[1] == "C:\\ffmpeg\\ffmpeg.exe"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--output-encoding" && w[1] == "utf-8"));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--log-dir-path" && w[1].contains("logs")));
+        // --parallel-workers 1 فقط برای نمونه‌برداری صوت و فقط یک‌بار
         assert_eq!(
             texts.iter().filter(|t| *t == "--parallel-workers").count(),
             1
         );
+        let idx = texts
+            .iter()
+            .position(|t| t == "--parallel-workers")
+            .unwrap();
+        assert_eq!(texts[idx + 1], "1");
 
         // segment_count نادرست هم به مقدار امن ≥1 کلامپ می‌شود
         let bad = SyncConfig {
             segment_count: 0,
             ..on
         };
-        let args = build_cli_args(&request(bad, None), &output, &log_dir);
+        let args = build_cli_args(
+            &request(bad, None),
+            SyncStrategy::MultiSegmentAudio,
+            &output,
+            &log_dir,
+        );
         let texts: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         let idx = texts.iter().position(|t| t == "--segment-count").unwrap();
         assert_eq!(texts[idx + 1], "1");
+    }
+
+    #[test]
+    fn quality_offset_gate_stays_within_default_threshold() {
+        let output = PathBuf::from("C:\\tmp\\out\\Show.S01E01.fa.synced.srt");
+        let log_dir = PathBuf::from("C:\\tmp\\ws\\logs");
+        let config = SyncConfig {
+            multi_segment: true,
+            segment_count: 6,
+            skip_intro_outro: true,
+            skip_sync_on_low_quality: true,
+        };
+        for strategy in [SyncStrategy::FullReference, SyncStrategy::MultiSegmentAudio] {
+            let args = build_cli_args(&request(config, None), strategy, &output, &log_dir);
+            let texts: Vec<String> = args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+
+            let search = texts
+                .windows(2)
+                .find(|w| w[0] == "--max-offset-seconds")
+                .map(|w| w[1].clone())
+                .expect("--max-offset-seconds باید همیشه پاس شود");
+            let quality = texts
+                .windows(2)
+                .find(|w| w[0] == "--quality-max-offset-seconds")
+                .map(|w| w[1].clone())
+                .expect("با فعال بودن گیت کیفیت، آستانهٔ آفست باید پاس شود");
+
+            // گیت کیفیت هرگز از دامنهٔ جستجو بزرگ‌تر نیست: اسکور خام FFT
+            // نرمال‌شده نیست و آفست‌های ۳۰–۶۰ ثانیه‌ایِ صوتی معمولاً پیک کاذب‌اند
+            // (رسانهٔ واقعی: آفست 36.1s در حالی که زیرنویس از قبل سینک بود).
+            assert_eq!(quality, "30", "{strategy:?}");
+            assert_eq!(search, "60", "{strategy:?}");
+        }
+
+        // ترتیب استراتژی‌ها: مرجع کامل همیشه اول؛ نمونه‌برداری فقط با multi_segment
+        let strategies = sync_strategies(&config);
+        assert_eq!(
+            strategies,
+            vec![
+                SyncStrategy::FullReference,
+                SyncStrategy::MultiSegmentAudio
+            ]
+        );
+        let only_full = sync_strategies(&SyncConfig {
+            multi_segment: false,
+            ..config
+        });
+        assert_eq!(only_full, vec![SyncStrategy::FullReference]);
     }
 
     #[test]

@@ -42,7 +42,7 @@ export type ItemOutcome =
   | { kind: "softSubbed"; videoPath: string }
   /** زیرنویس فارسی داخل تصویر حک شده (قرارداد نام‌گذاری گروه‌های رلیز) */
   | { kind: "hardsubbed" }
-  | { kind: "unchangedLowQuality" }
+  | { kind: "unchangedLowQuality"; reason?: string }
   | { kind: "needsApiKey" }
   | { kind: "keyStoreUnavailable"; reason: string }
   | { kind: "skipped"; reason: string }

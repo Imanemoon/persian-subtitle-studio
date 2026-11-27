@@ -275,7 +275,7 @@ fn live_pipeline_extracts_syncs_and_places_tagged_track() {
                 "فایل سینک‌شده باید روی دیسک باشد: {output_path}"
             );
         }
-        Some(ItemOutcome::UnchangedLowQuality) => {
+        Some(ItemOutcome::UnchangedLowQuality { .. }) => {
             // آفست پایین‌کیفیت — فایل اصلی دست‌نخورده؛ پایان صادقانهٔ دیگر
         }
         other => panic!("outcome غیرمنتظره برای ویدیوی tagدار با sینک واقعی: {other:?}"),
