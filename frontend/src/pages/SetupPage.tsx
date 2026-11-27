@@ -18,9 +18,9 @@ import type { ToolStatus } from "../types";
 
 /**
  * معاونت راه‌اندازی — قبل از ورود به برنامه.
- * همهٔ داده‌ها از بک‌اند می‌آید (detect واقعی + progress واقعی)؛ هیچ پیشرفت
- * جعلی‌ای وجود ندارد. نصب ffmpeg و ffsubsync per-user و بدون admin است؛ فقط
- * 7-Zip و استثنای Defender پنجرهٔ UAC باز می‌کنند و در UI همان صادقانه گفته می‌شود.
+ * یک دکمهٔ اصلی، همه‌چیز را ترتیبی نصب می‌کند؛ هر جزئیات دیگری حذف شده تا
+ * کاربر فقط یک تصمیم بگیرد. همهٔ داده‌ها از بک‌اند می‌آید (detect واقعی +
+ * progress واقعی)؛ هیچ پیشرفت جعلی‌ای وجود ندارد.
  */
 
 interface PerTool {
@@ -42,7 +42,9 @@ export function SetupPage({
   const [error, setError] = useState<string | null>(null);
   const [defenderRunning, setDefenderRunning] = useState(false);
   const [defenderMessage, setDefenderMessage] = useState<string | null>(null);
+  const [defenderOk, setDefenderOk] = useState(false);
   const [shortcutMessage, setShortcutMessage] = useState<string | null>(null);
+  const [shortcutOk, setShortcutOk] = useState(false);
   const [mediaDir, setMediaDir] = useState<string | null>(null);
   const [appDirHint, setAppDirHint] = useState<string | null>(null);
   const doneResolversRef = useRef<Array<(ok: boolean) => void>>([]);
@@ -145,20 +147,29 @@ export function SetupPage({
     if (!tools) return;
     setError(null);
     setNotice(null);
+    // ترتیبی و ادامه‌دار — شکست یک ابزار بقیه را متوقف نمی‌کند
+    const failed: string[] = [];
     for (const t of tools) {
-      // ترتیبی — دانلودهای سنگین هم‌زمان روی یک اینترنت معنا ندارند
       if (t.status !== "found") {
         const ok = await installAndWait(t.id);
-        if (!ok) break; // شکست زنجیره را متوقف می‌کند؛ خطا بالا نمایش داده شده
+        if (!ok) failed.push(t.label);
       }
+    }
+    if (failed.length > 0) {
+      setError(`این مورد نصب نشد: ${failed.join("، ")} — دوباره تلاش کنید.`);
+    } else {
+      setNotice("همهٔ پیش‌نیازها آماده شد.");
     }
   };
 
   const addExclusion = async (paths: string[]) => {
     setDefenderRunning(true);
     setDefenderMessage(null);
+    setDefenderOk(false);
     try {
-      setDefenderMessage(await api.addDefenderExclusion(paths));
+      const message = await api.addDefenderExclusion(paths);
+      setDefenderMessage(message);
+      setDefenderOk(true);
     } catch (e) {
       setDefenderMessage(`افزودن استثنا ناموفق: ${errorText(e)}`);
     } finally {
@@ -167,8 +178,11 @@ export function SetupPage({
   };
 
   const addShortcut = async () => {
+    setShortcutMessage(null);
+    setShortcutOk(false);
     try {
       setShortcutMessage(await api.createAdminShortcut());
+      setShortcutOk(true);
     } catch (e) {
       setShortcutMessage(`ساخت میان‌بر ناموفق: ${errorText(e)}`);
     }
@@ -189,6 +203,9 @@ export function SetupPage({
     tools !== null &&
     tools.filter((t) => t.requiredForEntry).every((t) => t.status === "found");
 
+  const pending = tools === null ? 0 : tools.filter((t) => t.status !== "found").length;
+  const busy = installing !== null;
+
   return (
     <div className="flex h-full justify-center overflow-y-auto px-6 py-10">
       <div className="w-full max-w-3xl space-y-6">
@@ -198,14 +215,30 @@ export function SetupPage({
             راه‌اندازی SubSync Studio
           </h1>
           <p className="mt-2 text-sm leading-6 text-ink-2">
-            پیش‌نیازها به‌صورت خودکار دانلود و نصب می‌شوند — بدون admin و بدون
-            نصب دستی. همه‌چیز داخل پوشهٔ خود برنامه نصب می‌شود و هیچ چیز دیگری
-            در سیستم‌عامل تغییر نمی‌کند.
+            فقط یک بار — همه‌چیز خودکار نصب می‌شود، داخل پوشهٔ خود برنامه و بدون
+            admin.
           </p>
         </div>
 
         {/* ابزارها */}
         <Card className="space-y-1 p-6">
+          {tools !== null && pending > 0 && (
+            <div className="pb-2">
+              <Button
+                variant="primary"
+                className="h-11 w-full text-base"
+                disabled={busy}
+                loading={busy}
+                onClick={() => void installAll()}
+              >
+                <Download className="size-4" />
+                نصب همهٔ پیش‌نیازها
+              </Button>
+              <p className="pt-1.5 text-center text-[11px] text-ink-3">
+                {pending} مورد باقی مانده — دانلود و نصب خودکار، ترتیبی
+              </p>
+            </div>
+          )}
           {tools === null ? (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-ink-3">
               <Loader2 className="size-4 animate-spin" />
@@ -214,7 +247,7 @@ export function SetupPage({
           ) : (
             tools.map((t) => {
               const state = perTool[t.id];
-              const busy = installing === t.id;
+              const busyThis = installing === t.id;
               return (
                 <div
                   key={t.id}
@@ -235,7 +268,7 @@ export function SetupPage({
                       {statusBadge(t.status)}
                       <span className="text-[11px] text-ink-3">{t.sizeHint}</span>
                     </div>
-                    {busy && state?.progress && (
+                    {busyThis && state?.progress && (
                       <div className="mt-2 space-y-1.5">
                         <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
                           <div
@@ -258,44 +291,20 @@ export function SetupPage({
                         </p>
                       </div>
                     )}
-                    {!busy && state?.progress === "نصب کامل شد" && (
-                      <p className="mt-1 text-xs text-emerald-400">
-                        نصب کامل شد — وضعیت بالا تازه است.
-                      </p>
-                    )}
                   </div>
                   {t.status !== "found" && (
                     <Button
-                      variant={busy ? undefined : "primary"}
-                      disabled={installing !== null}
-                      loading={busy}
+                      variant={busyThis ? undefined : "primary"}
+                      disabled={busy}
+                      loading={busyThis}
                       onClick={() => void install(t.id)}
                     >
-                      {busy ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Download className="size-4" />
-                      )}
-                      {busy ? "در حال نصب…" : "نصب خودکار"}
+                      {busyThis ? "در حال نصب…" : "نصب"}
                     </Button>
                   )}
                 </div>
               );
             })
-          )}
-
-          {tools !== null && tools.some((t) => t.status !== "found") && (
-            <div className="flex justify-end pt-3">
-              <Button
-                variant="primary"
-                disabled={installing !== null}
-                loading={installing !== null}
-                onClick={() => void installAll()}
-              >
-                <Download className="size-4" />
-                نصب همهٔ پیش‌نیازها
-              </Button>
-            </div>
           )}
         </Card>
 
@@ -307,18 +316,15 @@ export function SetupPage({
         )}
         {notice && <p className="text-center text-xs text-emerald-400">{notice}</p>}
 
-        {/* شتاب: Defender + میان‌بر */}
-        <Card className="space-y-4 p-6">
+        {/* سرعت بیشتر — اختیاری، کامپکت */}
+        <Card className="space-y-3 p-6">
           <div className="flex items-center gap-2">
             <Shield className="size-5 text-accent" />
-            <h2 className="text-sm font-bold text-ink-1">
-              شتاب بیشتر (اختیاری — اما به‌شدت توصیه‌شده)
-            </h2>
+            <h2 className="text-sm font-bold text-ink-1">سرعت بیشتر (اختیاری)</h2>
           </div>
-          <p className="text-xs leading-6 text-ink-2">
-            آنتی‌ویروس Windows هنگام خواندن ویدیوها و اجرای ابزارها همه‌چیز را
-            اسکن می‌کند و روی هارد یعنی چند برابر کندتر شدن. با یک تأیید در
-            پنجرهٔ UAC، پوشه‌های برنامه به استثناهای Defender اضافه می‌شوند.
+          <p className="text-xs leading-5 text-ink-2">
+            هر دکمه یک پنجرهٔ تأیید ویندوز (UAC) باز می‌کند — با تأیید شما اعمال
+            می‌شود.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -331,7 +337,7 @@ export function SetupPage({
                 void addExclusion(paths);
               }}
             >
-              افزودن به استثناهای Windows Defender
+              افزودن به استثنای Defender
             </Button>
             <Button
               disabled={defenderRunning}
@@ -343,44 +349,34 @@ export function SetupPage({
                 }
               }}
             >
-              استثنای پوشهٔ رسانه‌های من…
+              استثنای پوشهٔ رسانه‌ها…
             </Button>
-            {mediaDir && (
-              <span
-                dir="ltr"
-                className="max-w-xs truncate font-mono text-[11px] text-ink-3"
-              >
-                {mediaDir}
-              </span>
-            )}
+            <Button disabled={defenderRunning} onClick={() => void addShortcut()}>
+              میان‌بر Administrator روی دسکتاپ
+            </Button>
           </div>
-          {defenderMessage && (
-            <p className="text-xs leading-6 text-ink-2">{defenderMessage}</p>
+          {mediaDir && (
+            <span
+              dir="ltr"
+              className="block max-w-md truncate font-mono text-[11px] text-ink-3"
+            >
+              {mediaDir}
+            </span>
           )}
-
-          <div className="space-y-2 border-t border-line/60 pt-4">
-            <h3 className="text-sm font-semibold text-ink-1">
-              میان‌بر «Run as administrator»
-            </h3>
-            <p className="text-xs leading-6 text-ink-2">
-              میان‌بری روی دسکتاپ ساخته می‌شود که برنامه را همیشه با امتیاز
-              Administrator باز می‌کند. برای سرعت خواندن دیسک، استثنای Defender
-              و یک‌پارچه بودن دیسک (دیفراگ درایو رسانه‌ها) اثر واقعی‌تری دارند.
+          {defenderMessage && (
+            <p
+              className={`text-xs leading-5 ${defenderOk ? "text-emerald-400" : "text-ink-2"}`}
+            >
+              {defenderMessage}
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={() => void addShortcut()}>
-                ساخت میان‌بر روی دسکتاپ
-              </Button>
-              {shortcutMessage && (
-                <span
-                  dir="ltr"
-                  className="max-w-sm truncate font-mono text-[11px] text-ink-3"
-                >
-                  {shortcutMessage}
-                </span>
-              )}
-            </div>
-          </div>
+          )}
+          {shortcutMessage && (
+            <p
+              className={`text-xs leading-5 ${shortcutOk ? "text-emerald-400" : "text-ink-2"}`}
+            >
+              {shortcutMessage}
+            </p>
+          )}
         </Card>
 
         {/* ورود به برنامه */}

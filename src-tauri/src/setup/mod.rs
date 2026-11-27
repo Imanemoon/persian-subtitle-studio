@@ -407,9 +407,39 @@ pub struct FfsubsyncInstall {
     pub ffs_path: PathBuf,
 }
 
-/// ffsubsync: نصب silent پایتون per-user → venv → pip install → probe.
-/// مراحل طولانی‌اند؛ progress phase-based و صادقانه است (پایپ پکیج‌ها
-/// درصد قابل‌اعتمادی نمی‌دهد) و لغو فقط بین مراحل بررسی می‌شود.
+/// کاندیداهای پایتون قابل‌استفاده — اول پایتون باندل‌شدهٔ خود برنامه، بعد
+/// نصب‌های per-user شناخته‌شدهٔ سیستم. (فقط مسیرهای ثابت — scan PATH نه،
+/// تا stub فریبندهٔ WindowsApps اجرا نشود.)
+fn python_candidates(tools_dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![tools_dir.join("python").join("python.exe")];
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        let la = PathBuf::from(la);
+        for v in ["311", "312", "313", "310"] {
+            out.push(
+                la.join("Programs")
+                    .join("Python")
+                    .join(format!("Python{v}"))
+                    .join("python.exe"),
+            );
+        }
+    }
+    out
+}
+
+/// اولین پایتونی که واقعاً اجرا می‌شود (--version با کد خروج صفر).
+fn first_working_python(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|c| c.is_file() && run_silent(c, &["--version".to_string()]).is_ok())
+        .cloned()
+}
+
+/// ffsubsync: پایتونِ موجود → venv → pip install → probe.
+///
+/// پایتون فقط وقتی هیچ پایتون ۳ قابل‌استفاده‌ای نبود دانلود و نصب می‌شود:
+/// نصاب silent پایتون وقتی همان نسخه از قبل روی سیستم نصب باشد با کد خروج ۰
+/// خارج می‌شود ولی TargetDir را نصب نمی‌کند (شواهد واقعی: exit 0 بدون
+/// python.exe در مقصد) — پس اتکا به نصبِ همیشه، شکست می‌دهد.
 pub fn install_ffsubsync(
     tools_dir: &Path,
     fetch: FetchFn,
@@ -427,51 +457,41 @@ pub fn install_ffsubsync(
         return Ok(FfsubsyncInstall { ffs_path: ffs_exe });
     }
 
-    // ۱) پایتون per-user (اگر از قبل نیست)
-    if !python_exe.is_file() {
-        let installer = tools_dir.join("cache").join("python-3.11.9-amd64.exe");
-        emit(
-            "ffsubsync",
-            "download",
-            0,
-            0,
-            "دانلود پایتون ۳٫۱۱٫۹ (بدون نیاز به admin)…",
-            on_progress,
-        );
-        if cancel.load(Ordering::SeqCst) {
-            return Err("نصب توسط کاربر لغو شد".into());
-        }
-        fetch(PYTHON_URL, &installer)?;
-        if let Some(expected) = sha256 {
-            verify_sha256(&installer, expected)?;
-        }
-        emit(
-            "ffsubsync",
-            "install",
-            0,
-            0,
-            "نصب silent پایتون (per-user)…",
-            on_progress,
-        );
-        run_silent(
-            &installer,
-            &[
-                "/quiet".to_string(),
-                "InstallAllUsers=0".to_string(),
-                "Include_pip=1".to_string(),
-                "Include_test=0".to_string(),
-                "PrependPath=0".to_string(),
-                "Shortcuts=0".to_string(),
-                format!("TargetDir={}", python_dir.display()),
-            ],
-        )?;
-        if !python_exe.is_file() {
-            return Err(format!(
-                "پایتون پس از نصب در «{}» یافت نشد",
-                python_exe.display()
-            ));
-        }
+    // ۱) پایتون قابل‌استفاده — موجود یا نصب جدید
+    emit(
+        "ffsubsync",
+        "install",
+        0,
+        0,
+        "بررسی پایتون‌های موجود روی سیستم…",
+        on_progress,
+    );
+    if cancel.load(Ordering::SeqCst) {
+        return Err("نصب توسط کاربر لغو شد".into());
     }
+    let python_path = match first_working_python(&python_candidates(tools_dir)) {
+        Some(found) => {
+            emit(
+                "ffsubsync",
+                "install",
+                0,
+                0,
+                "از پایتونِ موجود استفاده می‌شود — نصب جدید لازم نیست.",
+                on_progress,
+            );
+            found
+        }
+        None => {
+            install_bundled_python(tools_dir, fetch, sha256, on_progress, cancel)?;
+            first_working_python(&python_candidates(tools_dir)).ok_or_else(|| {
+                format!(
+                    "پایتون پس از نصب در «{}» یافت نشد و هیچ پایتون دیگری هم قابل‌استفاده نیست",
+                    python_exe.display()
+                )
+            })?
+        }
+    };
+    let python_exe = python_path;
 
     // ۲) venv
     if !venv_python.is_file() {
@@ -631,45 +651,83 @@ pub fn is_elevated() -> Result<bool, String> {
 }
 
 /// افزودن استثنای Windows Defender با رضایت کاربر (UAC).
-/// خروجی همیشه صادقانه است: یا «تأیید شد» یا «درخواست ارسال شد — نتیجه نامشخص».
+///
+/// افزودن + تأیید در «یک» فرایند elevated انجام می‌شود و نتیجهٔ قطعی در فایل
+/// موقت نوشته و خوانده می‌شود — خواندن `Get-MpPreference` بدون امتیاز،
+/// استثناها را برنمی‌گرداند و پیام مبهمِ «نتیجه نامشخص» می‌داد.
 pub fn add_defender_exclusions(paths: &[String]) -> Result<String, String> {
     let valid: Vec<&String> = paths.iter().filter(|p| !p.trim().is_empty()).collect();
     if valid.is_empty() {
         return Err("هیچ مسیری برای افزودن به استثناها داده نشده است".into());
     }
+    let result_file = std::env::temp_dir().join(format!(
+        "subsync-defender-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     let adds = valid
         .iter()
         .map(|p| format!("Add-MpPreference -ExclusionPath {}", ps_quote_single(p)))
         .collect::<Vec<_>>()
         .join("; ");
-    let inner = format!("{}; exit 0", adds);
+    let contains = valid
+        .iter()
+        .map(|p| {
+            format!(
+                "((Get-MpPreference).ExclusionPath) -contains {}",
+                ps_quote_single(p)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" -and ");
+    let inner = format!(
+        "$r = ''; try {{ {adds}; if ({contains}) {{ $r = 'OK' }} else {{ $r = 'UNVERIFIED' }} }} catch {{ $r = 'FAIL:' + $_.Exception.Message }}; Set-Content -LiteralPath {} -Value $r -Encoding UTF8",
+        ps_quote_single(&result_file.display().to_string())
+    );
     let outer = format!(
         "try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList {} }} catch {{ exit 1602 }}",
         ps_quote_single(&format!("-NoProfile -NonInteractive -Command {}", inner))
     );
-    run_powershell(&outer).map_err(|e| {
-        if e.contains("1602") {
-            "پنجرهٔ UAC توسط شما لغو شد — استثنایی اضافه نشد".to_string()
-        } else {
-            e
-        }
-    })?;
-    // تأیید مستقل — اگر خواندن ترجیحات ممکن بود، واقعیت را می‌گوییم
-    let verify = format!(
-        "(Get-MpPreference).ExclusionPath -contains {}",
-        ps_quote_single(valid[0])
-    );
-    match run_powershell(&verify) {
-        Ok(out) if out.trim().eq_ignore_ascii_case("true") => {
-            Ok("تأیید شد — مسیرها به استثناهای Windows Defender اضافه شدند".to_string())
-        }
-        _ => Ok(
-            "درخواست اجرا شد؛ اما خواندن ترجیحات Defender برای تأیید ممکن نشد — از پنجرهٔ امنیت ویندوز می‌توانید ببینید".to_string(),
-        ),
+    let _ = std::fs::remove_file(&result_file);
+    let outcome = run_powershell(&outer);
+    let result = std::fs::read_to_string(&result_file)
+        .unwrap_or_default()
+        .trim_start_matches('\u{FEFF}')
+        .trim()
+        .to_string();
+    let _ = std::fs::remove_file(&result_file);
+
+    match outcome {
+        Err(e) if e.contains("1602") => Ok("تأیید UAC انجام نشد — استثنایی اضافه نشد.".into()),
+        Err(e) => Err(format!("اجرای فرایند امتیازی ناموفق بود: {e}")),
+        Ok(_) => match result.as_str() {
+            "OK" => Ok("استثناها اضافه شدند — اسکن Defender روی این پوشه‌ها انجام نمی‌شود.".into()),
+            "UNVERIFIED" => Ok(
+                "دستور اجرا شد اما تأیید خودکار ممکن نشد — از «امنیت ویندوز» می‌توانید ببینید."
+                    .into(),
+            ),
+            "" => Ok("تأیید UAC انجام نشد — استثنایی اضافه نشد.".into()),
+            s if s.starts_with("FAIL:") => Err(format!(
+                "افزودن استثنا ناموفق: {}",
+                s["FAIL:".len()..].trim()
+            )),
+            other => Err(format!(
+                "نتیجهٔ نامشخص از فرایند امتیازی: {other} — از «امنیت ویندوز» ببینید."
+            )),
+        },
     }
 }
 
-/// ساخت میان‌بر دسکتاپ با پرچم Run as administrator (بایت ۲۱ لینک).
+/// ساخت میان‌بر دسکتاپ با پرچم Run as administrator.
+///
+/// پرچم با بیت 0x2000 لینک‌فلگ‌ها (بایت ۲۱ |= 0x20) ست می‌شود و بلافاصله از
+/// بایت‌های فایل، فعال بودنش تأیید می‌شود. شواهد واقعی: با این پرچم، اجرای
+/// میان‌بر پنجرهٔ UAC را فعال می‌کند (ShellExecute بدون تأیید خطای
+/// ELEVATION_REQUIRED می‌دهد) — پس مکانیک درست است و پیام خروجی باید همان
+/// انتظار را روشن کند.
 pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<String, String> {
     let desktop = run_powershell("[Environment]::GetFolderPath('Desktop')")?;
     let desktop = desktop.trim().to_string();
@@ -678,7 +736,7 @@ pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<Strin
     }
     let link = Path::new(&desktop).join(format!("{link_name}.lnk"));
     let script = format!(
-        r#"$ErrorActionPreference = 'Stop'; $ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.Description = 'SubSync Studio (Run as administrator)'; $s.Save(); if (-not (Test-Path {})) {{ throw 'lnk not created' }}; $b = [System.IO.File]::ReadAllBytes({}); $b[21] = $b[21] -bor 0x20; [System.IO.File]::WriteAllBytes({}, $b); if (-not (Test-Path {})) {{ throw 'lnk missing after write' }}; exit 0"#,
+        r#"$ErrorActionPreference = 'Stop'; $ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut({}); $s.TargetPath = {}; $s.WorkingDirectory = {}; $s.Description = 'SubSync Studio (Run as administrator)'; $s.IconLocation = {}; $s.Save(); if (-not (Test-Path {})) {{ throw 'lnk not created' }}; $b = [System.IO.File]::ReadAllBytes({}); $b[21] = $b[21] -bor 0x20; [System.IO.File]::WriteAllBytes({}, $b); $c = [System.IO.File]::ReadAllBytes({}); if ((-not (Test-Path {})) -or (($c.Length -le 21) -or (($c[21] -band 0x20) -eq 0))) {{ throw 'run-as flag missing' }}; exit 0"#,
         ps_quote_single(&link.display().to_string()),
         ps_quote_single(&target_exe.display().to_string()),
         ps_quote_single(
@@ -687,6 +745,8 @@ pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<Strin
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         ),
+        ps_quote_single(&target_exe.display().to_string()),
+        ps_quote_single(&link.display().to_string()),
         ps_quote_single(&link.display().to_string()),
         ps_quote_single(&link.display().to_string()),
         ps_quote_single(&link.display().to_string()),
@@ -699,7 +759,10 @@ pub fn create_admin_shortcut(target_exe: &Path, link_name: &str) -> Result<Strin
             link.display()
         ));
     }
-    Ok(link.display().to_string())
+    Ok(
+        "میان‌بر Administrator روی دسکتاپ ساخته شد — اولین بازکردنِ آن پنجرهٔ تأیید ویندوز (UAC) را نشان می‌دهد."
+            .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------
@@ -721,6 +784,55 @@ pub fn seed_bundled_binary(
     let dest = dest_dir.join(file_name);
     std::fs::copy(source, &dest).map_err(|e| format!("کپی «{}» ناموفق: {e}", source.display()))?;
     Ok(Some(dest))
+}
+
+/// نصب silent پایتون باندل‌شدهٔ پین‌شده — فقط وقتی هیچ پایتون usable ای نیست.
+fn install_bundled_python(
+    tools_dir: &Path,
+    fetch: FetchFn,
+    sha256: Option<&str>,
+    on_progress: ProgressFn,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let python_dir = tools_dir.join("python");
+
+    let installer = tools_dir.join("cache").join("python-3.11.9-amd64.exe");
+    emit(
+        "ffsubsync",
+        "download",
+        0,
+        0,
+        "دانلود پایتون ۳٫۱۱٫۹ (بدون نیاز به admin)…",
+        on_progress,
+    );
+    if cancel.load(Ordering::SeqCst) {
+        return Err("نصب توسط کاربر لغو شد".into());
+    }
+    fetch(PYTHON_URL, &installer)?;
+    if let Some(expected) = sha256 {
+        verify_sha256(&installer, expected)?;
+    }
+    emit(
+        "ffsubsync",
+        "install",
+        0,
+        0,
+        "نصب silent پایتون (per-user)…",
+        on_progress,
+    );
+    run_silent(
+        &installer,
+        &[
+            "/quiet".to_string(),
+            "InstallAllUsers=0".to_string(),
+            "Include_pip=1".to_string(),
+            "Include_test=0".to_string(),
+            "PrependPath=0".to_string(),
+            "Shortcuts=0".to_string(),
+            format!("TargetDir={}", python_dir.display()),
+        ],
+    )?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -861,6 +973,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// کاندیداهای پایتون: اول پایتون باندل‌شدهٔ خود برنامه، بعد نصب‌های
+    /// شناخته‌شدهٔ سیستم (بدون scan PATH تا stub فریبنده اجرا نشود).
+    #[test]
+    fn python_candidates_check_bundled_then_known_system_dirs() {
+        let tools = Path::new("C:\\app\\tools");
+        let cands = python_candidates(tools);
+        assert_eq!(cands[0], Path::new("C:\\app\\tools\\python\\python.exe"));
+        let joined = cands
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(";");
+        assert!(
+            joined.contains("Programs\\Python\\Python311\\python.exe"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("Programs\\Python\\Python313\\python.exe"),
+            "{joined}"
+        );
+        // هیچ کاندیدایی از PATH نمی‌آید
+        assert!(!joined.contains("WindowsApps"));
+    }
+
+    /// پروب اجرا: فایل‌های ساختگی که `--version` را با کد صفر تمام نمی‌کنند
+    /// کنار گذاشته می‌شوند (fail-closed — هیچ مسیر ساختگی «پایتون» نیست).
+    #[test]
+    fn first_working_python_skips_non_running_candidates() {
+        let dir = std::env::temp_dir().join(format!("setup-pyprobe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("python.exe");
+        std::fs::write(&fake, b"not-python").unwrap();
+        assert!(first_working_python(&[fake]).is_none());
+        assert!(first_working_python(&[]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// لغو در install_ffmpeg قبل از هر fetch — بدون تماس شبکه.
     #[test]
     fn install_cancelled_before_fetch() {
@@ -874,5 +1024,63 @@ mod tests {
         let err = install_ffmpeg(&dir, &mut fetch, None, &mut progress, &cancel).unwrap_err();
         assert!(err.contains("لغو"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// تست زندهٔ نصب واقعی ffsubsync (شبکه + pip واقعی؛ فقط اجرای دستی با
+    /// `cargo test --lib -- --ignored live_setup`). انتظار: پایتونِ موجودِ
+    /// سیستم استفاده شود (نه دانلود نصاب) و ffs.exe نهایی اجراپذیر باشد.
+    #[test]
+    #[ignore = "نصب واقعی با دانلود pip — فقط اجرای دستی"]
+    fn live_ffsubsync_install_uses_existing_python() {
+        let dir = std::env::temp_dir().join(format!("setup-live-ffs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cancel = AtomicBool::new(false);
+        let messages = std::sync::Mutex::new(Vec::new());
+        let mut fetch = |url: &str, dest: &Path| -> Result<(), String> {
+            download_file("ffsubsync", url, None, dest, &mut noop, &cancel)
+        };
+        let mut progress = |p: SetupProgress| {
+            messages.lock().unwrap().push(p.message);
+        };
+        let inst = install_ffsubsync(
+            &dir,
+            &mut fetch,
+            Some(PYTHON_SHA256),
+            &mut progress,
+            &cancel,
+        )
+        .expect("نصب واقعی ffsubsync");
+        assert!(inst.ffs_path.is_file(), "ffs.exe باید ساخته شده باشد");
+        let all = messages.lock().unwrap().join(" | ");
+        assert!(
+            all.contains("از پایتونِ موجود"),
+            "انتظار استفاده از پایتون موجود: {all}"
+        );
+        assert!(
+            !all.contains("دانلود پایتون"),
+            "با پایتون موجود نباید نصاب پایتون دانلود شود: {all}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// تست زندهٔ میان‌بر Administrator: ساخت، تأیید پرچم از بایت‌های فایل و
+    /// پاک‌سازی (فقط اجرای دستی — روی دسکتاپ واقعی می‌نویسد).
+    #[test]
+    #[ignore = "روی دسکتاپ واقعی فایل می‌نویسد — فقط اجرای دستی"]
+    fn live_admin_shortcut_created_and_flagged() {
+        let exe = std::env::current_exe().unwrap();
+        let result = create_admin_shortcut(&exe, "SubSync Studio (test)").expect("ساخت میان‌بر");
+        assert!(result.contains("UAC"), "{result}");
+        let desktop = std::env::var_os("USERPROFILE").unwrap();
+        let link = PathBuf::from(desktop)
+            .join("Desktop")
+            .join("SubSync Studio (test).lnk");
+        assert!(link.is_file(), "{}", link.display());
+        let bytes = std::fs::read(&link).unwrap();
+        assert!(
+            bytes.len() > 21 && (bytes[21] & 0x20) != 0,
+            "پرچم run-as ست نشده"
+        );
+        let _ = std::fs::remove_file(&link);
     }
 }

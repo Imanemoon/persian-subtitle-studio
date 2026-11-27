@@ -230,13 +230,33 @@ pub fn is_elevated() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn add_defender_exclusion(paths: Vec<String>) -> Result<String, String> {
-    setup::add_defender_exclusions(&paths)
+    let result = setup::add_defender_exclusions(&paths);
+    match &result {
+        Ok(message) => crate::logging::info(
+            "setup",
+            &format!("استثنای Defender: {message} — مسیرها: {}", paths.join(", ")),
+        ),
+        Err(e) => crate::logging::warn(
+            "setup",
+            &format!(
+                "استثنای Defender ناموفق: {e} — مسیرها: {}",
+                paths.join(", ")
+            ),
+        ),
+    }
+    result
 }
 
 #[tauri::command]
 pub fn create_admin_shortcut() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("مسیر برنامهٔ جاری یافت نشد: {e}"))?;
-    setup::create_admin_shortcut(&exe, "SubSync Studio")
+    let result = std::env::current_exe()
+        .map_err(|e| format!("مسیر برنامهٔ جاری یافت نشد: {e}"))
+        .and_then(|exe| setup::create_admin_shortcut(&exe, "SubSync Studio"));
+    match &result {
+        Ok(message) => crate::logging::info("setup", &format!("میان‌بر Administrator: {message}")),
+        Err(e) => crate::logging::warn("setup", &format!("میان‌بر Administrator ناموفق: {e}")),
+    }
+    result
 }
 
 /// پیش‌آماده‌سازی ابزارهای باندل‌شده هنگام شروع — sub-rs از resources به
