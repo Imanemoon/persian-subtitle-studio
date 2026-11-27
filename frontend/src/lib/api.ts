@@ -146,6 +146,9 @@ export const api = {
     invoke<void>("reset_subtitle", { videoPath }),
   /** پخش ویدیو با پخش‌کنندهٔ پیش‌فرض ویندوز — برای قضاوت سریع سینک */
   playVideo: (videoPath: string) => invoke<void>("play_video", { path: videoPath }),
+  /** باز کردن پوشهٔ محل ذخیره در Explorer با انتخاب فایل */
+  revealInStorage: (videoPath: string) =>
+    invoke<void>("reveal_in_explorer", { path: videoPath }),
 
   /** انتخاب یک فایل زیرنویس (srt/ass/ssa/vtt) با دیالوگ بومی */
   pickSubtitle: async (): Promise<string | null> => {

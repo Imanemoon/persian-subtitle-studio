@@ -18,7 +18,8 @@ pub mod tools;
 
 pub mod archive;
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::Manager;
 
@@ -30,18 +31,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio"));
-            let data_dir = app
-                .path()
-                .app_local_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio"));
-            let log_dir = app
-                .path()
-                .app_log_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("subsync-studio").join("logs"));
+            // دادهٔ ماندگار در ProgramData — خارج از دسترسِ uninstaller per-user:
+            // تیک «حذف اپ دیتا» در حذف برنامه، ابزارها و تنظیمات را نمی‌کشد.
+            let data_root = persistent_data_root();
+            let config_dir = data_root.join("config");
+            let data_dir = data_root.join("data");
+            let log_dir = data_root.join("logs");
+
+            // مهاجرت یک‌باره از پوشه‌های identifier-محور قدیمی (Roaming/Local)
+            let legacy_config = app.path().app_config_dir().ok();
+            let legacy_data = app.path().app_local_data_dir().ok();
+            migrate_legacy_data(
+                legacy_config.as_deref(),
+                legacy_data.as_deref(),
+                &config_dir,
+                &data_dir,
+            );
+
             let _ = std::fs::create_dir_all(&config_dir);
             let _ = std::fs::create_dir_all(&data_dir);
             let _ = std::fs::create_dir_all(&log_dir);
@@ -50,7 +56,49 @@ pub fn run() {
             logging::set_app_handle(app.handle().clone());
             logging::info("app", "SubSync Studio اجرا شد");
 
-            let app_settings = settings::load(&config_dir);
+            let mut app_settings = settings::load(&config_dir);
+            // مسیر ابزارهایی که به پوشه‌های قدیمی اشاره می‌کنند به ریشهٔ جدید
+            // بازنویسی می‌شود تا بعد از حذف نسخهٔ قبلی بی‌اعتبار نشوند
+            if let Some(legacy) = legacy_data.as_deref() {
+                if rewrite_legacy_tool_paths(&mut app_settings, legacy, &data_dir) {
+                    match settings::save(&config_dir, &app_settings) {
+                        Ok(()) => {
+                            logging::info("settings", "مسیر ابزارها به ریشهٔ ماندگار بازنویسی شد")
+                        }
+                        Err(e) => logging::warn(
+                            "settings",
+                            &format!("ذخیرهٔ مسیرهای بازنویسی‌شده ناموفق: {e}"),
+                        ),
+                    }
+                }
+            }
+            // گزارش مهاجرت دادهٔ قدیمی — پس از init لاگ
+            if let Some(report) = LEGACY_MIGRATION_REPORT
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .last()
+                .cloned()
+            {
+                logging::info("app", &report);
+            }
+            if TOOLS_MIGRATION_FAILED.load(Ordering::Relaxed) {
+                logging::warn(
+                    "app",
+                    "کپی ابزارها از پوشهٔ قدیمی ناقص ماند — از معاونت راه‌اندازی دوباره نصب کنید",
+                );
+            } else {
+                let bytes = TOOLS_BYTES_MIGRATED.load(Ordering::Relaxed);
+                if bytes > 0 {
+                    logging::info(
+                        "app",
+                        &format!(
+                            "ابزارها به ریشهٔ ماندگار منتقل شدند — {}",
+                            crate::setup::fmt_bytes(bytes)
+                        ),
+                    );
+                }
+            }
 
             // بررسی سلامت ابزارهای خارجی در شروع اجرا
             let detected = tools::detect_all(&app_settings.tool_paths);
@@ -115,6 +163,7 @@ pub fn run() {
             commands::pipeline::get_pipeline_items,
             commands::pipeline::is_pipeline_active,
             commands::pipeline::play_video,
+            commands::pipeline::reveal_in_explorer,
             commands::hardsub::plan_hardsub,
             commands::hardsub::start_hardsub,
             commands::hardsub::cancel_hardsub,
@@ -153,4 +202,188 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("خطا در اجرای SubSync Studio");
+}
+
+/// ریشهٔ دادهٔ ماندگار — `%ProgramData%\SubSync Studio`.
+///
+/// پوشه‌های identifier-محور (Roaming/Local) توسط uninstaller per-user با تیک
+/// «حذف اپ دیتا» پاک می‌شوند؛ ProgramData هرگز با حذف برنامه per-user پاک
+/// نمی‌شود، پس ابزارها و تنظیمات از uninstall جان سالم می‌برند.
+fn persistent_data_root() -> std::path::PathBuf {
+    match std::env::var_os("ProgramData") {
+        Some(pd) if !pd.is_empty() => std::path::PathBuf::from(pd).join("SubSync Studio"),
+        // خارج از ویندوز/بدون ProgramData — رفتار قبلی
+        _ => {
+            if let Ok(home) = std::env::var("USERPROFILE") {
+                std::path::PathBuf::from(home)
+                    .join("AppData")
+                    .join("Local")
+                    .join("SubSyncStudio")
+            } else {
+                std::env::temp_dir().join("subsync-studio")
+            }
+        }
+    }
+}
+
+/// کپی بازگشتی دیرکتوری — فقط فایل/پوشهٔ معمولی؛ خروجی: بایت‌های کپی‌شده.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<u64, String> {
+    std::fs::create_dir_all(dst)
+        .map_err(|e| format!("ساخت پوشهٔ «{}» ناموفق: {e}", dst.display()))?;
+    let mut copied = 0u64;
+    for entry in std::fs::read_dir(src).map_err(|e| format!("خواندن «{}»: {e}", src.display()))?
+    {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("متادیتای «{}»: {e}", from.display()))?;
+        if meta.is_dir() {
+            copied += copy_dir_recursive(&from, &to)?;
+        } else if meta.is_file() {
+            std::fs::copy(&from, &to)
+                .map_err(|e| format!("کپی «{}» ناموفق: {e}", from.display()))?;
+            copied += meta.len();
+        }
+    }
+    Ok(copied)
+}
+
+/// مهاجرت یک‌بارهٔ داده از پوشه‌های قدیمی identifier-محور به ریشهٔ ماندگار.
+/// فقط وقتی مقصد خالی است و منبع موجود است؛ خطاها ناهلاک‌شده لاگ نمی‌شوند
+/// (logging هنوز init نشده) — بعد از init در صورت شکست گزارش می‌شود.
+fn migrate_legacy_data(
+    legacy_config: Option<&std::path::Path>,
+    legacy_data: Option<&std::path::Path>,
+    config_dir: &std::path::Path,
+    data_dir: &std::path::Path,
+) {
+    let new_settings = config_dir.join("settings.json");
+    if new_settings.exists() {
+        return; // مهاجرت قبلاً انجام شده
+    }
+    let mut migrated = Vec::new();
+    if let Some(legacy) = legacy_config {
+        let old = legacy.join("settings.json");
+        if old.exists() {
+            let _ = std::fs::create_dir_all(config_dir);
+            if std::fs::copy(&old, &new_settings).is_ok() {
+                migrated.push("settings.json");
+            }
+        }
+    }
+    if let Some(legacy) = legacy_data {
+        let old_tools = legacy.join("tools");
+        if old_tools.is_dir() && !data_dir.join("tools").exists() {
+            match copy_dir_recursive(&old_tools, &data_dir.join("tools")) {
+                Ok(bytes) => {
+                    migrated.push("tools");
+                    TOOLS_BYTES_MIGRATED.store(bytes, Ordering::Relaxed);
+                }
+                Err(_) => TOOLS_MIGRATION_FAILED.store(true, Ordering::Relaxed),
+            }
+        }
+    }
+    if !migrated.is_empty() {
+        LEGACY_MIGRATION_REPORT
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(format!(
+                "مهاجرت دادهٔ قدیمی انجام شد: {}",
+                migrated.join("، ")
+            ));
+    }
+}
+
+/// گزارش مهاجرت + بایت‌های کپی‌شده — بعد از init لاگ مصرف و پاک می‌شود.
+static LEGACY_MIGRATION_REPORT: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static TOOLS_BYTES_MIGRATED: AtomicU64 = AtomicU64::new(0);
+static TOOLS_MIGRATION_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// بازنویسی مسیرهای ابزار که به ریشهٔ دادهٔ قدیمی اشاره می‌کنند — خروجی:
+/// آیا تغییری رخ داد (برای save).
+fn rewrite_legacy_tool_paths(
+    settings: &mut crate::settings::Settings,
+    legacy_data_dir: &std::path::Path,
+    new_data_dir: &std::path::Path,
+) -> bool {
+    let old_prefix = legacy_data_dir.display().to_string();
+    let mut changed = false;
+    let slots = [
+        &mut settings.tool_paths.ffmpeg,
+        &mut settings.tool_paths.ffprobe,
+        &mut settings.tool_paths.subsource,
+        &mut settings.tool_paths.seven_zip,
+        &mut settings.tool_paths.ffsubsync,
+    ];
+    for slot in slots {
+        if let Some(value) = slot.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            let value = value.to_string();
+            if value.len() > old_prefix.len()
+                && value[..old_prefix.len()].eq_ignore_ascii_case(&old_prefix)
+            {
+                *slot = Some(format!(
+                    "{}{}",
+                    new_data_dir.display(),
+                    &value[old_prefix.len()..]
+                ));
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_legacy_tool_paths_rewrites_only_legacy_prefix() {
+        let mut settings = crate::settings::Settings::default();
+        let old = std::path::PathBuf::from("C:/Users/u/AppData/Local/com.subsync.studio");
+        let new = std::path::PathBuf::from("C:/ProgramData/SubSync Studio");
+        settings.tool_paths.ffmpeg =
+            Some(old.join("tools/ffmpeg/ffmpeg.exe").display().to_string());
+        settings.tool_paths.ffsubsync = Some("C:/other/ffs.exe".into());
+        assert!(rewrite_legacy_tool_paths(&mut settings, &old, &new));
+        assert_eq!(
+            settings.tool_paths.ffmpeg.as_deref().unwrap(),
+            new.join("tools/ffmpeg/ffmpeg.exe").display().to_string()
+        );
+        assert_eq!(
+            settings.tool_paths.ffsubsync.as_deref(),
+            Some("C:/other/ffs.exe")
+        );
+        // دوباره: دیگر چیزی برای بازنویسی نیست
+        assert!(!rewrite_legacy_tool_paths(&mut settings, &old, &new));
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_files_and_subdirs() {
+        let src = std::env::temp_dir().join(format!("mig-src-{}", std::process::id()));
+        let dst = std::env::temp_dir().join(format!("mig-dst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        std::fs::write(src.join("f.txt"), b"hello").unwrap();
+        std::fs::write(src.join("a").join("g.txt"), b"world").unwrap();
+        let bytes = copy_dir_recursive(&src, &dst).unwrap();
+        assert_eq!(bytes, 10);
+        assert!(dst.join("f.txt").is_file());
+        assert!(dst.join("a").join("g.txt").is_file());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn persistent_data_root_is_programdata_on_windows() {
+        if let Some(pd) = std::env::var_os("ProgramData") {
+            let root = persistent_data_root();
+            assert!(root.starts_with(std::path::PathBuf::from(pd)));
+            assert!(root.ends_with("SubSync Studio"));
+        }
+    }
 }

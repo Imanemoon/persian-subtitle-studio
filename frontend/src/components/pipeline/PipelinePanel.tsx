@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Home,
   Play,
+  FolderOpen,
   RotateCcw,
   ChevronDown,
   Film,
@@ -220,11 +221,13 @@ export function PipelinePanel({
     runActive && snapshot?.stageProgress && snapshot.stageProgress.total > 0
       ? Math.min(1, snapshot.stageProgress.completed / snapshot.stageProgress.total)
       : 0;
-  const overall =
-    stage && stageIndex >= 0
+  const finishedAll = total > 0 && completed >= total;
+  const overall = finishedAll
+    ? 1
+    : stage && stageIndex >= 0
       ? Math.min(0.99, (stageIndex + stageInnerFrac) / PIPELINE_STAGES.length)
       : total > 0
-        ? Math.min(0.99, Math.min(1, completed / total))
+        ? Math.min(0.99, completed / total)
         : 0;
   const overallPct = Math.round(overall * 100);
   const etaSeconds =
@@ -689,7 +692,14 @@ export function PipelinePanel({
                 title="پخش با پخش‌کنندهٔ پیش‌فرض ویندوز"
               >
                 <Play className="size-4" />
-                پخش ویدیو و بررسی سینک
+                پخش ویدیو
+              </Button>
+              <Button
+                onClick={() => void api.revealInStorage(playablePath)}
+                title="باز کردن پوشهٔ محل ذخیرهٔ فایل در Explorer"
+              >
+                <FolderOpen className="size-3.5" />
+                محل ذخیره
               </Button>
               <Button
                 disabled={redoBusy.has(playablePath)}
