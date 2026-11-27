@@ -442,7 +442,8 @@ pub(crate) fn execute_in_workspace(
                             idx + 1,
                             strategy.label()
                         ));
-                        failed.summary = Some(cli::bounded_tail(&attempts.join(" "), SUMMARY_MAX_CHARS));
+                        failed.summary =
+                            Some(cli::bounded_tail(&attempts.join(" "), SUMMARY_MAX_CHARS));
                         last_failure = Some(failed);
                         // تلاش بعدی ممکن است استراتژیِ متفاوت خروجی معتبر بدهد
                     }
@@ -451,11 +452,7 @@ pub(crate) fn execute_in_workspace(
             classification => {
                 let _ = std::fs::remove_file(&pass_output);
                 let (status, note) = classify_failure(classification, &run.logs);
-                attempts.push(format!(
-                    "تلاش {} [{}]: {note}",
-                    idx + 1,
-                    strategy.label()
-                ));
+                attempts.push(format!("تلاش {} [{}]: {note}", idx + 1, strategy.label()));
                 let mut failed = SyncOutcome::bare(
                     status,
                     format!("زیرنویس هم‌ترازیِ مورد اعتماد پیدا نکرد. {diagnostic_tail}"),
@@ -514,10 +511,7 @@ fn validate_candidate(
 }
 
 /// نگاشت طبقه‌بندی شکست یک تلاش به (وضعیت، یادداشت کوتاه برای خلاصهٔ تلاش‌ها).
-fn classify_failure(
-    classification: cli::RunClassification,
-    logs: &str,
-) -> (SyncStatus, String) {
+fn classify_failure(classification: cli::RunClassification, logs: &str) -> (SyncStatus, String) {
     match classification {
         // قانون ۱: marker کیفیت پایین بر کد خروج و marker آفست مقدم است
         cli::RunClassification::LowQuality => {
@@ -804,7 +798,11 @@ mod tests {
             .read_dir()
             .unwrap()
             .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().starts_with(WORKSPACE_PREFIX))
+            .find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(WORKSPACE_PREFIX)
+            })
             .expect("workspace موفق نگه داشته می‌شود")
             .path()
             .join("logs");
@@ -1159,10 +1157,9 @@ mod tests {
         std::env::var_os(env_key)
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                crate::tools::resolve_tool_path(tool_id, &Default::default())
-                    .unwrap_or_else(|| {
-                        panic!("مسیر ابزار واقعی یافت نشد — {env_key} تنظیم شود یا در PATH باشد")
-                    })
+                crate::tools::resolve_tool_path(tool_id, &Default::default()).unwrap_or_else(|| {
+                    panic!("مسیر ابزار واقعی یافت نشد — {env_key} تنظیم شود یا در PATH باشد")
+                })
             })
     }
 
@@ -1171,11 +1168,7 @@ mod tests {
             std::env::var_os(env_key)
                 .unwrap_or_else(|| panic!("{env_key} تنظیم نشده — اجرای دستی real-world است")),
         );
-        assert!(
-            path.is_file(),
-            "«{}» فایل موجودی نیست",
-            path.display()
-        );
+        assert!(path.is_file(), "«{}» فایل موجودی نیست", path.display());
         path
     }
 
