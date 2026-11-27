@@ -585,7 +585,10 @@ fn real_a2_default_settings_keep_already_synced_video_untouched() {
 
     assert_eq!(run.summary.status, PipelineStatus::Completed);
     assert!(
-        matches!(run.outcome_of(&video), ItemOutcome::UnchangedLowQuality),
+        matches!(
+            run.outcome_of(&video),
+            ItemOutcome::UnchangedLowQuality { .. }
+        ),
         "با پیش‌فرض اپ انتظار UnchangedLowQuality: {:?}",
         run.outcome_of(&video)
     );

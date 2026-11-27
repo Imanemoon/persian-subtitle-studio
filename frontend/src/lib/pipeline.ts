@@ -196,6 +196,8 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
     case "skipped":
     case "failed":
       return text(outcome.reason);
+    case "unchangedLowQuality":
+      return text(outcome.reason);
     case "needsApiKey":
       return "برای دانلود از SubSource، کلید API را در تنظیمات ذخیره کنید و دوباره تلاش کنید.";
     default:

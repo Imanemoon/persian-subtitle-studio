@@ -17,8 +17,28 @@ use crate::settings::ProcessingSettings;
 pub const LOW_QUALITY_MARKER: &str = "leaving subtitles unmodified";
 pub const OFFSET_MARKER: &str = "offset seconds:";
 
+/// سقف جستجوی آفست ffsubsync (ثانیه) — همان پیش‌فرض 0.5.1؛ صریح پین می‌شود
+/// تا رفتار بین نسخه‌ها ثابت بماند.
+pub(crate) const SEARCH_MAX_OFFSET_SECONDS: u32 = 60;
+
+/// آستانهٔ گیت کیفیت `--skip-sync-on-low-quality` (ثانیه) — همان پیش‌فرض 0.5.1
+/// (۳۰ ثانیه)؛ صریح پین می‌شود و عمداً کوچک نگه داشته می‌شود.
+///
+/// شواهد واقعی (رسانهٔ واقعی، ffsubsync 0.5.1، فایل 6CH پر موسیقی): چهار اجرای
+/// صوتی چهار «بهترین آفست» متفاوت داد (+36.11، +32.6، ‎-8.64، ‎-297.39) — اسکور
+/// خام FFT نرمال‌شده نیست و روی VAD کم‌بازده پیک‌های کاذبِ بزرگ برنده می‌شوند.
+/// هم‌ترازیِ معتبرِ زیرنویس‌به‌زیرنویس (مرجع Track داخلی) برای همان فایل آفست
+/// 0.000 با اسکور ۳ برابر داد — یعنی زیرنویس از قبل سینک بود و آفست 36.1s پیک
+/// کاذب بود. پس آفست‌های ۳۰–۶۰ ثانیه‌ایِ صوتی به‌احتمال غلط‌اند؛ راه درستشان
+/// استراتژی مرجع کامل است، نه بالا بردن این آستانه.
+pub(crate) const QUALITY_MAX_OFFSET_SECONDS: u32 = 30;
+
 /// سقف کاراکترهای diagnostic در خروجی — متن خام فرایند هرگز کامل به UI نمی‌رسد.
 pub const DIAGNOSTIC_TAIL_CHARS: usize = 2000;
+
+/// سقف کاراکترهای خلاصهٔ انسانی تلاش‌ها — خطوط کوتاهِ شمارش تلاش‌ها هستند و
+/// عملاً خیلی زیر این سقف می‌مانند.
+pub(crate) const SUMMARY_MAX_CHARS: usize = 600;
 
 /// سقف بایت‌های ثبت‌شده از هر pipe (آخرین بخش نگه داشته می‌شود).
 pub(crate) const CAPTURE_CAP_BYTES: usize = 128 * 1024;
@@ -113,6 +133,10 @@ pub struct SyncOutcome {
     pub warnings: Vec<String>,
     /// تشخیص کوتاه و محدودشده (tail لاگ) — برای لاگ/عیب‌یابی، نه نمایش کامل.
     pub diagnostic: String,
+    /// خلاصهٔ کوتاه و انسانیِ تلاش‌های چندمرحله‌ای (بدون متن خام لاگ) — فقط
+    /// وقتی بیش از یک استراتژی اجرا شده پر می‌شود؛ برای نمایش مستقیم به کاربر.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// مالکیت workspace فقط روی `Synced` — opaque، غیر-serialize، از فرانت
     /// قابل ساخت نیست؛ انتقال با `take_workspace` و حذف با `discard`.
     #[serde(skip)]
@@ -127,6 +151,7 @@ impl SyncOutcome {
             offset_seconds: None,
             warnings: Vec::new(),
             diagnostic: diagnostic.into(),
+            summary: None,
             workspace: None,
         }
     }
