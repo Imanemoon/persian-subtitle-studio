@@ -1578,6 +1578,19 @@ pub fn reset_subtitle(
             paths: vec![video_path.clone()],
         };
         let st = app2.state::<AppState>();
+        // شمارهٔ تلاش این ویدیو بالا می‌رود تا استراتژی سینک با تلاش قبل
+        // واقعاً فرق کند (حلقهٔ سینک → پخش → قضاوت کاربر → تنظیم دوباره)
+        {
+            let mut attempts = st.sync_attempts.lock().unwrap_or_else(|p| p.into_inner());
+            *attempts.entry(video_path.clone()).or_insert(0) += 1;
+            crate::logging::info(
+                "subsource",
+                &format!(
+                    "تنظیم دوبارهٔ شمارهٔ {} برای این ویدیو — استراتژی سینک می‌چرخد",
+                    attempts.get(&video_path).copied().unwrap_or(1)
+                ),
+            );
+        }
         let started = crate::commands::pipeline::start_pipeline(app2.clone(), st, input);
         SUBTITLE_RESET_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         match started {
@@ -1615,6 +1628,7 @@ mod tests {
                 crate::archive::provenance::ProvenanceRegistry::default(),
             ),
             setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sync_attempts: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

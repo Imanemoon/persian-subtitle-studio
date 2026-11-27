@@ -19,6 +19,7 @@ fn make_state() -> AppState {
         hardsub: Mutex::new(None),
         hardsub_encoder_cache: Mutex::new(None),
         setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sync_attempts: Mutex::new(std::collections::HashMap::new()),
     }
 }
 

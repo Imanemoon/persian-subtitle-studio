@@ -24,10 +24,9 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 // ساخت آرگومان‌ها
 // ---------------------------------------------------------------------
 
-/// استراتژی اجرای ffsubsync — در یک run تا دو استراتژی پشت‌سرهم امتحان می‌شوند
-/// (ترتیب در `sync_strategies`): اول مرجع کامل، بعد (در صورت فعال بودن
-/// multi_segment در تنظیمات) نمونه‌برداری صوت.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// استراتژی اجرای ffsubsync — در یک run چند استراتژی پشت‌سرهم امتحان می‌شوند
+/// (ترتیب در `sync_strategies` بر اساس تلاشِ تنظیم دوباره).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SyncStrategy {
     /// حالت کامل — ffsubsync خودش بهترین مرجع را برمی‌دارد: اگر ویدیو Track
     /// زیرنویس متنی داخلی داشته باشد، همان مرجع می‌شود (هم‌ترازیِ
@@ -35,9 +34,17 @@ pub(crate) enum SyncStrategy {
     /// شواهد واقعی: روی فایل 6CH پر موسیقی، فقط همین مسیر آفست 0.000 با اسکور
     /// ۵۶۵k داد؛ مسیر نمونه‌برداری برای همان فایل چهار آفست متفاوت و ناپایدار
     /// (+36.11، +32.6، ‎-8.64، ‎-297.39) پیدا کرده بود.
+    ///
+    /// نکتهٔ مهم: وقتی sidecar همان Track داخلی است، این مسیر به‌ناچار آفست 0
+    /// می‌دهد — اگر Track داخلیِ خودش با صوت هم‌تراز نباشد، این استراتژی
+    /// نمی‌تواند آن را ببیند؛ همان حالتی که «تنظیم دوباره» با AudioOnly جبران
+    /// می‌کند (قضاوت نهایی با پخشِ ویدیو توسط کاربر است).
     FullReference,
-    /// نمونه‌برداری چندsegmentای صوت (رفتار قبلی) — سریع‌تر اما پرنویزتر؛
-    /// فقط تلاش دوم برای نجات مواردی که مرجع کامل ردشان کرد.
+    /// مرجع صوتیِ کامل — `--vad webrtc` مسیر زیرنویسِ داخلی را دور می‌زند و
+    /// مستقیماً VAD کامل صوت را مرجع می‌گیرد: تنها شاهدِ مستقل از خودِ
+    /// زیرنویس. اولین تلاشِ «تنظیم دوباره» همین است.
+    AudioOnly,
+    /// نمونه‌برداری چندsegmentای صوت (رفتار قبلی) — سریع‌تر اما پرنویزتر.
     MultiSegmentAudio,
 }
 
@@ -46,18 +53,35 @@ impl SyncStrategy {
     pub(crate) fn label(self) -> &'static str {
         match self {
             SyncStrategy::FullReference => "مرجع کامل (Track داخلی/VAD کامل صوت)",
+            SyncStrategy::AudioOnly => "مرجع صوتی کامل",
             SyncStrategy::MultiSegmentAudio => "نمونه‌برداری صوت",
         }
     }
 }
 
-/// ترتیب استراتژی‌های یک run — مرجع کامل همیشه اول؛ نمونه‌برداری صوت فقط وقتی
-/// کاربر multi_segment را روشن گذاشته به‌عنوان تلاش دوم اضافه می‌شود.
-pub(crate) fn sync_strategies(config: &SyncConfig) -> Vec<SyncStrategy> {
-    let mut strategies = vec![SyncStrategy::FullReference];
-    if config.multi_segment {
-        strategies.push(SyncStrategy::MultiSegmentAudio);
+/// ترتیب استراتژی‌های یک run بر اساس شمارهٔ تلاش.
+///
+/// - تلاش ۰ (اجرای اولیه): مرجع کامل، بعد نمونه‌برداری صوت.
+/// - تلاش‌های «تنظیم دوباره» (≥۱): هر تلاش با استراتژیِ متفاوتی شروع می‌شود تا
+///   نتیجه با تلاش قبل واقعاً فرق کند — کاربر با «پخش ویدیو» قضاوت می‌کند و
+///   اگر راضی نبود، تنظیم دوبارهٔ بعدی استراتژی بعدی را می‌آموزد:
+///   AudioOnly → FullReference → MultiSegmentAudio → تکرار (با زیرنویس تازه).
+pub(crate) fn sync_strategies(config: &SyncConfig, attempt: u32) -> Vec<SyncStrategy> {
+    let ladder = [
+        SyncStrategy::AudioOnly,
+        SyncStrategy::FullReference,
+        SyncStrategy::MultiSegmentAudio,
+    ];
+    if attempt == 0 {
+        let mut strategies = vec![SyncStrategy::FullReference];
+        if config.multi_segment {
+            strategies.push(SyncStrategy::MultiSegmentAudio);
+        }
+        return strategies;
     }
+    let primary = ladder[(attempt as usize - 1) % ladder.len()];
+    let mut strategies = vec![primary];
+    strategies.extend(ladder.iter().copied().filter(|s| *s != primary));
     strategies
 }
 
@@ -114,6 +138,13 @@ pub fn build_cli_args(
         }
         args.push("--parallel-workers".into());
         args.push("1".into());
+    }
+
+    if strategy == SyncStrategy::AudioOnly {
+        // دور زدن مرجعِ زیرنویس داخلی: "subs_then_" حذف می‌شود و VAD صوتِ
+        // کامل تنها مرجع می‌شود — تنها شاهدِ مستقل از خودِ زیرنویس
+        args.push("--vad".into());
+        args.push("webrtc".into());
     }
 
     args.push("--output-encoding".into());
@@ -483,6 +514,15 @@ mod tests {
         ))
     }
 
+    fn sync_config() -> SyncConfig {
+        SyncConfig {
+            multi_segment: true,
+            segment_count: 6,
+            skip_intro_outro: true,
+            skip_sync_on_low_quality: true,
+        }
+    }
+
     fn request(config: SyncConfig, ffmpeg: Option<PathBuf>) -> SyncRequest {
         SyncRequest {
             video_path: PathBuf::from("C:\\media\\Show.S01E01.mkv"),
@@ -491,6 +531,7 @@ mod tests {
             ffmpeg_path: ffmpeg,
             config,
             workspace_root: None,
+            attempt: None,
         }
     }
 
@@ -684,17 +725,93 @@ mod tests {
             assert_eq!(search, "60", "{strategy:?}");
         }
 
-        // ترتیب استراتژی‌ها: مرجع کامل همیشه اول؛ نمونه‌برداری فقط با multi_segment
-        let strategies = sync_strategies(&config);
+        // ترتیب استراتژی‌ها: تلاش ۰ مرجع کامل اول؛ نمونه‌برداری فقط با multi_segment
+        let strategies = sync_strategies(&config, 0);
         assert_eq!(
             strategies,
             vec![SyncStrategy::FullReference, SyncStrategy::MultiSegmentAudio]
         );
-        let only_full = sync_strategies(&SyncConfig {
-            multi_segment: false,
-            ..config
-        });
+        let only_full = sync_strategies(
+            &SyncConfig {
+                multi_segment: false,
+                ..config
+            },
+            0,
+        );
         assert_eq!(only_full, vec![SyncStrategy::FullReference]);
+    }
+
+    /// نردبان «تنظیم دوباره»: هر تلاش با استراتژیِ متفاوتی شروع می‌شود تا
+    /// نتیجه با تلاش قبل واقعاً فرق کند؛ تلاش ۱ اول از شاهدِ مستقلِ صوتی
+    /// استفاده می‌کند (تنها منبعی که وابستگیِ خودِ زیرنویس را ندارد).
+    #[test]
+    fn redo_attempts_rotate_strategies() {
+        assert_eq!(
+            sync_strategies(&sync_config(), 1),
+            vec![
+                SyncStrategy::AudioOnly,
+                SyncStrategy::FullReference,
+                SyncStrategy::MultiSegmentAudio
+            ]
+        );
+        assert_eq!(
+            sync_strategies(&sync_config(), 2),
+            vec![
+                SyncStrategy::FullReference,
+                SyncStrategy::AudioOnly,
+                SyncStrategy::MultiSegmentAudio
+            ]
+        );
+        assert_eq!(
+            sync_strategies(&sync_config(), 3),
+            vec![
+                SyncStrategy::MultiSegmentAudio,
+                SyncStrategy::AudioOnly,
+                SyncStrategy::FullReference
+            ]
+        );
+        // تکرار با زیرنویس تازه — همان چرخه
+        assert_eq!(
+            sync_strategies(&sync_config(), 4),
+            sync_strategies(&sync_config(), 1)
+        );
+        // هر نردبان: اولویت اول یکتا و سه استراتژی متمایز
+        for attempt in 1u32..=6 {
+            let ladder = sync_strategies(&sync_config(), attempt);
+            assert_eq!(ladder.len(), 3);
+            let unique: std::collections::HashSet<_> = ladder.iter().collect();
+            assert_eq!(unique.len(), 3, "attempt {attempt}");
+        }
+    }
+
+    /// آرگومان‌های AudioOnly: پرچم `--vad webrtc` مسیر زیرنویس داخلی را دور
+    /// می‌زند و بدون پرچم‌های multi-segment اجرا می‌شود.
+    #[test]
+    fn audio_only_args_force_audio_vad() {
+        let output = PathBuf::from("C:\\tmp\\out\\Show.S01E01.fa.synced.srt");
+        let log_dir = PathBuf::from("C:\\tmp\\ws\\logs");
+        let config = SyncConfig {
+            multi_segment: true,
+            segment_count: 6,
+            skip_intro_outro: true,
+            skip_sync_on_low_quality: true,
+        };
+        let args = build_cli_args(
+            &request(config, None),
+            SyncStrategy::AudioOnly,
+            &output,
+            &log_dir,
+        );
+        let texts: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let idx = texts.iter().position(|t| t == "--vad").unwrap();
+        assert_eq!(texts[idx + 1], "webrtc");
+        assert!(!texts.iter().any(|t| t.contains("multi-segment")));
+        assert!(texts
+            .windows(2)
+            .any(|w| w[0] == "--quality-max-offset-seconds" && w[1] == "30"));
     }
 
     #[test]

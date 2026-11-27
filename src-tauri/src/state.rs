@@ -318,6 +318,9 @@ pub struct AppState {
     pub hardsub_encoder_cache: Mutex<Option<(String, crate::hardsub::encoder::VideoEncoder)>>,
     /// لغو نصب خودکار ابزارها (معاونت راه‌اندازی) — مستقل از registry عملیات.
     pub setup_cancel: Arc<AtomicBool>,
+    /// شمارش «تنظیم دوباره»ی هر ویدیو (per-session) — استراتژی سینک هر تلاش
+    /// با تلاش قبل واقعاً فرق کند تا حلقهٔ «سینک → پخش → قضاوت کاربر» همگرا شود.
+    pub sync_attempts: Mutex<std::collections::HashMap<String, u32>>,
 }
 
 /// مسیرهای دائمی برنامه (تنظیمات، لاگ و داده‌های محلی ابزارها).

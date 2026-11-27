@@ -144,6 +144,8 @@ export const api = {
   /** تنظیم دوباره: حذف زیرنویس فعلی + دانلود تازه + سینک خودکار از اول */
   resetSubtitle: (videoPath: string) =>
     invoke<void>("reset_subtitle", { videoPath }),
+  /** پخش ویدیو با پخش‌کنندهٔ پیش‌فرض ویندوز — برای قضاوت سریع سینک */
+  playVideo: (videoPath: string) => invoke<void>("play_video", { path: videoPath }),
 
   /** انتخاب یک فایل زیرنویس (srt/ass/ssa/vtt) با دیالوگ بومی */
   pickSubtitle: async (): Promise<string | null> => {

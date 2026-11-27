@@ -164,6 +164,7 @@ fn make_state() -> Arc<AppState> {
         hardsub_encoder_cache: Mutex::new(None),
         archive_provenance: Mutex::new(crate::archive::provenance::ProvenanceRegistry::default()),
         setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sync_attempts: Mutex::new(std::collections::HashMap::new()),
     })
 }
 

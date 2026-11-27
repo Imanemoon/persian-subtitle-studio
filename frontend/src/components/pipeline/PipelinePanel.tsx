@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Captions,
   CheckCircle2,
   Home,
+  Play,
   RotateCcw,
   ChevronDown,
   Film,
@@ -12,7 +13,7 @@ import {
   Square,
   XCircle,
 } from "lucide-react";
-import { Badge, Button, Card, Modal, ProgressBar } from "../ui";
+import { Badge, Button, Card, Modal } from "../ui";
 import { usePipeline } from "../../hooks/usePipeline";
 import { useHardsub } from "../../hooks/useHardsub";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -100,6 +101,9 @@ export function PipelinePanel({
   // ---- تنظیم دوباره زیرنویس ----
   const [redoBusy, setRedoBusy] = useState<Set<string>>(new Set());
   const [redoError, setRedoError] = useState<string | null>(null);
+  // ---- ETA اجرا: شروع run + تیک یک‌ثانیه‌ای برای به‌روزرسانی تقریب ----
+  const runStartedAt = useRef<number | null>(null);
+  const [, setEtaTick] = useState(0);
   // خطای reset که داخل thread بک‌اند رخ داده (تا موفقیت دانلود هیچ چیز
   // خراب نمی‌شود) — از رویداد ops:done همان‌جا به کاربر نشان داده می‌شود
   useEffect(() => {
@@ -119,6 +123,13 @@ export function PipelinePanel({
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    runStartedAt.current = runActive ? (runStartedAt.current ?? Date.now()) : null;
+    if (!runActive) return;
+    const timer = setInterval(() => setEtaTick((x) => x + 1), 1000);
+    return () => clearInterval(timer);
+  }, [runActive]);
 
   if (!snapshot && !summary) return null;
 
@@ -199,12 +210,42 @@ export function PipelinePanel({
   const completed = summary
     ? summary.items.filter((item) => item.outcome !== null).length
     : (snapshot?.completed ?? 0);
-  const remaining = Math.max(0, total - completed);
   const active = runActive ? (snapshot?.active ?? 0) : 0;
   const cancelling = Boolean(snapshot?.cancelling);
-  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   const stageIndex = stage ? PIPELINE_STAGES.indexOf(stage) : -1;
   const waiting = status === "awaitingDecision" || decision !== null;
+
+  // ---- یک عدد برای کل پیشرفت: (اندیس مرحله + کسر درون‌مرحله‌ای) / کل مراحل ----
+  const stageInnerFrac =
+    runActive && snapshot?.stageProgress && snapshot.stageProgress.total > 0
+      ? Math.min(1, snapshot.stageProgress.completed / snapshot.stageProgress.total)
+      : 0;
+  const overall =
+    stage && stageIndex >= 0
+      ? Math.min(0.99, (stageIndex + stageInnerFrac) / PIPELINE_STAGES.length)
+      : total > 0
+        ? Math.min(0.99, Math.min(1, completed / total))
+        : 0;
+  const overallPct = Math.round(overall * 100);
+  const etaSeconds =
+    runActive && runStartedAt.current !== null && overall >= 0.05 && !waiting
+      ? Math.max(
+          0,
+          Math.round(((Date.now() - runStartedAt.current) * (1 - overall)) / overall / 1000),
+        )
+      : null;
+  const playablePath = items.find((item) => redoEligible(item))?.videoPath ?? null;
+  const summaryHeadline = summary
+    ? summary.status === "cancelled"
+      ? "اجرا متوقف شد"
+      : summary.status === "failed"
+        ? "اجرا ناموفق بود"
+        : counts && counts.synced + counts.softsubbed + counts.alreadySynced > 0
+          ? "سینک انجام شد"
+          : counts && counts.unchangedLowQuality > 0
+            ? "سینک انجام نشد — کیفیت پایین"
+            : "پایان اجرا"
+    : "";
 
   return (
     <div className="w-full max-w-4xl space-y-5">
@@ -291,92 +332,48 @@ export function PipelinePanel({
           </div>
         )}
 
-        {/* ریل فشردهٔ مراحل — فقط یک نگاه، بدون ادعای تکمیل نتیجه */}
-        {stage && !summary && (
+        {/* یک نوار، یک درصد بولد، یک زمان تقریبی */}
+        {(stage || total > 0) && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
+            <div className="flex items-baseline justify-between">
               <span className="font-semibold text-ink-1">
-                {PIPELINE_STAGE_LABELS[stage]}
+                {stage ? PIPELINE_STAGE_LABELS[stage] : ""}
               </span>
-              <span className="text-ink-3">
-                مرحلهٔ {faNum(stageIndex + 1)} از {faNum(PIPELINE_STAGES.length)}
-              </span>
-            </div>
-            <div className="flex gap-1.5" role="img" aria-label="مراحل اجرا">
-              {PIPELINE_STAGES.map((s, index) => (
-                <span
-                  key={s}
-                  title={PIPELINE_STAGE_LABELS[s]}
-                  className={`h-2 flex-1 rounded-full ${
-                    index < stageIndex
-                      ? "bg-emerald-500/70"
-                      : index === stageIndex
-                        ? cancelling
-                          ? "bg-red-400"
-                          : "animate-pulse bg-accent"
-                        : "bg-zinc-800"
-                  }`}
-                />
-              ))}
-            </div>
-            {/* شمارش واقعی آیتم‌های مرحلهٔ جاری — بک‌اند منبع حقیقت است */}
-            {runActive &&
-              !waiting &&
-              snapshot?.stageProgress &&
-              snapshot.stageProgress.total > 0 && (
-                <StageProgressBar
-                  completed={snapshot.stageProgress.completed}
-                  total={snapshot.stageProgress.total}
-                />
+              {etaSeconds !== null && (
+                <span className="text-xs text-ink-3">
+                  حدوداً {formatEta(etaSeconds)} دیگر
+                </span>
               )}
-          </div>
-        )}
-
-        {/* شمارش صادقانه — تکمیل فقط با outcome نهایی */}
-        {total > 0 && (
-          <div className="space-y-2">
-            {(runActive || status === "completed") && (
-              <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="h-3 flex-1 overflow-hidden rounded-full bg-zinc-800">
                 <div
-                  className="h-full rounded-full bg-accent transition-all"
-                  style={{ width: `${percent}%` }}
+                  className={`h-full rounded-full transition-all ${
+                    cancelling ? "bg-red-400" : "bg-accent"
+                  }`}
+                  style={{ width: `${overallPct}%` }}
                 />
               </div>
-            )}
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-sm text-ink-3">
-              {status === "cancelled" ? (
-                <span>
-                  {faNum(completed)} از {faNum(total)} فایل بسته شد — اجرا پیش از
-                  تکمیل متوقف شد
-                </span>
-              ) : status === "failed" ? (
-                <span>
-                  {faNum(completed)} از {faNum(total)} فایل به نتیجه رسید — اجرا
-                  ناموفق ماند
-                </span>
-              ) : (
-                <>
-                  <span>{faNum(percent)}٪ بر اساس نتیجهٔ نهایی</span>
-                  <span>
-                    {faNum(completed)} از {faNum(total)} تکمیل شد
-                    {" · "}
-                    {faNum(remaining)} باقی‌مانده
-                    {active > 0 ? ` · ${faNum(active)} در حال پردازش` : ""}
-                  </span>
-                </>
-              )}
+              <span className="min-w-14 text-end text-lg font-bold text-ink-1">
+                {faNum(overallPct)}٪
+              </span>
             </div>
-            {runActive && !waiting && (
-              <div className="space-y-1 pt-0.5">
-                <ProgressBar active={!cancelling} />
-                <p className="text-xs leading-5 text-ink-3">
-                  {cancelling
-                    ? "در حال خاتمهٔ امن عملیات جاری…"
-                    : stage === "syncing"
-                      ? "FFsubsync درصد دقیقی گزارش نمی‌کند؛ تا پایان هر فایل نشانگر فعالیت ادامه دارد."
-                      : "این مرحله ممکن است چند دقیقه طول بکشد."}
+            {status === "cancelled" ? (
+              <p className="text-xs text-ink-3">
+                اجرا پیش از تکمیل متوقف شد — فایل‌های اصلی دست‌نخورده ماندند.
+              </p>
+            ) : status === "failed" ? (
+              <p className="text-xs text-ink-3">اجرا ناموفق ماند — جزئیات در پایین صفحه.</p>
+            ) : (
+              currentFile &&
+              !summary && (
+                <p
+                  dir="ltr"
+                  className="truncate text-start font-mono text-[11px] text-ink-3"
+                >
+                  {fileBaseName(currentFile)}
                 </p>
-              </div>
+              )
             )}
           </div>
         )}
@@ -473,8 +470,8 @@ export function PipelinePanel({
         </Card>
       )}
 
-      {/* ---- فایل‌ها: خلاصه در یک نگاه، جزئیات فقط در صورت نیاز ---- */}
-      {items.length > 0 && (
+      {/* ---- فایل‌ها: فقط برای اجراهای چندفایلی — تک‌فایلی از خلاصه بالا پوشش داده می‌شود ---- */}
+      {items.length > 1 && (
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between border-b border-line px-5 py-3">
             <span className="text-sm font-semibold text-ink-1">فایل‌های این اجرا</span>
@@ -652,13 +649,21 @@ export function PipelinePanel({
         )}
       </Modal>
 
-      {/* ---- خلاصهٔ پایان: شمارش واقعی + موارد نیازمند بررسی ---- */}
+      {/* ---- خلاصهٔ پایان: تیتر واضح + اقدام بعدی (پخش/تنظیم دوباره) ---- */}
       {summary && !runActive && counts && (
         <Card className="space-y-4 p-6">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-base font-semibold text-ink-1">
-              خلاصهٔ اجرا ({formatDuration(summary.durationMs)})
-            </span>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <StatusIcon status={summary.status} cancelling={false} />
+              <div>
+                <div className="text-base font-bold text-ink-1">
+                  {summaryHeadline}
+                </div>
+                <div className="text-xs text-ink-3">
+                  {formatDuration(summary.durationMs)}
+                </div>
+              </div>
+            </div>
             <Badge
               tone={
                 summary.status === "completed"
@@ -672,7 +677,34 @@ export function PipelinePanel({
             </Badge>
           </div>
 
-          <CountsGrid counts={counts} />
+          {items.length > 1 && <CountsGrid counts={counts} />}
+
+          {/* قضاوت سریع کاربر: پخش کن؛ سینک درست نبود تنظیم دوباره این بار
+              با روش متفاوتی سینک می‌کند */}
+          {playablePath && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface-2/60 p-3">
+              <Button
+                variant="primary"
+                onClick={() => void api.playVideo(playablePath)}
+                title="پخش با پخش‌کنندهٔ پیش‌فرض ویندوز"
+              >
+                <Play className="size-4" />
+                پخش ویدیو و بررسی سینک
+              </Button>
+              <Button
+                disabled={redoBusy.has(playablePath)}
+                loading={redoBusy.has(playablePath)}
+                onClick={() => void redoSubtitle(playablePath)}
+                title="دانلود تازه + سینک با روش متفاوت"
+              >
+                <RotateCcw className="size-3.5" />
+                تنظیم دوباره
+              </Button>
+              <span className="text-[11px] leading-5 text-ink-3">
+                سینک درست نیست؟ تنظیم دوباره این بار با روش دیگری سینک می‌کند.
+              </span>
+            </div>
+          )}
 
           <NeedsReview summary={summary} />
 
@@ -742,30 +774,6 @@ export function PipelinePanel({
   );
 }
 
-/** نوار پیشرفت مرحلهٔ جاری — فقط از شمارش واقعی بک‌اند؛ هیچ درصدی ساختگی نیست. */
-function StageProgressBar({
-  completed,
-  total,
-}: {
-  completed: number;
-  total: number;
-}) {
-  const clamped = Math.min(completed, total);
-  const percent = Math.round((clamped / total) * 100);
-  return (
-    <div className="space-y-1">
-      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
-        <div
-          className="h-full rounded-full bg-emerald-500/60 transition-all"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <div className="text-xs text-ink-3">
-        در این مرحله: {faNum(clamped)} از {faNum(total)} فایل
-      </div>
-    </div>
-  );
-}
 
 function StatusIcon({
   status,
@@ -883,6 +891,11 @@ function ItemRow({
     item.placedPath != null ||
     (item.sidecarConflicts?.length ?? 0) > 0;
   const hardsubbable = hardsubEligible(item);
+  // نتیجهٔ موفق سینک/SoftSub — دکمهٔ «پخش» برای قضاوت سریع کاربر
+  const playable =
+    item.outcome?.kind === "synced" ||
+    item.outcome?.kind === "softSubbed" ||
+    item.outcome?.kind === "alreadySynced";
 
   return (
     <details className="group border-b border-line/60 last:border-0">
@@ -909,6 +922,21 @@ function ItemRow({
         >
           {item.videoFileName}
         </span>
+        {playable && (
+          <Button
+            variant="ghost"
+            className="h-7 shrink-0 px-2.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              void api.playVideo(item.videoPath);
+            }}
+            title="پخش با پخش‌کنندهٔ پیش‌فرض ویندوز — قضاوت سریع سینک"
+          >
+            <Play className="size-3.5" />
+            پخش
+          </Button>
+        )}
         {showActions && hardsubbable && (
           <Button
             variant="ghost"
@@ -1060,4 +1088,14 @@ function CountsGrid({ counts }: { counts: PipelineCounts }) {
       ))}
     </div>
   );
+}
+
+/** نمایش تقریبی زمان باقی‌مانده — از نسبت elapsed/progress واقعی، بدون دقت کاذب. */
+function formatEta(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${faNum(s)} ثانیه`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${faNum(m)} دقیقه`;
+  const h = Math.floor(m / 60);
+  return `${faNum(h)} ساعت و ${faNum(m % 60)} دقیقه`;
 }

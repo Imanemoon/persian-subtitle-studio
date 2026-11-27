@@ -88,6 +88,7 @@ pub fn run() {
                 hardsub: Mutex::new(None),
                 hardsub_encoder_cache: Mutex::new(None),
                 setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                sync_attempts: Mutex::new(std::collections::HashMap::new()),
             });
             app.manage(AppPaths {
                 config_dir,
@@ -113,6 +114,7 @@ pub fn run() {
             commands::pipeline::get_pipeline_state,
             commands::pipeline::get_pipeline_items,
             commands::pipeline::is_pipeline_active,
+            commands::pipeline::play_video,
             commands::hardsub::plan_hardsub,
             commands::hardsub::start_hardsub,
             commands::hardsub::cancel_hardsub,

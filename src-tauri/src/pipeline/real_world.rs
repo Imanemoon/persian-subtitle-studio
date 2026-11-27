@@ -118,6 +118,7 @@ impl RealHarness {
             hardsub: Mutex::new(None),
             hardsub_encoder_cache: Mutex::new(None),
             setup_cancel: Arc::new(AtomicBool::new(false)),
+            sync_attempts: Mutex::new(std::collections::HashMap::new()),
         });
         RealHarness {
             state,
