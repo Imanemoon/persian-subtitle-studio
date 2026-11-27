@@ -506,7 +506,12 @@ mod tests {
             skip_intro_outro: true,
             skip_sync_on_low_quality: false,
         };
-        let args = build_cli_args(&request(off, None), SyncStrategy::FullReference, &output, &log_dir);
+        let args = build_cli_args(
+            &request(off, None),
+            SyncStrategy::FullReference,
+            &output,
+            &log_dir,
+        );
         let texts: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -524,7 +529,9 @@ mod tests {
         assert!(!texts.iter().any(|t| t.contains("segment-count")));
         assert!(!texts.iter().any(|t| t.contains("skip-intro-outro")));
         assert!(!texts.iter().any(|t| t.contains("parallel-workers")));
-        assert!(!texts.iter().any(|t| t.contains("quality-max-offset-seconds")));
+        assert!(!texts
+            .iter()
+            .any(|t| t.contains("quality-max-offset-seconds")));
         assert!(!texts.iter().any(|t| t.contains("ffmpeg-path")));
         // دامنهٔ جستجو همیشه صریح پین می‌شود — مستقل از تنظیم کیفیت
         assert!(texts
@@ -681,10 +688,7 @@ mod tests {
         let strategies = sync_strategies(&config);
         assert_eq!(
             strategies,
-            vec![
-                SyncStrategy::FullReference,
-                SyncStrategy::MultiSegmentAudio
-            ]
+            vec![SyncStrategy::FullReference, SyncStrategy::MultiSegmentAudio]
         );
         let only_full = sync_strategies(&SyncConfig {
             multi_segment: false,
