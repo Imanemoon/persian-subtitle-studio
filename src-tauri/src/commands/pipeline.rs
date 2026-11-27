@@ -170,6 +170,31 @@ pub fn play_video(path: String) -> Result<(), String> {
         .map_err(|e| format!("باز کردن ویدیو با پخش‌کنندهٔ پیش‌فرض ناموفق بود: {e}"))
 }
 
+/// باز کردن پوشهٔ محل ذخیره در Explorer با انتخاب خود فایل — برای دسترسی
+/// سریع به خروجی (ویدیو/زیرنویس) کنار بقیهٔ فایل‌ها.
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let target = std::path::PathBuf::from(path.trim());
+    if !target.is_file() {
+        return Err("فایل روی دیسک پیدا نشد.".into());
+    }
+    crate::logging::info(
+        "pipeline",
+        &format!("نمایش محل ذخیره در Explorer: {}", target.display()),
+    );
+    let mut cmd = std::process::Command::new("explorer");
+    cmd.args(["/select,", &target.display().to_string()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("باز کردن Explorer ناموفق بود: {e}"))
+}
+
 /// لغو pipeline فعال — فقط control منتشرشده؛ بدون pipeline → false.
 /// worker پس از wake، آیتم‌های باز را Cancelled می‌کند و pipeline:done می‌فرستد.
 #[tauri::command]

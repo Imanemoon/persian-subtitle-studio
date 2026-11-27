@@ -1504,7 +1504,29 @@ pub fn reset_subtitle(
         };
 
         let outcome = (|| -> Result<String, String> {
-            // ۱) دانلود زیرنویس تازه به staging — منبع فعلی هنوز دست‌نخورده
+            // شمارهٔ تلاش این ویدیو بالا می‌رود تا استراتژی سینک با تلاش قبل
+            // واقعاً فرق کند (حلقهٔ سینک → پخش → قضاوت کاربر → تنظیم دوباره)؛
+            // از اولِ تلاش زیاد می‌شود حتی اگر دانلود شکست بخورد
+            {
+                let st = app2.state::<AppState>();
+                let mut attempts = st.sync_attempts.lock().unwrap_or_else(|p| p.into_inner());
+                *attempts.entry(video_path.clone()).or_insert(0) += 1;
+                crate::logging::info(
+                    "subsource",
+                    &format!(
+                        "تنظیم دوبارهٔ شمارهٔ {} برای این ویدیو — استراتژی سینک می‌چرخد",
+                        attempts.get(&video_path).copied().unwrap_or(1)
+                    ),
+                );
+            }
+            // ۱) حذف زیرنویس‌های قبلی — «قبل» از دانلود؛ وگرنه گاردِ
+            // «sidecar در لحظهٔ اجرا ظاهر شد» دانلودِ تلاش دوم را بلاک می‌کند
+            // (تنظیم دوبارهٔ دوم همیشه شکست می‌خورد). دیالوگ تأیید هم دقیقاً
+            // همین قرارداد را به کاربر اعلام می‌کند.
+            emit("حذف زیرنویس قبلی…");
+            let removed = delete_stale_sidecars(&video2);
+
+            // ۲) دانلود زیرنویس تازه به staging
             emit("دانلود زیرنویس تازه از SubSource…");
             let st = app2.state::<AppState>();
             let (staged, source, staging_paths) =
@@ -1515,10 +1537,6 @@ pub fn reset_subtitle(
                     p.video_path = video_path.clone();
                     emit(&p.message);
                 })?;
-
-            // ۲) حذف زیرنویس‌های قبلی — فقط پس از موفقیت دانلود
-            emit("حذف زیرنویس قبلی…");
-            let removed = delete_stale_sidecars(&video2);
 
             // ۳) جانمایی زیرنویس تازه هم‌نام ویدیو
             emit("جانمایی زیرنویس تازه…");
@@ -1578,19 +1596,6 @@ pub fn reset_subtitle(
             paths: vec![video_path.clone()],
         };
         let st = app2.state::<AppState>();
-        // شمارهٔ تلاش این ویدیو بالا می‌رود تا استراتژی سینک با تلاش قبل
-        // واقعاً فرق کند (حلقهٔ سینک → پخش → قضاوت کاربر → تنظیم دوباره)
-        {
-            let mut attempts = st.sync_attempts.lock().unwrap_or_else(|p| p.into_inner());
-            *attempts.entry(video_path.clone()).or_insert(0) += 1;
-            crate::logging::info(
-                "subsource",
-                &format!(
-                    "تنظیم دوبارهٔ شمارهٔ {} برای این ویدیو — استراتژی سینک می‌چرخد",
-                    attempts.get(&video_path).copied().unwrap_or(1)
-                ),
-            );
-        }
         let started = crate::commands::pipeline::start_pipeline(app2.clone(), st, input);
         SUBTITLE_RESET_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         match started {
