@@ -145,6 +145,31 @@ pub fn resolve_pipeline_decision(
     Ok(())
 }
 
+/// پخش ویدیو با پخش‌کنندهٔ پیش‌فرض ویندوز — برای قضاوت سریع سینک توسط کاربر.
+/// هیچ فرایند دیگری اجرا نمی‌شود؛ فقط `start` روی فایل با association خودش.
+#[tauri::command]
+pub fn play_video(path: String) -> Result<(), String> {
+    let video = std::path::PathBuf::from(path.trim());
+    if !video.is_file() {
+        return Err("فایل ویدیو روی دیسک پیدا نشد.".into());
+    }
+    crate::logging::info(
+        "pipeline",
+        &format!("پخش ویدیو با پخش‌کنندهٔ پیش‌فرض: {}", video.display()),
+    );
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/C", "start", "", &video.display().to_string()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("باز کردن ویدیو با پخش‌کنندهٔ پیش‌فرض ناموفق بود: {e}"))
+}
+
 /// لغو pipeline فعال — فقط control منتشرشده؛ بدون pipeline → false.
 /// worker پس از wake، آیتم‌های باز را Cancelled می‌کند و pipeline:done می‌فرستد.
 #[tauri::command]

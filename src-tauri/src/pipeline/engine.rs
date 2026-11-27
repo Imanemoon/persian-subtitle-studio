@@ -1222,6 +1222,12 @@ pub(crate) fn run_pipeline_body(
     match (&ffs_res, &ffmpeg_res) {
         (Ok(ffs_exe), Ok(ffmpeg_exe)) if !jobs.is_empty() => {
             let config = crate::sync::SyncConfig::from(&state.settings.lock().unwrap().processing);
+            // شمارهٔ تلاش هر ویدیو (تنظیم دوباره‌ها) — نردبان استراتژی سینک می‌چرخد
+            let attempts = state
+                .sync_attempts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
             let queue: Arc<Mutex<VecDeque<usize>>> =
                 Arc::new(Mutex::new(jobs.iter().map(|(i, _, _)| *i).collect()));
             let requests: Arc<Mutex<HashMap<usize, crate::sync::SyncRequest>>> =
@@ -1237,6 +1243,9 @@ pub(crate) fn run_pipeline_body(
                                     ffmpeg_path: Some(ffmpeg_exe.clone()),
                                     config,
                                     workspace_root: None,
+                                    attempt: attempts
+                                        .get(&video.to_string_lossy().into_owned())
+                                        .copied(),
                                 },
                             )
                         })

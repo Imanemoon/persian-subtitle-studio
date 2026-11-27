@@ -359,7 +359,7 @@ pub(crate) fn execute_in_workspace(
         return SyncOutcome::bare(SyncStatus::Cancelled, "عملیات پیش از اجرا لغو شد.");
     }
 
-    let strategies = cli::sync_strategies(&request.config);
+    let strategies = cli::sync_strategies(&request.config, request.attempt.unwrap_or(0));
     let mut attempts: Vec<String> = Vec::new();
     let mut last_failure: Option<SyncOutcome> = None;
 
@@ -617,6 +617,7 @@ mod tests {
             ffmpeg_path: None,
             config: sync_config(),
             workspace_root,
+            attempt: None,
         }
     }
 
@@ -715,6 +716,7 @@ mod tests {
                 ffmpeg_path: None,
                 config: sync_config(),
                 workspace_root: None,
+                attempt: None,
             },
             &AtomicBool::new(false),
             &mut |_| {},
@@ -1136,6 +1138,7 @@ mod tests {
             ffmpeg_path: Some(ffmpeg),
             config: sync_config(),
             workspace_root: None,
+            attempt: None,
         };
         let outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
@@ -1245,6 +1248,7 @@ mod tests {
             ffmpeg_path: Some(ffmpeg),
             config: sync_config(),
             workspace_root: None,
+            attempt: None,
         };
         let mut outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
@@ -1292,6 +1296,7 @@ mod tests {
             ffmpeg_path: Some(ffmpeg),
             config: sync_config(),
             workspace_root: None,
+            attempt: None,
         };
         let mut outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);

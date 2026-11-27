@@ -92,6 +92,10 @@ pub struct SyncRequest {
     pub config: SyncConfig,
     /// ریشهٔ ساخت workspace موقت؛ None = پوشهٔ temp سیستم.
     pub workspace_root: Option<PathBuf>,
+    /// شمارهٔ تلاش — ۰/None = اجرای اولیه؛ ≥۱ = تلاشِ تنظیم دوباره. نردبان
+    /// استراتژی‌ها طوری می‌چرخد که هر تنظیم دوباره نتیجه‌ای واقعاً متفاوت بدهد.
+    #[serde(default)]
+    pub attempt: Option<u32>,
 }
 
 /// وضعیت نهایی یک اجرا — fail-closed: بدون تأیید marker آفست + خروجی معتبر فارسی،

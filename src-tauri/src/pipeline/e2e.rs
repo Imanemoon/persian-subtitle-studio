@@ -186,6 +186,7 @@ impl Harness {
             hardsub: Mutex::new(None),
             hardsub_encoder_cache: Mutex::new(None),
             setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sync_attempts: Mutex::new(std::collections::HashMap::new()),
         });
         Harness { state, dir, tools }
     }
@@ -1868,6 +1869,7 @@ fn cancel_pipeline_spares_unrelated_single_ops() {
         hardsub: Mutex::new(None),
         hardsub_encoder_cache: Mutex::new(None),
         setup_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sync_attempts: Mutex::new(std::collections::HashMap::new()),
     });
     let single = acquire_single_op(&other_state.ops, "C:\\other\\video.mkv").expect("single");
     assert!(!single.cancel.load(Ordering::SeqCst));
