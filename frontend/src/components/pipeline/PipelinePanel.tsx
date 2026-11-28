@@ -1085,6 +1085,28 @@ function ItemRow({
           </div>
         )}
         {item.syncStrategy && <div>روش سینک: {item.syncStrategy}</div>}
+        {item.autoDecision && (
+          <div className="text-sky-300">
+            انتخاب خودکار: {item.autoDecision.chosen}
+            {item.autoDecision.reasons.length > 0 && (
+              <div className="text-ink-3">
+                دلیل: {item.autoDecision.reasons.join("؛ ")}
+              </div>
+            )}
+          </div>
+        )}
+        {item.syncAttempts && item.syncAttempts.length > 1 && (
+          <div>
+            تلاش‌های سینک ({faNum(item.syncAttempts.length)}):
+            {item.syncAttempts.map((attempt, index) => (
+              <div key={index} className="text-ink-3">
+                {attempt.accepted ? "✓" : "—"} {attempt.strategy}
+                {attempt.offsetSeconds != null &&
+                  ` — آفست ${formatOffset(attempt.offsetSeconds)}`}
+              </div>
+            ))}
+          </div>
+        )}
         {item.sidecarConflicts?.map((conflict, index) => (
           <div key={index}>
             تعارض حفظ‌شده: {fileBaseName(conflict.path)} — {conflict.reason}
@@ -1095,13 +1117,14 @@ function ItemRow({
   );
 }
 
-/** مواردی که کاربر باید ببیند: شکست، تعارض، کیفیت پایین، نیاز به کلید. */
+/** مواردی که کاربر باید ببیند: شکست، تعارض، کیفیت پایین، نیاز به بررسی/کلید. */
 function NeedsReview({ summary }: { summary: PipelineSummary }) {
   const flagged = summary.items.filter((item) => {
     switch (item.outcome?.kind) {
       case "failed":
       case "outputConflict":
       case "unchangedLowQuality":
+      case "needsReview":
       case "needsApiKey":
       case "keyStoreUnavailable":
         return true;
@@ -1143,6 +1166,7 @@ const COUNT_LABELS: Array<[keyof PipelineCounts, string]> = [
   ["synced", "سینک شد"],
   ["alreadySynced", "از قبل سینک‌شده"],
   ["unchangedLowQuality", "کیفیت پایین"],
+  ["needsReview", "نیازمند بررسی"],
   ["conflicts", "تعارض"],
   ["needsApiKey", "نیازمند کلید API"],
   ["keyStoreUnavailable", "خطای مخزن کلید"],

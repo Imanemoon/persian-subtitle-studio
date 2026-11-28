@@ -111,6 +111,26 @@ pub fn extract_for_review(
     extract_and_move(ffmpeg, video, stream_index, &target, cancel)
 }
 
+/// استخراج Track به یک فایل موقت یکتا داخل `temp_dir` — فقط برای امتیازدهی
+/// کاندیداها (workspace موقت). هیچ فایل دائمی ساخته نمی‌شود و در همهٔ
+/// مسیرهای خطا فایل موقتِ همین عملیات پاک می‌شود.
+pub fn extract_track_to_temp(
+    ffmpeg: &Path,
+    video: &Path,
+    stream_index: u32,
+    temp_dir: &Path,
+    cancel: &AtomicBool,
+) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
+    let temp = temp_dir.join(format!("track-{stream_index}-{}.srt", unique_token()));
+    match extract_to(ffmpeg, video, stream_index, &temp, cancel) {
+        Ok(validation) => Ok((temp, validation)),
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(e)
+        }
+    }
+}
+
 /// هسته مشترک: temp یکتا → اعتبارسنجی → انتقال اتمیک بدون بازنویسی.
 /// در همهٔ مسیرهای خطا فقط فایل موقتِ همین عملیات پاک می‌شود.
 fn extract_and_move(
@@ -272,6 +292,12 @@ fn unique_token() -> String {
         .unwrap_or(0);
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{:x}-{:x}", nanos, counter)
+}
+
+/// توکن یکتا برای workspace امتیازدهی Track و نام فایل گزارش — همان منبع
+/// توکن استخراج؛ عمومی برای sibling ماژول‌های pipeline.
+pub(crate) fn unique_probe_token() -> String {
+    unique_token()
 }
 
 #[cfg(test)]

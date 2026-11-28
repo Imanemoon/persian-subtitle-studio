@@ -96,6 +96,27 @@ pub struct SyncRequest {
     /// استراتژی‌ها طوری می‌چرخد که هر تنظیم دوباره نتیجه‌ای واقعاً متفاوت بدهد.
     #[serde(default)]
     pub attempt: Option<u32>,
+    /// انتخاب بهترین نتیجهٔ validated به‌جای «اولین تلاش موفق» — فقط حالت
+    /// خودکار pipeline. حالت تعاملی رفتار فعلی را حفظ می‌کند.
+    #[serde(default)]
+    pub select_best: bool,
+    /// سقف تعداد استراتژی‌های اجراشده در یک run (حالت خودکار) — None = بدون
+    /// سقف (رفتار تعاملی فعلی: هر دو استراتژی اولیه).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_strategies: Option<usize>,
+}
+
+/// رکورد یک تلاش سینک (استراتژی) — شفافیت کامل تلاش‌ها برای UI و گزارش batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAttemptRecord {
+    /// برچسب فارسی استراتژی
+    pub strategy: String,
+    pub status: SyncStatus,
+    /// آفست validated — فقط برای تلاش‌هایی که خروجی معتبر دادند
+    pub offset_seconds: Option<f64>,
+    /// آیا این تلاش به‌عنوان نتیجهٔ نهایی پذیرفته شد؟
+    pub accepted: bool,
 }
 
 /// وضعیت نهایی یک اجرا — fail-closed: بدون تأیید marker آفست + خروجی معتبر فارسی،
@@ -145,6 +166,10 @@ pub struct SyncOutcome {
     /// «تنظیم دوباره» با چه روشی سینک کرده تا حلقهٔ قضاوت شفاف باشد.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
+    /// رکورد همهٔ تلاش‌های اجراشده (استراتژی/وضعیت/آفست/پذیرش) — حتی در
+    /// حالت تعاملی؛ برای شفافیت UI و گزارش batch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<SyncAttemptRecord>,
     /// مالکیت workspace فقط روی `Synced` — opaque، غیر-serialize، از فرانت
     /// قابل ساخت نیست؛ انتقال با `take_workspace` و حذف با `discard`.
     #[serde(skip)]
@@ -161,6 +186,7 @@ impl SyncOutcome {
             diagnostic: diagnostic.into(),
             summary: None,
             strategy: None,
+            attempts: Vec::new(),
             workspace: None,
         }
     }

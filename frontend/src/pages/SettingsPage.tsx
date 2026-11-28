@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Bell, Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X } from "lucide-react";
+import { Bell, Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X, Zap } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
-import type { HardsubSettings, Settings, ToolPathOverrides } from "../types";
+import type { AutomationMode, HardsubSettings, Settings, ToolPathOverrides } from "../types";
 
 const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }[] = [
   { key: "ffmpeg", label: "FFmpeg", hint: "استخراج و بررسی رسانه" },
@@ -569,6 +569,59 @@ export function SettingsPage() {
             label="رد کردن سینک در کیفیت پایین تطبیق"
             hint="جلوگیری از خروجی نامطمئن (پیش‌فرض: فعال)"
           />
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={Zap} title="اتوماسیون" />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="automation-mode" className="w-56 shrink-0 text-sm text-ink-2">
+              حالت پردازش
+            </label>
+            <select
+              id="automation-mode"
+              value={draft.automation.mode}
+              onChange={(e) =>
+                patch({
+                  automation: {
+                    ...draft.automation,
+                    mode: e.target.value as AutomationMode,
+                  },
+                })
+              }
+              className="h-10 min-w-52 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            >
+              <option value="interactive">تعاملی — هر ابهام پرسیده می‌شود (پیش‌فرض)</option>
+              <option value="auto">خودکار — بدون توقف؛ نامطمئن‌ها «نیازمند بررسی»</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-56 shrink-0 text-sm text-ink-2">
+              حداکثر تلاش سینک خودکار (هر ویدیو)
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={draft.automation.maxSyncAttempts}
+              onChange={(e) =>
+                patch({
+                  automation: {
+                    ...draft.automation,
+                    maxSyncAttempts: Number(e.target.value) || 1,
+                  },
+                })
+              }
+              className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            />
+          </div>
+          <p className="text-xs leading-6 text-ink-3">
+            در حالت خودکار، انتخاب Track/آرشیو/زیرنویس فقط وقتی با امتیازدهی محتوا و با اطمینان
+            کافی انجام می‌شود؛ بقیه به «نیازمند بررسی» می‌روند. گیت کیفیت ۳۰ ثانیه‌ای سینک در
+            هر دو حالت پابرجاست و گزارش JSON هر اجرا در پوشهٔ دادهٔ برنامه (data/runs) ذخیره
+            می‌شود.
+          </p>
         </div>
       </Card>
 

@@ -110,6 +110,8 @@ fn pipeline_without_key_fails_download_honestly() {
     let io = PipelineIo {
         key_provider: &missing_key,
         staging_base: Some(&dir),
+        report_dir: None,
+        auto_mode: false,
     };
 
     let summary = run_pipeline_body(&state, &control, input, &sink, &io).unwrap();
@@ -169,6 +171,8 @@ fn cancelled_pipeline_returns_cancelled_error() {
     let io = PipelineIo {
         key_provider: &missing_key,
         staging_base: None,
+        report_dir: None,
+        auto_mode: false,
     };
     let err = run_pipeline_body(&state, &control, input, &sink, &io).unwrap_err();
     assert!(matches!(err, PipelineError::Cancelled));
@@ -245,6 +249,8 @@ fn live_pipeline_extracts_syncs_and_places_tagged_track() {
     let io = PipelineIo {
         key_provider: &missing_key,
         staging_base: None,
+        report_dir: None,
+        auto_mode: false,
     };
     let summary = run_pipeline_body(&state, &control, input, &sink, &io).unwrap();
 

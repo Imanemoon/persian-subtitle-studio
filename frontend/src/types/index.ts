@@ -192,6 +192,16 @@ export interface HardsubSettings {
 
 export type ExistingFileBehavior = "neverOverwrite";
 
+/** حالت اتوماسیون pipeline — قرینه settings::AutomationMode بک‌اند */
+export type AutomationMode = "interactive" | "auto";
+
+/** تنظیمات اتوماسیون — قرینه AutomationSettings بک‌اند */
+export interface AutomationSettings {
+  mode: AutomationMode;
+  /** حداکثر تلاش سینک خودکار per ویدیو (بک‌اند به ۱..۴ کلامپ می‌کند) */
+  maxSyncAttempts: number;
+}
+
 export interface Settings {
   rootFolder: string | null;
   excludedFolders: string[];
@@ -200,6 +210,7 @@ export interface Settings {
   hardsub: HardsubSettings;
   notifications: NotificationSettings;
   existingFileBehavior: ExistingFileBehavior;
+  automation: AutomationSettings;
   logsDir: string | null;
   /** معاونت راه‌اندازی یک‌بار طی شده یا پشت زده شده */
   setupCompleted: boolean;

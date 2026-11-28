@@ -204,6 +204,131 @@ fn has_cue_text(text: &str) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------
+// آمار per-cue — مادهٔ خام امتیازدهی Track (نه اعتبارسنجی)
+// ---------------------------------------------------------------------
+
+/// آمار قابل‌اندازه‌گیری cueهای یک زیرنویس متنی (SRT/VTT) — مادهٔ خام
+/// امتیازدهی Track در `scoring.rs`. هیچ تصمیمی اینجا گرفته نمی‌شود.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CueStats {
+    pub cue_count: usize,
+    /// cue بدون هیچ متن دیالوگی
+    pub empty_cue_count: usize,
+    pub persian_chars: usize,
+    /// کاراکترهای غیرفاصلهٔ کل متن cueها
+    pub text_chars: usize,
+    /// نسبت cueهای با متن تکراری (نشانِ تبلیغات/Track کپی‌شده)
+    pub duplicate_ratio: f64,
+    /// نسبت cue با متن خیلی کوتاه — نشانهٔ تبلیغ/لینک
+    pub short_ratio: f64,
+    /// بازهٔ پوشش زمانی برای سنجش coverage نسبت به طول ویدیو
+    pub first_start_ms: Option<u64>,
+    pub last_end_ms: Option<u64>,
+}
+
+static CUE_TIME_PARSE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})").unwrap());
+
+fn parse_cue_ms(text: &str) -> Option<u64> {
+    let c = CUE_TIME_PARSE_RE.captures(text)?;
+    let h: u64 = c[1].parse().ok()?;
+    let m: u64 = c[2].parse().ok()?;
+    let s: u64 = c[3].parse().ok()?;
+    let ms: u64 = c[4].parse().ok()?;
+    Some(((h * 60 + m) * 60 + s) * 1000 + ms)
+}
+
+/// آمار cueهای متن SRT/VTT — block-based: خط تایم‌کد → متن تا خط خالی.
+/// متن‌های تکراری/کوتاه برای تشخیص Track تبلیغاتی شمرده می‌شوند.
+pub(crate) fn analyze_srt_like(text: &str) -> CueStats {
+    use std::collections::HashMap;
+
+    let mut stats = CueStats::default();
+    let mut text_counts: HashMap<String, usize> = HashMap::new();
+    let mut in_cue = false;
+    let mut seen_cue_text = false;
+    let mut short_texts = 0usize;
+
+    let close_cue = |stats: &mut CueStats, seen: bool| {
+        if !seen {
+            stats.empty_cue_count += 1;
+        }
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if CUE_LINE_RE.is_match(trimmed) {
+            if in_cue {
+                close_cue(&mut stats, seen_cue_text);
+            }
+            stats.cue_count += 1;
+            if stats.first_start_ms.is_none() {
+                stats.first_start_ms = parse_cue_ms(trimmed);
+            }
+            if let Some(end) = parse_cue_ms(trimmed.split("-->").nth(1).unwrap_or("")) {
+                stats.last_end_ms = Some(stats.last_end_ms.unwrap_or(0).max(end));
+            }
+            in_cue = true;
+            seen_cue_text = false;
+            continue;
+        }
+        if !in_cue {
+            continue;
+        }
+        if trimmed.is_empty() {
+            close_cue(&mut stats, seen_cue_text);
+            in_cue = false;
+            continue;
+        }
+        if trimmed.chars().all(|c| c.is_ascii_digit()) {
+            // شمارهٔ cue بعدی — نه متن دیالوگ
+            continue;
+        }
+        seen_cue_text = true;
+        for c in trimmed.chars() {
+            if c.is_whitespace() {
+                continue;
+            }
+            stats.text_chars += 1;
+            if crate::subtitle::encoding::is_persian_char(c) {
+                stats.persian_chars += 1;
+            }
+        }
+        let normalized: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        *text_counts.entry(normalized).or_insert(0) += 1;
+        let non_ws = trimmed.chars().filter(|c| !c.is_whitespace()).count();
+        if non_ws > 0 && non_ws < 4 {
+            short_texts += 1;
+        }
+    }
+    if in_cue {
+        close_cue(&mut stats, seen_cue_text);
+    }
+
+    stats.duplicate_ratio = if stats.cue_count == 0 {
+        0.0
+    } else {
+        let extra: usize = text_counts
+            .values()
+            .filter(|c| **c > 1)
+            .map(|c| c - 1)
+            .sum();
+        extra as f64 / stats.cue_count as f64
+    };
+    stats.short_ratio = if stats.cue_count == 0 {
+        0.0
+    } else {
+        short_texts as f64 / stats.cue_count as f64
+    };
+    stats
+}
+
+/// decode امن برای تحلیل محتوا — همان قواعد decode_checked (رد باینری/encoding نامشخص).
+pub(crate) fn decode_for_analysis(bytes: &[u8]) -> Result<String, String> {
+    decode_checked(bytes).map(|(_, text)| text)
+}
+
 /// Decode با رد صریح باینری/Encoding ناشناخته.
 ///
 /// فایل‌های UTF-16 به‌خاطر BOM دارای بایت NUL هستند و مجازند؛ NUL در فایل

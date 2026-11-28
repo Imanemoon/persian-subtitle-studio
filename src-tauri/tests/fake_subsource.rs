@@ -170,6 +170,46 @@ fn write_manifest_archive(path: &Path, stem: &str, ambiguous: bool) -> bool {
     fs::write(path, &data).is_ok()
 }
 
+/// آرشیو با دو عضو هم‌اپیزود اما tier کیفیت متفاوت — برای سناریوی
+/// «انتخاب خودکار با قانون tier کیفیت» در حالت Auto (برندهٔ یکتای 1080p).
+fn write_manifest_archive_quality(path: &Path, stem: &str) -> bool {
+    let mut data = ZIP_MAGIC.to_vec();
+    let high = manifest_member(&format!("{stem}.1080p.fa.srt"), SRT_FA_MEMBER.as_bytes());
+    data.extend_from_slice(high.as_bytes());
+    data.push(b'\n');
+    let low = manifest_member(&format!("{stem}.720p.fa.srt"), SRT_FA_MEMBER.as_bytes());
+    data.extend_from_slice(low.as_bytes());
+    data.push(b'\n');
+    fs::write(path, &data).is_ok()
+}
+
+fn write_manifest_archives_quality(root: &Path) -> usize {
+    let mut videos = Vec::new();
+    collect_videos(root, &mut videos);
+    let mut written = 0;
+    for video in &videos {
+        let Some(parent) = video.parent() else {
+            continue;
+        };
+        let Some(stem) = video.file_stem() else {
+            continue;
+        };
+        let sub_dir = parent.join("sub");
+        if fs::create_dir_all(&sub_dir).is_err() {
+            continue;
+        }
+        let archive = sub_dir.join(format!(
+            "{}_sub_{}.zip",
+            stem.to_string_lossy(),
+            written + 1
+        ));
+        if write_manifest_archive_quality(&archive, &stem.to_string_lossy()) {
+            written += 1;
+        }
+    }
+    written
+}
+
 /// دانلود شبیه‌سازی‌شده با آرشیوهای manifestدار — برای تست انتها-به-انتهای
 /// pipeline که پس از دانلود، آرشیو را با fake 7-Zip باز می‌کند.
 fn write_manifest_archives(root: &Path, ambiguous: bool) -> usize {
@@ -316,6 +356,13 @@ fn main() {
     // آرشیوهای manifestدار با دو عضو منطبق — سناریوی ابهام
     if mode.as_deref() == Some("write-manifest-archives-ambiguous") {
         let n = write_manifest_archives(&target, true);
+        println!("Downloaded {n} subtitles successfully");
+        process::exit(0);
+    }
+
+    // آرشیوهای manifestدار با دو tier کیفیت — سناریوی انتخاب خودکار Auto
+    if mode.as_deref() == Some("write-manifest-archives-quality") {
+        let n = write_manifest_archives_quality(&target);
         println!("Downloaded {n} subtitles successfully");
         process::exit(0);
     }

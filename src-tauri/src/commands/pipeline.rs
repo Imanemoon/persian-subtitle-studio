@@ -114,7 +114,11 @@ pub fn start_pipeline(
         .spawn(move || {
             let state = app.state::<AppState>();
             let sink = publish_state_sink(&app);
-            crate::pipeline::enter_worker(&state, worker_run_id, &h2, c2, input, sink);
+            // مقصد گزارش batch — زیر دادهٔ ماندگار؛ پوشه تنبل در writer ساخته می‌شود
+            let report_dir = app
+                .try_state::<crate::state::AppPaths>()
+                .map(|paths| paths.data_dir.join("runs"));
+            crate::pipeline::enter_worker(&state, worker_run_id, &h2, c2, input, sink, report_dir);
         });
 
     match spawned {

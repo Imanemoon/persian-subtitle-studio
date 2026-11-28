@@ -110,6 +110,42 @@ impl Default for NotificationSettings {
     }
 }
 
+/// حالت اتوماسیون pipeline.
+///
+/// - `Interactive` (پیش‌فرض): رفتار فعلی — هر ابهام با مانع تصمیم از کاربر پرسیده می‌شود.
+/// - `Auto`: سیاست بک‌اند تصمیم‌های امنِ بااطمینان را خودش می‌گیرد (با ثبت دلیل)
+///   و موارد نامطمئن به `NeedsReview` می‌رود — هرگز حدس نامطمئن نمی‌زند.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationMode {
+    #[default]
+    Interactive,
+    Auto,
+}
+
+/// تنظیمات اتوماسیون — حداقلِ لازم برای حالت خودکار.
+///
+/// آستانه‌های امتیازدهی Track عمداً اینجا نیستند: امتیاز ۰..۱ کالیبره نیست
+/// (فقط برای ترتیب‌دهی) و عدد بی‌معنی برای کاربر فقط تنظیمات را پیچیده می‌کند؛
+/// ثابت‌های آن در `subtitle/scoring.rs` مستند شده‌اند.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutomationSettings {
+    pub mode: AutomationMode,
+    /// حداکثر تلاش سینک خودکار per ویدیو در یک اجرا — سقف بُردهٔ نردبان
+    /// استراتژی‌ها در حالت Auto (در sanitized به ۱..=۴ کلامپ می‌شود).
+    pub max_sync_attempts: u32,
+}
+
+impl Default for AutomationSettings {
+    fn default() -> Self {
+        Self {
+            mode: AutomationMode::Interactive,
+            max_sync_attempts: 2,
+        }
+    }
+}
+
 /// تنظیمات SubSource API و دانلود
 ///
 /// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
@@ -170,6 +206,8 @@ pub struct Settings {
     pub notifications: NotificationSettings,
     pub subsource: SubSourceSettings,
     pub existing_file_behavior: ExistingFileBehavior,
+    /// اتوماسیون pipeline — حالت تعاملی/خودکار + سقف تلاش سینک خودکار.
+    pub automation: AutomationSettings,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
     pub logs_dir: Option<String>,
     /// معاونت راه‌اندازی (نصب خودکار پیش‌نیازها) یک‌بار دیده شده/پشت زده شده است —
@@ -189,6 +227,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
+            automation: AutomationSettings::default(),
             logs_dir: None,
             setup_completed: false,
         }
@@ -201,6 +240,7 @@ impl Settings {
         self.processing.sync_workers = self.processing.sync_workers.clamp(1, 16);
         self.processing.segment_count = self.processing.segment_count.clamp(1, 12);
         self.hardsub.workers = self.hardsub.workers.clamp(1, 4);
+        self.automation.max_sync_attempts = self.automation.max_sync_attempts.clamp(1, 4);
 
         let mut seen = std::collections::HashSet::new();
         self.excluded_folders = self

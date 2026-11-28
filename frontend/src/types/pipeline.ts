@@ -43,6 +43,8 @@ export type ItemOutcome =
   /** زیرنویس فارسی داخل تصویر حک شده (قرارداد نام‌گذاری گروه‌های رلیز) */
   | { kind: "hardsubbed" }
   | { kind: "unchangedLowQuality"; reason?: string }
+  /** سیاست خودکار اطمینان کافی نداشت — ورودی دست‌نخورده ماند؛ دلیل صادقانه */
+  | { kind: "needsReview"; reason: string }
   | { kind: "needsApiKey" }
   | { kind: "keyStoreUnavailable"; reason: string }
   | { kind: "skipped"; reason: string }
@@ -53,6 +55,21 @@ export type ItemOutcome =
 export interface SidecarConflict {
   path: string;
   reason: string;
+}
+
+/** رکورد یک تلاش سینک — قرینه sync::SyncAttemptRecord */
+export interface SyncAttemptRecord {
+  strategy: string;
+  status: string;
+  offsetSeconds?: number;
+  accepted: boolean;
+}
+
+/** تصمیم خودکار سیاست در حالت Auto — قرینه pipeline::AutoDecisionRecord */
+export interface AutoDecisionRecord {
+  kind: DecisionKind;
+  chosen: string;
+  reasons: string[];
 }
 
 /** داده‌های قابل گزارش هر ویدیو — در JSON به‌صورت flatten داخل آیتم می‌آید. */
@@ -68,6 +85,10 @@ export interface ItemArtifacts {
   /** روش سینک برنده (مرجع صوتی/مرجع کامل/نمونه‌برداری) — شفافیت تنظیم دوباره */
   syncStrategy?: string;
   preSelection?: { archiveFileName: string; memberPath: string };
+  /** تصمیم خودکار سیاست در حالت Auto — چه انتخابی و چرا */
+  autoDecision?: AutoDecisionRecord;
+  /** رکورد تلاش‌های سینک — هر استراتژی با وضعیت و آفستش */
+  syncAttempts?: SyncAttemptRecord[];
 }
 
 /** snapshot یک ویدیو در pipeline */
@@ -89,6 +110,8 @@ export interface PipelineCounts {
   softsubbed: number;
   hardsubbed: number;
   unchangedLowQuality: number;
+  /** مواردی که سیاست خودکار تصمیم‌نگرفت — نیازمند بررسی کاربر */
+  needsReview: number;
   alreadySynced: number;
   conflicts: number;
   needsApiKey: number;
