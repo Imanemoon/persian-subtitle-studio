@@ -9,6 +9,8 @@
 //! - انتظار تصمیم‌ها: Mutex+Condvar روی `control.inner` — بدون polling.
 
 pub mod engine;
+pub mod policy;
+pub mod report;
 pub mod types;
 
 pub use types::{
@@ -17,6 +19,7 @@ pub use types::{
     PipelineStage, PipelineStatus, PipelineSummary, RegisteredOption, StageProgress, StageStatus,
 };
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -361,6 +364,7 @@ pub(crate) fn take_guard_once(handoff: &GuardHandoff) -> Result<BatchOpGuard, St
 
 /// ورود worker — گارد را از handoff می‌گیرد؛ خالی بودن handoff = fail-closed:
 /// control پاک نمی‌شود (مالک واقعی نامعلوم)؛ فقط Failed علامت می‌خورد.
+/// `report_dir` مقصد گزارش batch (از دادهٔ ماندگار) — None = بدون گزارش.
 pub(crate) fn enter_worker(
     state: &AppState,
     run_id: String,
@@ -368,6 +372,7 @@ pub(crate) fn enter_worker(
     control: Arc<PipelineControl>,
     input: PipelineInput,
     sink: SinkStore,
+    report_dir: Option<PathBuf>,
 ) {
     let guard = match take_guard_once(handoff) {
         Ok(guard) => guard,
@@ -381,7 +386,19 @@ pub(crate) fn enter_worker(
         }
     };
     let cleanup = WorkerCleanup::new(state, run_id, guard);
-    let io = engine::PipelineIo::production();
+    let auto_mode = state
+        .settings
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .automation
+        .mode
+        == crate::settings::AutomationMode::Auto;
+    let io = engine::PipelineIo {
+        key_provider: &crate::subsource::retrieve_api_key,
+        staging_base: None,
+        report_dir: report_dir.as_deref(),
+        auto_mode,
+    };
     engine::run_worker(state, &control, cleanup, input, &sink, &io);
 }
 

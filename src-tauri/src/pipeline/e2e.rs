@@ -36,6 +36,12 @@ const SRT_FA_B: &str = "1\r\n00:00:01,000 --> 00:00:04,000\r\nسلام دنیا 
 /// زیرنویس غیرفارسی — برای مسیر review تأییدنشده
 const SRT_LATIN: &str = "1\r\n00:00:01,000 --> 00:00:04,000\r\nOnly latin text here\r\n";
 
+/// زیرنویس دیالوگ غنی — ۱۲ cue متنوع؛ کاندیدای قوی برای امتیازدهی Track
+const SRT_DIALOGUE: &str = "1\r\n00:00:01,000 --> 00:00:04,000\r\nجملهٔ گفتگوی طبیعی شمارهٔ ۱ با متن کامل فارسی\r\n\r\n2\r\n00:00:05,000 --> 00:00:08,000\r\nخط دوم گفتگوی طبیعی فیلم با ادامهٔ متن\r\n\r\n3\r\n00:00:09,000 --> 00:00:12,000\r\nسطر سوم گفتگو با جملهٔ کامل فارسی\r\n\r\n4\r\n00:00:13,000 --> 00:00:16,000\r\nادامهٔ صحنه با دیالوگ طبیعی و کامل\r\n\r\n5\r\n00:00:17,000 --> 00:00:20,000\r\nجملهٔ پنجم گفتگوی طولانی و طبیعی\r\n\r\n6\r\n00:00:21,000 --> 00:00:24,000\r\nخط شش با متن کامل و معنادار فارسی\r\n\r\n7\r\n00:00:25,000 --> 00:00:28,000\r\nادامهٔ فیلم با جملهٔ هفتم گفتگو\r\n\r\n8\r\n00:00:29,000 --> 00:00:32,000\r\nجملهٔ هشتم دیالوگ طبیعی شخصیت اصلی\r\n\r\n9\r\n00:00:33,000 --> 00:00:36,000\r\nخط نهم گفتگو با متن کامل فارسی\r\n\r\n10\r\n00:00:37,000 --> 00:00:40,000\r\nجملهٔ دهم صحنه با معنای روشن\r\n\r\n11\r\n00:00:41,000 --> 00:00:44,000\r\nخط یازدهم گفتگوی کامل و طبیعی\r\n\r\n12\r\n00:00:45,000 --> 00:00:48,000\r\nپایان صحنه با جملهٔ دوازدهم فارسی\r\n\r\n";
+
+/// زیرنویس تبلیغاتی — cueهای کوتاه تکراری؛ کاندیدای ضعیف برای امتیازدهی Track
+const SRT_ADS: &str = "1\r\n00:00:01,000 --> 00:00:02,000\r\nt.me/xyz Ads\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nt.me/xyz Ads\r\n";
+
 /// sidecar خراب — بایت‌های غیرمتنِ معتبر
 const GARBAGE: &[u8] = &[0xFF, 0xFE, 0x00, 0xC3, 0x28, 0xE2, 0x80, 0x8B, 0x01, 0x02];
 
@@ -70,7 +76,7 @@ const FAKE_PROBE_SLOW_SCRIPT: &str = "@echo off\r\nsetlocal\r\nset \"TOOLS=%~dp0
 /// ffmpeg جعلی: آخرین آرگومان = مقصد؛ محتوا بر اساس mode.
 /// توجه: capture ورودی‌ها بدون `call` انجام می‌شود — `shift` داخل زیرروتین
 /// `call`-شده آرگومان‌های caller را نمی‌بیند و FIRST خالی می‌ماند.
-const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i not \"%~1\"==\"-i\" goto store\r\nshift\r\nset /a INPUTS+=1\r\nif \"%INPUTS%\"==\"1\" set \"FIRST=%~1\"\r\n:store\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\nif \"%INPUTS%\"==\"2\" goto mux\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:mux\r\necho %* > \"%TOOLS%mux_args.txt\"\r\nif /i \"%MODE%\"==\"mux-fail\" exit /b 9\r\nif /i \"%MODE%\"==\"mux-slow\" (\r\n  echo started > \"%TOOLS%mux_started.marker\"\r\n  ping -n 12 127.0.0.1 >nul\r\n)\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
+const FAKE_FFMPEG_SCRIPT: &str = "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"TOOLS=%~dp0\"\r\nset \"MODE=success\"\r\nif exist \"%TOOLS%.fake_ffmpeg_mode\" set /p MODE=<\"%TOOLS%.fake_ffmpeg_mode\"\r\nset \"LAST=\"\r\nset \"FIRST=\"\r\nset \"INPUTS=0\"\r\n:loop\r\nif \"%~1\"==\"\" goto run\r\nif /i not \"%~1\"==\"-i\" goto store\r\nshift\r\nset /a INPUTS+=1\r\nif \"%INPUTS%\"==\"1\" set \"FIRST=%~1\"\r\n:store\r\nset \"LAST=%~1\"\r\nshift\r\ngoto loop\r\n:run\r\nif \"%INPUTS%\"==\"2\" goto mux\r\nif /i \"%MODE%\"==\"fail\" exit /b 3\r\nif /i \"%MODE%\"==\"latin\" goto latin\r\nif /i \"%MODE%\"==\"by-stream\" goto by-stream\r\nif /i \"%MODE%\"==\"dialogue\" goto dialogue\r\ncopy /y \"%TOOLS%fixture_fa.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:latin\r\ncopy /y \"%TOOLS%fixture_latin.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:dialogue\r\ncopy /y \"%TOOLS%fixture_dialogue.srt\" \"%LAST%\" >nul\r\nexit /b 0\r\n:by-stream\r\necho %* | findstr /C:\"0:3\" >nul\r\nif not errorlevel 1 (\r\n  copy /y \"%TOOLS%fixture_ads.srt\" \"%LAST%\" >nul\r\n) else (\r\n  copy /y \"%TOOLS%fixture_dialogue.srt\" \"%LAST%\" >nul\r\n)\r\nexit /b 0\r\n:mux\r\necho %* > \"%TOOLS%mux_args.txt\"\r\nif /i \"%MODE%\"==\"mux-fail\" exit /b 9\r\nif /i \"%MODE%\"==\"mux-slow\" (\r\n  echo started > \"%TOOLS%mux_started.marker\"\r\n  ping -n 12 127.0.0.1 >nul\r\n)\r\ncopy /y \"%FIRST%\" \"%LAST%\" >nul\r\n>>\"%LAST%\" echo SOFTSUB-REMUX-MARKER\r\nexit /b 0\r\n";
 
 // ---------------------------------------------------------------------------
 // زیرساخت هارنس
@@ -172,6 +178,8 @@ impl Harness {
         fs::write(&ffmpeg, FAKE_FFMPEG_SCRIPT).unwrap();
         fs::write(tools.join("fixture_fa.srt"), SRT_FA_A).unwrap();
         fs::write(tools.join("fixture_latin.srt"), SRT_LATIN).unwrap();
+        fs::write(tools.join("fixture_ads.srt"), SRT_ADS).unwrap();
+        fs::write(tools.join("fixture_dialogue.srt"), SRT_DIALOGUE).unwrap();
 
         settings.tool_paths.ffprobe = Some(probe.to_string_lossy().into_owned());
         settings.tool_paths.ffmpeg = Some(ffmpeg.to_string_lossy().into_owned());
@@ -365,6 +373,19 @@ fn run_pipeline(
     key: KeyChoice,
     staging_base: Option<PathBuf>,
 ) -> Run {
+    run_pipeline_core(state, paths, resolver, key, staging_base, false, None)
+}
+
+/// نسخهٔ کامل — حالت خودکار و مقصد گزارش batch برای سناریوهای فاز اتوماسیون.
+fn run_pipeline_core(
+    state: Arc<AppState>,
+    paths: Vec<String>,
+    resolver: Option<Resolver>,
+    key: KeyChoice,
+    staging_base: Option<PathBuf>,
+    auto_mode: bool,
+    report_dir: Option<PathBuf>,
+) -> Run {
     // admission اتمیک — همان مسیر start_pipeline
     let guard = acquire_batch_op(&state.ops).expect("admission باید موفق باشد");
     let run_id = format!("run-e2e-{}", std::process::id());
@@ -417,6 +438,8 @@ fn run_pipeline(
         let io = PipelineIo {
             key_provider: &*key_fn,
             staging_base: staging_base.as_deref(),
+            report_dir: report_dir.as_deref(),
+            auto_mode,
         };
         let cleanup = WorkerCleanup::new(&state_for_worker, run_id, guard);
         run_worker(&state_for_worker, &control, cleanup, input, &sink, &io);
@@ -1906,4 +1929,282 @@ fn cancel_pipeline_spares_unrelated_single_ops() {
     }
     drop(single);
     drop(guard);
+}
+
+// ---------------------------------------------------------------------------
+// حالت خودکار (فاز ۱) — سیاست بک‌اند، NeedsReview و گزارش batch
+// ---------------------------------------------------------------------------
+
+/// اجرای pipeline در حالت خودکار — مثل فرانتِ دکمهٔ «پردازش کامل خودکار».
+fn run_auto(
+    h: &Harness,
+    videos: Vec<PathBuf>,
+    staging: Option<PathBuf>,
+    report_dir: Option<PathBuf>,
+) -> Run {
+    // موتور حالت را از settings می‌خواند؛ پرچم report فقط برای گزارش batch است —
+    // هر دو باید هم‌راستا باشند وگرنه مسیر تعاملی روی تصمیم معلق می‌ماند
+    h.state.settings.lock().unwrap().automation.mode = crate::settings::AutomationMode::Auto;
+    run_pipeline_core(
+        Arc::clone(&h.state),
+        videos
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        None,
+        KeyChoice::Missing,
+        staging,
+        true,
+        report_dir,
+    )
+}
+
+/// دو Track فارسی با محتوای متفاوت (دیالوگ در برابر تبلیغ) — سیاست خودکار
+/// باید بدون هیچ مانع تصمیم، Track دیالوگ را انتخاب کند و دلیلش را ثبت کند.
+#[test]
+fn auto_mode_scores_tracks_and_picks_best_without_decision() {
+    let h = Harness::new("auto-track-best");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("by-stream");
+    let video = h.video("Show.S01E06.mkv");
+    h.probe_json(&video, JSON_TWO_FA);
+
+    let run = run_auto(&h, vec![video.clone()], None, None);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(
+        run.decisions.is_empty(),
+        "حالت خودکار نباید مانع تصمیم بسازد: {:?}",
+        run.decisions
+    );
+    assert!(
+        matches!(run.outcome(&video), ItemOutcome::SoftSubbed { .. }),
+        "counts={:?} items={:?}",
+        run.summary.counts,
+        run.summary.items
+    );
+    let record = run
+        .artifacts(&video)
+        .auto_decision
+        .as_ref()
+        .expect("رکورد تصمیم خودکار باید ثبت شود");
+    assert!(matches!(
+        record.kind,
+        super::types::DecisionKind::EmbeddedTrack
+    ));
+    assert!(
+        record.chosen.starts_with("#2 "),
+        "برنده باید Track دیالوگ (استریم ۲) باشد: {} — دلایل: {:?}",
+        record.chosen,
+        record.reasons
+    );
+    assert!(!record.reasons.is_empty());
+}
+
+/// دو Track فارسی با محتوای تقریباً یکسان — سیاست خودکار حدس نمی‌زند؛
+/// آیتم NeedsReview می‌شود و گزارش batch ماندگار همان را نشان می‌دهد.
+#[test]
+fn auto_mode_equal_tracks_become_needs_review_with_report() {
+    let h = Harness::new("auto-track-tie");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success"); // هر دو Track خروجی یکسان می‌گیرند
+    let video = h.video("Show.S01E07.mkv");
+    h.probe_json(&video, JSON_TWO_FA);
+    let runs_dir = h.dir.join("runs");
+
+    let run = run_auto(&h, vec![video.clone()], None, Some(runs_dir.clone()));
+
+    match run.outcome(&video) {
+        ItemOutcome::NeedsReview { reason } => assert!(!reason.is_empty(), "{reason}"),
+        other => panic!("انتظار NeedsReview، دریافت: {other:?}"),
+    }
+    assert_eq!(run.summary.counts.needs_review, 1);
+    assert!(run.decisions.is_empty());
+
+    // گزارش batch ماندگار — اتمیک، با autoMode و شمارش needsReview درست
+    let report_path = runs_dir.join(format!("run-{}.json", run.summary.run_id));
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("گزارش باید نوشته شده باشد"))
+            .expect("گزارش باید JSON معتبر باشد");
+    assert_eq!(value["autoMode"], true);
+    assert_eq!(value["summary"]["counts"]["needsReview"], 1);
+    assert_eq!(
+        value["summary"]["items"][0]["outcome"]["kind"],
+        "needsReview"
+    );
+}
+
+/// آرشیو با دو tier کیفیت (1080p/720p) — سیاست خودکار تنها کاندیدای tier
+/// برتر را انتخاب می‌کند؛ در حالت تعاملی همین سناریو مانع تصمیم می‌سازد.
+#[test]
+fn auto_mode_resolves_archive_tie_by_quality_tier() {
+    let h = Harness::new("auto-archive-quality");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    h.set_subsource_tool("write-manifest-archives-quality");
+    h.set_seven_zip_tool();
+    let video = h.video("Show.S01E05.mkv");
+    h.probe_json(&video, JSON_NONE);
+
+    let run = run_auto(&h, vec![video.clone()], Some(h.dir.clone()), None);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(run.decisions.is_empty());
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    let record = run
+        .artifacts(&video)
+        .auto_decision
+        .as_ref()
+        .expect("رکورد تصمیم آرشیو");
+    assert!(matches!(
+        record.kind,
+        super::types::DecisionKind::ArchiveCandidate
+    ));
+    assert!(
+        record.chosen.contains("1080p"),
+        "برنده باید tier 1080p باشد: {}",
+        record.chosen
+    );
+}
+
+/// Track متنی بدون tag — سیاست خودکار بهترین کاندیدا را ارتقا می‌دهد
+/// (معادل تصمیم کاربر در مسیر review) و نتیجه مثل سابق سینک و SoftSub می‌شود.
+#[test]
+fn auto_mode_reviews_untagged_track_and_promotes_best() {
+    let h = Harness::new("auto-review-best");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("dialogue");
+    let video = h.video("Show.S01E08.mkv");
+    h.probe_json(&video, JSON_UNTAGGED);
+
+    let run = run_auto(&h, vec![video.clone()], None, None);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    assert!(run.decisions.is_empty());
+    assert!(
+        matches!(run.outcome(&video), ItemOutcome::SoftSubbed { .. }),
+        "counts={:?} items={:?}",
+        run.summary.counts,
+        run.summary.items
+    );
+    let record = run
+        .artifacts(&video)
+        .auto_decision
+        .as_ref()
+        .expect("رکورد تصمیم review");
+    assert!(matches!(
+        record.kind,
+        super::types::DecisionKind::ReviewTrack
+    ));
+}
+
+/// هیچ Track متنی شواهد فارسی ندارد — سیاست خودکار صادقانه skip می‌کند
+/// (معادل «بررسی محتوا فارسی تأیید نکرد» مسیر تعاملی)، نه NeedsReview بی‌مورد.
+#[test]
+fn auto_mode_no_persian_evidence_skips_honestly() {
+    let h = Harness::new("auto-review-latin");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("latin");
+    let video = h.video("Show.S01E09.mkv");
+    h.probe_json(&video, JSON_UNTAGGED);
+
+    let run = run_auto(&h, vec![video.clone()], None, None);
+
+    assert!(run.decisions.is_empty());
+    // skip امتیازدهی در stage_status می‌ماند (اطلاعاتی) — آیتم بدون زیرنویس
+    // داخلی، طبق جریان عادی به دانلود می‌رود و اینجا ابزار دانلود ندارد
+    let item = run
+        .summary
+        .items
+        .iter()
+        .find(|i| i.video_path == video.to_string_lossy())
+        .expect("آیتم در خلاصه نیست");
+    assert!(
+        matches!(&item.stage_status, StageStatus::Skipped { reason } if reason.contains("بررسی خودکار")),
+        "stage_status={:?}",
+        item.stage_status
+    );
+    assert!(matches!(run.outcome(&video), ItemOutcome::Skipped { .. }));
+    assert_eq!(run.summary.counts.needs_review, 0);
+}
+
+/// دو sidecar فارسی با کیفیت متفاوت — سیاست خودکار قوی‌تر را برمی‌دارد.
+#[test]
+fn auto_mode_picks_stronger_sidecar_without_decision() {
+    let h = Harness::new("auto-sidecar-best");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E10.mkv");
+    h.probe_json(&video, JSON_NONE);
+    // sidecar ضعیف: یک cue کوتاه؛ sidecar قوی: ۱۲ cue دیالوگ کامل
+    h.sidecar(
+        &video,
+        ".fa.srt",
+        "1\r\n00:00:01,000 --> 00:00:02,000\r\nسلام\r\n",
+    );
+    let strong: String = (1..=12)
+        .map(|i| {
+            format!(
+                "{i}\r\n00:{i:02}:00,000 --> 00:{i:02}:05,000\r\nجملهٔ گفتگوی طبیعی شمارهٔ {i} با متن کامل فارسی برای صحنهٔ فیلم\r\n\r\n"
+            )
+        })
+        .collect();
+    h.sidecar(&video, ".fa.2.srt", &strong);
+
+    let run = run_auto(&h, vec![video.clone()], None, None);
+
+    assert!(run.decisions.is_empty());
+    assert!(matches!(
+        run.outcome(&video),
+        ItemOutcome::SoftSubbed { .. }
+    ));
+    let record = run
+        .artifacts(&video)
+        .auto_decision
+        .as_ref()
+        .expect("رکورد تصمیم sidecar");
+    assert!(matches!(
+        record.kind,
+        super::types::DecisionKind::SyncSidecar
+    ));
+    assert!(
+        record.chosen.contains(".fa.2.srt"),
+        "برنده باید sidecar قوی باشد: {}",
+        record.chosen
+    );
+}
+
+/// دو sidecar تقریباً هم‌ارزش — سیاست خودکار حدس نمی‌زند؛ NeedsReview.
+#[test]
+fn auto_mode_equal_sidecars_become_needs_review() {
+    let h = Harness::new("auto-sidecar-tie");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E11.mkv");
+    h.probe_json(&video, JSON_NONE);
+    let version = |suffix: &str| -> String {
+        (1..=12)
+            .map(|i| {
+                format!(
+                    "{i}\r\n00:{i:02}:00,000 --> 00:{i:02}:05,000\r\nجملهٔ گفتگوی طبیعی شمارهٔ {i} با متن کامل فارسی {suffix}\r\n\r\n"
+                )
+            })
+            .collect()
+    };
+    h.sidecar(&video, ".fa.srt", &version("نسخهٔ اول"));
+    h.sidecar(&video, ".fa.2.srt", &version("نسخهٔ دوم"));
+
+    let run = run_auto(&h, vec![video.clone()], None, None);
+
+    assert!(run.decisions.is_empty());
+    match run.outcome(&video) {
+        ItemOutcome::NeedsReview { reason } => {
+            assert!(reason.contains("هم‌امتیاز"), "{reason}")
+        }
+        other => panic!("انتظار NeedsReview، دریافت: {other:?}"),
+    }
+    assert_eq!(run.summary.counts.needs_review, 1);
 }

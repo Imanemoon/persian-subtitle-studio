@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -16,9 +16,9 @@ use crate::subsource::plan::{
 };
 
 use super::types::{
-    DecisionKind, DecisionOptionPayload, ItemArtifacts, ItemOutcome, ItemRuntime, PipelineCounts,
-    PipelineEvent, PipelineInput, PipelineItemSnapshot, PipelineStage, PipelineStatus,
-    PipelineSummary, PreSelectionArtifact, StageStatus,
+    AutoDecisionRecord, DecisionKind, DecisionOptionPayload, ItemArtifacts, ItemOutcome,
+    ItemRuntime, PipelineCounts, PipelineEvent, PipelineInput, PipelineItemSnapshot, PipelineStage,
+    PipelineStatus, PipelineSummary, PreSelectionArtifact, StageStatus,
 };
 use super::{PipelineControl, WaitExit};
 
@@ -38,16 +38,10 @@ pub(crate) struct PipelineIo<'a> {
     pub key_provider: &'a (dyn Fn() -> Result<Option<String>, String> + Send + Sync),
     /// ریشهٔ staging دانلود — `None` = ریشهٔ volume (رفتار تولید).
     pub staging_base: Option<&'a std::path::Path>,
-}
-
-impl PipelineIo<'static> {
-    /// مقدار تولید: کلید از Credential Manager، staging روی ریشهٔ volume.
-    pub(crate) fn production() -> Self {
-        PipelineIo {
-            key_provider: &crate::subsource::retrieve_api_key,
-            staging_base: None,
-        }
-    }
+    /// پوشهٔ مقصد گزارش batch — `None` = گزارش غیرفعال (تست‌ها بدون نیاز).
+    pub report_dir: Option<&'a std::path::Path>,
+    /// آیا این run در حالت خودکار است — برای گزارش batch.
+    pub auto_mode: bool,
 }
 
 pub(crate) fn run_worker(
@@ -59,8 +53,35 @@ pub(crate) fn run_worker(
     io: &PipelineIo<'_>,
 ) {
     let lifecycle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // گزارش batch — برای هر وضعیت پایانی (موفق/لغو/شکست) یک‌بار؛ شکست
+        // نوشتن گزارش هرگز نتیجهٔ پردازش را خراب یا منکر نمی‌شود
+        let write_report = |summary: &PipelineSummary| -> Option<String> {
+            let dir = io.report_dir?;
+            match super::report::write_batch_report(dir, summary, io.auto_mode) {
+                Ok(path) => {
+                    crate::logging::info(
+                        "pipeline",
+                        &format!("گزارش batch ذخیره شد: {}", path.display()),
+                    );
+                    None
+                }
+                Err(err) => {
+                    crate::logging::warn(
+                        "pipeline",
+                        &format!("ذخیرهٔ گزارش batch ناموفق بود: {err}"),
+                    );
+                    Some(format!("ذخیرهٔ گزارش batch ناموفق بود: {err}"))
+                }
+            }
+        };
         match run_pipeline_body(state, control, input, sink, io) {
-            Ok(summary) => summary, // ۱) موفق
+            Ok(mut summary) => {
+                // ۱) موفق
+                if let Some(warning) = write_report(&summary) {
+                    summary.warnings.push(warning);
+                }
+                summary
+            }
             Err(PipelineError::Cancelled) => {
                 // ۲) لغو
                 let mut summary = summary_from_control(
@@ -75,6 +96,9 @@ pub(crate) fn run_worker(
                     }
                 }
                 summary.counts.decisions_pending = 0;
+                if let Some(warning) = write_report(&summary) {
+                    summary.warnings.push(warning);
+                }
                 summary
             }
             Err(PipelineError::Fatal(reason)) => {
@@ -82,6 +106,9 @@ pub(crate) fn run_worker(
                 let mut summary =
                     summary_from_control(control, false, PipelineStatus::Failed, reason.clone());
                 summary.warnings.push(reason);
+                if let Some(warning) = write_report(&summary) {
+                    summary.warnings.push(warning);
+                }
                 summary
             }
         }
@@ -204,6 +231,9 @@ pub(crate) fn run_pipeline_body(
     let settings = state.settings.lock().unwrap().clone();
     let sync_workers = settings.processing.sync_workers.max(1) as usize;
     let softsub_mode = settings.processing.subtitle_output_mode == SubtitleOutputMode::SoftSub;
+    // حالت اتوماسیون — Interactive رفتار فعلی، Auto سیاست بک‌اند را فعال می‌کند
+    let auto_mode = settings.automation.mode == crate::settings::AutomationMode::Auto;
+    let max_sync_attempts = settings.automation.max_sync_attempts.max(1) as usize;
     let _tools = resolve_all_tools(state);
     ensure_running()?;
 
@@ -522,29 +552,86 @@ pub(crate) fn run_pipeline_body(
 
         match analysis.status {
             AnalysisStatus::NeedsTrackSelection => {
-                // D1: چند Track متنی فارسی → انتخاب صریح کاربر
-                let payloads = text_track_options(&entry, true);
-                if payloads.is_empty() {
+                // D1: چند Track متنی فارسی — حالت خودکار: امتیازدهی محتوا با
+                // workspace موقت؛ حالت تعاملی: انتخاب صریح کاربر (رفتار فعلی)
+                if text_track_options(&entry, true).is_empty() {
                     rt.stage_status = StageStatus::Skipped {
                         reason: "Track متنی کاندیدا یافت نشد".into(),
                     };
                     emit_item(control, sink, rt);
                     continue;
                 }
-                let (vpath, vname) = (rt.video_path.clone(), rt.video_file_name.clone());
-                let payload = register_and_wait(
-                    control,
-                    sink,
-                    rt,
-                    DecisionKind::EmbeddedTrack,
-                    &vpath,
-                    &vname,
-                    payloads,
-                )?;
-                let stream_index = match &payload {
-                    DecisionOptionPayload::EmbeddedTrack { stream_index, .. } => *stream_index,
-                    _ => unreachable!("نوع تصمیم ثابت است"),
+                let mut auto_record: Option<AutoDecisionRecord> = None;
+                let mut auto_stream: Option<u32> = None;
+                if auto_mode {
+                    rt.stage_status = StageStatus::InProgress;
+                    emit_item(control, sink, rt);
+                    let fa_indexes = fa_text_stream_indexes(&entry, true);
+                    match super::policy::probe_and_score_tracks(
+                        state,
+                        Path::new(&rt.video_path),
+                        &fa_indexes,
+                        &cancel,
+                    ) {
+                        Ok(scores) => {
+                            match super::policy::decide_track(true, &scores, false) {
+                                super::policy::TrackDecision::Auto(pick) => {
+                                    auto_record = Some(AutoDecisionRecord {
+                                        kind: DecisionKind::EmbeddedTrack,
+                                        chosen: track_label(&entry, pick.stream_index),
+                                        reasons: pick.reasons,
+                                    });
+                                    auto_stream = Some(pick.stream_index);
+                                }
+                                super::policy::TrackDecision::NeedsReview { reason } => {
+                                    rt.outcome = Some(ItemOutcome::NeedsReview { reason });
+                                    counts.needs_review += 1;
+                                    rt.stage_status = StageStatus::Done;
+                                    emit_item(control, sink, rt);
+                                    continue;
+                                }
+                                // D1 با no_persian_is_skip=false هرگز این‌جا نمی‌رسد
+                                super::policy::TrackDecision::NoPersianEvidence { .. }
+                                | super::policy::TrackDecision::Ask => {}
+                            }
+                        }
+                        Err(super::policy::ProbeError::Cancelled) => {
+                            mark_all_cancelled(control);
+                            return Err(PipelineError::Cancelled);
+                        }
+                        Err(super::policy::ProbeError::Failed(err)) => {
+                            // fail-closed: امتیازدهی ناموفق = شکست صادقانه، نه حدس
+                            rt.stage_status = StageStatus::Failed {
+                                reason: format!("امتیازدهی Trackهای کاندیدا ناموفق بود: {err}"),
+                            };
+                            emit_item(control, sink, rt);
+                            continue;
+                        }
+                    }
+                }
+                let stream_index = match auto_stream {
+                    Some(index) => index,
+                    None => {
+                        let payloads = text_track_options(&entry, true);
+                        let (vpath, vname) = (rt.video_path.clone(), rt.video_file_name.clone());
+                        let payload = register_and_wait(
+                            control,
+                            sink,
+                            rt,
+                            DecisionKind::EmbeddedTrack,
+                            &vpath,
+                            &vname,
+                            payloads,
+                        )?;
+                        match &payload {
+                            DecisionOptionPayload::EmbeddedTrack { stream_index, .. } => {
+                                *stream_index
+                            }
+                            _ => unreachable!("نوع تصمیم ثابت است"),
+                        }
+                    }
                 };
+                rt.artifacts.auto_decision = auto_record;
                 // revalidation تازه — انتخاب فقط اگر Track هنوز معتبر و فارسی‌مانند است
                 let stream_ok = crate::commands::media::get_entry(state, &rt.video_path)
                     .and_then(|e| e.analysis)
@@ -592,28 +679,89 @@ pub(crate) fn run_pipeline_body(
                 emit_item(control, sink, rt);
             }
             AnalysisStatus::NoPersianTrack => {
-                // مسیر review: کاربر Track متنی را برای بررسی محتوا انتخاب می‌کند
-                let payloads = text_track_options(&entry, false);
-                if payloads.is_empty() {
+                // مسیر review — حالت خودکار: امتیازدهی همهٔ Trackهای متنی و
+                // ارتقای بهترین؛ حالت تعاملی: انتخاب کاربر (رفتار فعلی)
+                if text_track_options(&entry, false).is_empty() {
                     rt.stage_status = StageStatus::Skipped {
                         reason: "Track متنی برای بررسی نیست".into(),
                     };
                     emit_item(control, sink, rt);
                     continue;
                 }
-                let (vpath, vname) = (rt.video_path.clone(), rt.video_file_name.clone());
-                let payload = register_and_wait(
-                    control,
-                    sink,
-                    rt,
-                    DecisionKind::ReviewTrack,
-                    &vpath,
-                    &vname,
-                    payloads,
-                )?;
-                let stream_index = match &payload {
-                    DecisionOptionPayload::ReviewTrack { stream_index, .. } => *stream_index,
-                    _ => unreachable!("نوع تصمیم ثابت است"),
+                let mut auto_record: Option<AutoDecisionRecord> = None;
+                let mut auto_stream: Option<u32> = None;
+                if auto_mode {
+                    rt.stage_status = StageStatus::InProgress;
+                    emit_item(control, sink, rt);
+                    let text_indexes = fa_text_stream_indexes(&entry, false);
+                    match super::policy::probe_and_score_tracks(
+                        state,
+                        Path::new(&rt.video_path),
+                        &text_indexes,
+                        &cancel,
+                    ) {
+                        Ok(scores) => {
+                            match super::policy::decide_track(true, &scores, true) {
+                                super::policy::TrackDecision::Auto(pick) => {
+                                    auto_record = Some(AutoDecisionRecord {
+                                        kind: DecisionKind::ReviewTrack,
+                                        chosen: track_label(&entry, pick.stream_index),
+                                        reasons: pick.reasons,
+                                    });
+                                    auto_stream = Some(pick.stream_index);
+                                }
+                                super::policy::TrackDecision::NeedsReview { reason } => {
+                                    rt.outcome = Some(ItemOutcome::NeedsReview { reason });
+                                    counts.needs_review += 1;
+                                    rt.stage_status = StageStatus::Done;
+                                    emit_item(control, sink, rt);
+                                    continue;
+                                }
+                                super::policy::TrackDecision::NoPersianEvidence { reason } => {
+                                    // معادل صادقانهٔ «بررسی محتوا فارسی تأیید نکرد»
+                                    rt.stage_status = StageStatus::Skipped {
+                                        reason: format!("بررسی خودکار محتوا: {reason}"),
+                                    };
+                                    emit_item(control, sink, rt);
+                                    continue;
+                                }
+                                super::policy::TrackDecision::Ask => {}
+                            }
+                        }
+                        Err(super::policy::ProbeError::Cancelled) => {
+                            mark_all_cancelled(control);
+                            return Err(PipelineError::Cancelled);
+                        }
+                        Err(super::policy::ProbeError::Failed(err)) => {
+                            rt.stage_status = StageStatus::Failed {
+                                reason: format!("امتیازدهی Trackهای کاندیدا ناموفق بود: {err}"),
+                            };
+                            emit_item(control, sink, rt);
+                            continue;
+                        }
+                    }
+                }
+                let stream_index = match auto_stream {
+                    Some(index) => index,
+                    None => {
+                        let payloads = text_track_options(&entry, false);
+                        let (vpath, vname) = (rt.video_path.clone(), rt.video_file_name.clone());
+                        let payload = register_and_wait(
+                            control,
+                            sink,
+                            rt,
+                            DecisionKind::ReviewTrack,
+                            &vpath,
+                            &vname,
+                            payloads,
+                        )?;
+                        match &payload {
+                            DecisionOptionPayload::ReviewTrack { stream_index, .. } => {
+                                *stream_index
+                            }
+                            _ => unreachable!("نوع تصمیم ثابت است"),
+                        }
+                    }
                 };
                 match crate::commands::subtitle::run_review_blocking(
                     state,
@@ -622,6 +770,8 @@ pub(crate) fn run_pipeline_body(
                     &cancel,
                 ) {
                     Ok(review) if review.persian_confirmed => {
+                        // انتخاب خودکار فقط وقتی واقعاً فارسی تأیید شد ثبت می‌ماند
+                        rt.artifacts.auto_decision = auto_record;
                         if softsub_mode && !rt.sidecar_valid.is_empty() {
                             // زیرنویس کناری مبنای sync است؛ Review فقط Track داخلیِ
                             // قابل‌جایگزینی را تأیید می‌کند و sidecar جدید نمی‌سازد.
@@ -946,38 +1096,82 @@ pub(crate) fn run_pipeline_body(
                             }
                         }
                         APS::Ambiguous => {
-                            // D2: چند کاندیدای آرشیو → انتخاب صریح کاربر
-                            let payloads: Vec<DecisionOptionPayload> = plan_item
-                                .candidates
-                                .iter()
-                                .map(|c| DecisionOptionPayload::ArchiveCandidate {
-                                    archive_file_name: c.archive_file_name.clone(),
-                                    member_path: c.member_path.clone(),
-                                })
-                                .collect();
-                            let (vpath, vname) = (
-                                plan_item.video_path.clone(),
-                                plan_item.video_file_name.clone(),
-                            );
-                            let resolved = register_and_wait(
-                                control,
-                                sink,
-                                &mut items[pos],
-                                DecisionKind::ArchiveCandidate,
-                                &vpath,
-                                &vname,
-                                payloads,
-                            )?;
-                            if let DecisionOptionPayload::ArchiveCandidate {
-                                archive_file_name,
-                                member_path,
-                            } = &resolved
-                            {
-                                items[pos].artifacts.pre_selection = Some(PreSelectionArtifact {
-                                    archive_file_name: archive_file_name.clone(),
-                                    member_path: member_path.clone(),
-                                });
-                            }
+                            // D3: چند کاندیدای آرشیو — حالت خودکار: قانون tier
+                            // کیفیت (فقط برندهٔ یکتا انتخاب می‌شود)؛ حالت تعاملی:
+                            // انتخاب صریح کاربر (رفتار فعلی)
+                            let auto_pick: Option<
+                                Result<(String, String, AutoDecisionRecord), String>,
+                            > = if auto_mode {
+                                match super::policy::decide_archive(true, &plan_item.candidates) {
+                                    super::policy::ArchiveDecision::Auto { member, reasons } => {
+                                        let record = AutoDecisionRecord {
+                                            kind: DecisionKind::ArchiveCandidate,
+                                            chosen: member.member_path.clone(),
+                                            reasons,
+                                        };
+                                        Some(Ok((
+                                            member.archive_file_name.clone(),
+                                            member.member_path.clone(),
+                                            record,
+                                        )))
+                                    }
+                                    super::policy::ArchiveDecision::NeedsReview { reason } => {
+                                        Some(Err(reason))
+                                    }
+                                    super::policy::ArchiveDecision::Ask => None,
+                                }
+                            } else {
+                                None
+                            };
+                            let (selection, record) = match auto_pick {
+                                Some(Ok((archive_file_name, member_path, record))) => {
+                                    ((archive_file_name, member_path), Some(record))
+                                }
+                                Some(Err(reason)) => {
+                                    // اطمینان کافی نیست — نیازمند بررسی، نه حدس
+                                    items[pos].outcome = Some(ItemOutcome::NeedsReview { reason });
+                                    counts.needs_review += 1;
+                                    items[pos].stage_status = StageStatus::Done;
+                                    sync_one(control, sink, &items, pos);
+                                    continue;
+                                }
+                                None => {
+                                    let payloads: Vec<DecisionOptionPayload> = plan_item
+                                        .candidates
+                                        .iter()
+                                        .map(|c| DecisionOptionPayload::ArchiveCandidate {
+                                            archive_file_name: c.archive_file_name.clone(),
+                                            member_path: c.member_path.clone(),
+                                        })
+                                        .collect();
+                                    let (vpath, vname) = (
+                                        plan_item.video_path.clone(),
+                                        plan_item.video_file_name.clone(),
+                                    );
+                                    let resolved = register_and_wait(
+                                        control,
+                                        sink,
+                                        &mut items[pos],
+                                        DecisionKind::ArchiveCandidate,
+                                        &vpath,
+                                        &vname,
+                                        payloads,
+                                    )?;
+                                    let selection = match &resolved {
+                                        DecisionOptionPayload::ArchiveCandidate {
+                                            archive_file_name,
+                                            member_path,
+                                        } => (archive_file_name.clone(), member_path.clone()),
+                                        _ => unreachable!("نوع تصمیم ثابت است"),
+                                    };
+                                    (selection, None)
+                                }
+                            };
+                            items[pos].artifacts.pre_selection = Some(PreSelectionArtifact {
+                                archive_file_name: selection.0,
+                                member_path: selection.1,
+                            });
+                            items[pos].artifacts.auto_decision = record;
                             items[pos].stage_status = StageStatus::Done;
                         }
                         APS::NoMatch => {
@@ -1147,35 +1341,72 @@ pub(crate) fn run_pipeline_body(
                             counts.skipped += 1;
                         }
                         _ => {
-                            // ≥۲ → تصمیم صریح کاربر — هیچ انتخاب خودکار
-                            rt.stage_status = StageStatus::NeedsDecision {
-                                decision_id: String::new(),
+                            // ≥۲ → حالت خودکار: امتیازدهی محتوای فایل‌ها؛ حالت
+                            // تعاملی: تصمیم صریح کاربر — هیچ انتخاب خودکار
+                            let mut auto_record: Option<AutoDecisionRecord> = None;
+                            let mut chosen: Option<PathBuf> = None;
+                            if auto_mode {
+                                rt.stage_status = StageStatus::InProgress;
+                                emit_item(control, sink, rt);
+                                let scores = super::policy::score_sidecar_files(
+                                    &normal,
+                                    video_duration_secs(state, &video, &cancel),
+                                );
+                                match super::policy::decide_sync_sidecar(true, &scores) {
+                                    super::policy::SidecarDecision::Auto { path, reasons } => {
+                                        auto_record = Some(AutoDecisionRecord {
+                                            kind: DecisionKind::SyncSidecar,
+                                            chosen: path.display().to_string(),
+                                            reasons,
+                                        });
+                                        chosen = Some(path);
+                                    }
+                                    super::policy::SidecarDecision::NeedsReview { reason } => {
+                                        rt.outcome = Some(ItemOutcome::NeedsReview { reason });
+                                        counts.needs_review += 1;
+                                        rt.stage_status = StageStatus::Done;
+                                        emit_item(control, sink, rt);
+                                        continue;
+                                    }
+                                    super::policy::SidecarDecision::Ask => {}
+                                }
+                            }
+                            let chosen = match chosen {
+                                Some(path) => path,
+                                None => {
+                                    rt.stage_status = StageStatus::NeedsDecision {
+                                        decision_id: String::new(),
+                                    };
+                                    emit_item(control, sink, rt);
+                                    let payloads = normal
+                                        .iter()
+                                        .map(|p| DecisionOptionPayload::SidecarPath {
+                                            path: p.clone(),
+                                        })
+                                        .collect();
+                                    let (vpath, vname) =
+                                        (rt.video_path.clone(), rt.video_file_name.clone());
+                                    let resolved = register_and_wait(
+                                        control,
+                                        sink,
+                                        rt,
+                                        DecisionKind::SyncSidecar,
+                                        &vpath,
+                                        &vname,
+                                        payloads,
+                                    )?;
+                                    match &resolved {
+                                        DecisionOptionPayload::SidecarPath { path } => path.clone(),
+                                        _ => unreachable!("نوع تصمیم ثابت است"),
+                                    }
+                                }
                             };
-                            emit_item(control, sink, rt);
-                            let payloads = normal
-                                .iter()
-                                .map(|p| DecisionOptionPayload::SidecarPath { path: p.clone() })
-                                .collect();
-                            let (vpath, vname) =
-                                (rt.video_path.clone(), rt.video_file_name.clone());
-                            let resolved = register_and_wait(
-                                control,
-                                sink,
-                                rt,
-                                DecisionKind::SyncSidecar,
-                                &vpath,
-                                &vname,
-                                payloads,
-                            )?;
-                            let chosen = match &resolved {
-                                DecisionOptionPayload::SidecarPath { path } => path.clone(),
-                                _ => unreachable!("نوع تصمیم ثابت است"),
-                            };
-                            // revalidation تازه — fail-closed
+                            // revalidation تازه — fail-closed (انتخاب خودکار هم معاف نیست)
                             let validation = crate::subtitle::validation::validate_file(&chosen);
                             if chosen.is_file() && validation.valid && validation.has_persian {
                                 rt.artifacts.sync_input_path =
                                     Some(chosen.to_string_lossy().into_owned());
+                                rt.artifacts.auto_decision = auto_record;
                                 rt.stage_status = StageStatus::Done;
                             } else {
                                 rt.stage_status = StageStatus::Failed {
@@ -1246,6 +1477,14 @@ pub(crate) fn run_pipeline_body(
                                     attempt: attempts
                                         .get(&video.to_string_lossy().into_owned())
                                         .copied(),
+                                    // حالت خودکار: سقف تلاش + انتخاب بهترین نتیجهٔ
+                                    // validated با شواهد کیفیت؛ تعاملی: رفتار فعلی
+                                    select_best: auto_mode,
+                                    max_strategies: if auto_mode {
+                                        Some(max_sync_attempts)
+                                    } else {
+                                        None
+                                    },
                                 },
                             )
                         })
@@ -1363,6 +1602,8 @@ pub(crate) fn run_pipeline_body(
                     rt.stage_status = StageStatus::Done;
                     continue;
                 };
+                // رکورد تلاش‌های سینک — شفافیت کامل استراتژی‌ها برای UI/گزارش
+                let sync_attempt_records = outcome.attempts.clone();
                 let video = PathBuf::from(&rt.video_path);
                 if softsub_mode {
                     let mux_result = (|| {
@@ -1408,6 +1649,7 @@ pub(crate) fn run_pipeline_body(
                             });
                             rt.artifacts.offset_seconds = completed_outcome.offset_seconds;
                             rt.artifacts.sync_strategy = completed_outcome.strategy.clone();
+                            rt.artifacts.sync_attempts = sync_attempt_records;
                             counts.softsubbed += 1;
                             rt.stage_status = StageStatus::Done;
                             refresh_entry_siblings(state, &rt.video_path, sink);
@@ -1459,6 +1701,7 @@ pub(crate) fn run_pipeline_body(
                         rt.artifacts.placed_path = Some(target.to_string_lossy().into_owned());
                         rt.artifacts.offset_seconds = placed_outcome.offset_seconds;
                         rt.artifacts.sync_strategy = placed_outcome.strategy.clone();
+                        rt.artifacts.sync_attempts = sync_attempt_records;
                         counts.synced += 1;
                         refresh_entry_siblings(state, &rt.video_path, sink);
                     }
@@ -1957,13 +2200,7 @@ fn text_track_options(entry: &VideoEntry, fa_only: bool) -> Vec<DecisionOptionPa
                 .filter(|stream| stream.kind == SubtitleKind::Text)
                 .filter(|stream| !fa_only || (stream.persian_candidate || stream.persian_confirmed))
                 .map(|stream| {
-                    let label = format!(
-                        "#{} {} [{}] {}",
-                        stream.stream_index,
-                        stream.codec_name,
-                        stream.language.clone().unwrap_or_else(|| "?".into()),
-                        stream.title.clone().unwrap_or_else(|| "—".into())
-                    );
+                    let label = track_label(entry, stream.stream_index);
                     if fa_only {
                         DecisionOptionPayload::EmbeddedTrack {
                             stream_index: stream.stream_index,
@@ -1979,6 +2216,62 @@ fn text_track_options(entry: &VideoEntry, fa_only: bool) -> Vec<DecisionOptionPa
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// ایندکس‌های Track متنی با فلگ tag فارسی — ورودی probe امتیازدهی سیاست.
+fn fa_text_stream_indexes(entry: &VideoEntry, fa_only: bool) -> Vec<(u32, bool)> {
+    entry
+        .analysis
+        .as_ref()
+        .map(|analysis| {
+            analysis
+                .streams
+                .iter()
+                .filter(|stream| stream.kind == SubtitleKind::Text)
+                .filter(|stream| !fa_only || (stream.persian_candidate || stream.persian_confirmed))
+                .map(|stream| {
+                    let tagged = stream.persian_candidate || stream.persian_confirmed;
+                    (stream.stream_index, tagged)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// برچسب نمایشی یک Track — همان قالب گزینه‌های تصمیم؛ رکورد تصمیم خودکار
+/// هم با همین قالب گزارش می‌شود تا کاربر ببیند چه انتخابی شده.
+fn track_label(entry: &VideoEntry, stream_index: u32) -> String {
+    entry
+        .analysis
+        .as_ref()
+        .and_then(|analysis| {
+            analysis
+                .streams
+                .iter()
+                .find(|stream| stream.stream_index == stream_index)
+        })
+        .map(|stream| {
+            format!(
+                "#{} {} [{}] {}",
+                stream.stream_index,
+                stream.codec_name,
+                stream.language.clone().unwrap_or_else(|| "?".into()),
+                stream.title.clone().unwrap_or_else(|| "—".into())
+            )
+        })
+        .unwrap_or_else(|| format!("#{stream_index}"))
+}
+
+/// طول ویدیو با ffprobe — برای متریک coverage امتیازدهی sidecar؛
+/// نبودِ ابزار/طول فقط fallback به شمارش cue است، نه شکست.
+fn video_duration_secs(state: &AppState, video: &Path, cancel: &AtomicBool) -> Option<f64> {
+    crate::commands::media::resolve_tool(state, "ffprobe")
+        .ok()
+        .and_then(|ffprobe| {
+            crate::media::ffprobe::probe_duration(&ffprobe, video, cancel)
+                .ok()
+                .flatten()
+        })
 }
 
 /// ثبت تصمیم + انتظار — با به‌روزرسانی وضعیت آیتم و رویدادها.

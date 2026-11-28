@@ -4,9 +4,11 @@ import {
   Check,
   FileVideo,
   Folder,
+  Hand,
   Loader2,
   Square,
   X,
+  Zap,
 } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { usePipeline } from "../hooks/usePipeline";
@@ -23,7 +25,7 @@ import {
 } from "../lib/videoFiles";
 import { api } from "../lib/api";
 import { faNum } from "../lib/format";
-import type { PageId, ScanSummary, VideoEntry } from "../types";
+import type { AutomationMode, PageId, ScanSummary, VideoEntry } from "../types";
 import metropolisBg from "../assets/bg/metropolis.svg";
 import projectorBg from "../assets/bg/projector.svg";
 import noirBg from "../assets/bg/noir.svg";
@@ -98,6 +100,8 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     library,
     startScan,
     stopScan,
+    settings,
+    reloadSettings,
   } = useAppData();
   const {
     runActive,
@@ -218,6 +222,22 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       void startPipeline(folderDetection.paths).then((ok) => {
         if (ok) setFocus("pipeline");
       });
+    }
+  };
+
+  // حالت پردازش — بک‌اند در شروعِ هر run از settings می‌خواند؛ فرانت فقط فرمان می‌دهد
+  const automationMode: AutomationMode = settings?.automation.mode ?? "interactive";
+  const setAutomationMode = async (mode: AutomationMode) => {
+    if (!settings || settings.automation.mode === mode) return;
+    setNotice(null);
+    try {
+      await api.saveSettings({
+        ...settings,
+        automation: { ...settings.automation, mode },
+      });
+      await reloadSettings();
+    } catch (e) {
+      setNotice(`ذخیرهٔ حالت پردازش ناموفق بود: ${errorText(e)}`);
     }
   };
 
@@ -348,6 +368,44 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           {notice && (
             <p className="mt-4 text-center text-sm text-amber-400/90">{notice}</p>
           )}
+
+          {/* حالت پردازش — تصمیم با بک‌اند است؛ این فقط فرمان ذخیرهٔ تنظیم است */}
+          <div className="mt-6">
+            <div className="mb-2 text-center text-xs text-ink-3">حالت پردازش</div>
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-surface-1/60 p-1.5">
+              <button
+                onClick={() => void setAutomationMode("interactive")}
+                disabled={!settings}
+                title="هر ابهام با دیالوگ از شما پرسیده می‌شود"
+                className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  automationMode === "interactive"
+                    ? "bg-accent text-zinc-950"
+                    : "text-ink-2 hover:bg-surface-2 hover:text-ink-1"
+                }`}
+              >
+                <Hand className="size-4" />
+                تعاملی
+              </button>
+              <button
+                onClick={() => void setAutomationMode("auto")}
+                disabled={!settings}
+                title="بدون توقف پردازش می‌کند؛ موارد نامطمئن به «نیازمند بررسی» می‌روند"
+                className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  automationMode === "auto"
+                    ? "bg-accent text-zinc-950"
+                    : "text-ink-2 hover:bg-surface-2 hover:text-ink-1"
+                }`}
+              >
+                <Zap className="size-4" />
+                پردازش کامل خودکار
+              </button>
+            </div>
+            <p className="mt-2 text-center text-[11px] leading-5 text-ink-3">
+              {automationMode === "auto"
+                ? "حالت خودکار: تصمیم‌های امن با امتیازدهی محتوا گرفته می‌شوند؛ فقط موارد نامطمئن برای بررسی می‌مانند."
+                : "حالت تعاملی: هر جا ابهام باشد، پردازش متوقف و تصمیم از شما پرسیده می‌شود."}
+            </p>
+          </div>
 
           {/* کنش اصلی — pipeline فقط با فایل‌های واقعی شروع می‌شود */}
           <button

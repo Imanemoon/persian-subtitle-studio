@@ -90,6 +90,8 @@ export function outcomeBadge(outcome: ItemOutcome): {
       return { tone: "success", label: "از قبل سینک‌شده" };
     case "unchangedLowQuality":
       return { tone: "info", label: "کیفیت پایین — دست‌نخورده ماند" };
+    case "needsReview":
+      return { tone: "warn", label: "نیازمند بررسی" };
     case "needsApiKey":
       return { tone: "warn", label: "نیازمند کلید API" };
     case "keyStoreUnavailable":
@@ -197,6 +199,8 @@ export function outcomeDetail(outcome: ItemOutcome): string | null {
     case "failed":
       return text(outcome.reason);
     case "unchangedLowQuality":
+      return text(outcome.reason);
+    case "needsReview":
       return text(outcome.reason);
     case "needsApiKey":
       return "برای دانلود از SubSource، کلید API را در تنظیمات ذخیره کنید و دوباره تلاش کنید.";

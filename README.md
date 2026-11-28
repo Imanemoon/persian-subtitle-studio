@@ -63,10 +63,25 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 - workspace موقت مقیدشده (بدون فرار از ریشه، بدون بازنویسی ورودی‌ها)
 
 ### pipeline یک‌پارچه با شفافیت کامل
-- ۱۲ مرحله با موانع (barrier) — هرجا ابهام باشد، برنامه می‌ایستد و با دیالوگ از شما می‌پرسد
+- ۱۲ مرحله با موانع (barrier) — در حالت تعاملی، هرجا ابهام باشد برنامه می‌ایستد و با دیالوگ از شما می‌پرسد
 - هر پیشرفت، شمارش و نتیجه از دادهٔ واقعی بک‌اند می‌آید — **هیچ درصد یا موفقیتی ساختگی نیست**
-- لغو امن در هر لحظه، بازیابی کامل وضعیت پس از بستن/reload برنامه، تعارض‌ها و خطاها
+- لغو امن در هر لحظه، بازیابی وضعیت پس از بستن/reload برنامه، تعارض‌ها و خطاها
   با دلیل صادقانه
+
+### پردازش کامل خودکار (حالت جدید)
+- سوییچ «تعاملی / پردازش کامل خودکار» روی صفحهٔ خانه — پیش‌فرض همان رفتار تعاملی است
+- در حالت خودکار، موتور pipeline تصمیم‌های عادی را خودش می‌گیرد و فقط موارد
+  نامطمئن به وضعیت صادقانهٔ **«نیازمند بررسی»** می‌روند — هرگز حدسِ کم‌اطمینان نمی‌زند
+- **امتیازدهی Track فارسی**: بین چند کاندیدا با متریک‌های قابل‌اندازه‌گیری انتخاب
+  می‌شود — تراکم حروف فارسی، پوشش زمانی نسبت به طول ویدیو، سلامت cue
+  (خالی/تکراری/تبلیغ‌مانند) و بونوس کوچک tag؛ tag فارسی به‌تنهایی هرگز کافی نیست
+  و امتیاز فقط برای ترتیب‌دهی است، نه «درصد اطمینان»
+- **سینک تطبیقی با سقف تلاش**: نردبان استراتژی‌ها تا سقف قابل‌تنظیم اجرا و بهترین
+  کاندیدای تأییدشده با شواهد کیفیت انتخاب می‌شود — توافق آفست دو تلاش مستقل
+  قوی‌ترین شاهد است؛ گیت کیفیت ۳۰ ثانیه‌ای در هر دو حالت پابرجاست و رکورد همهٔ
+  تلاش‌ها در جزئیات هر فایل دیده می‌شود
+- **گزارش JSON هر اجرا** در `%ProgramData%\SubSync Studio\data\runs` — نتیجهٔ هر
+  فایل، دلایل تصمیم‌های خودکار و تلاش‌های سینک؛ اتمیک و بدون بازنویسی
 
 ## 📥 نصب
 
@@ -153,6 +168,12 @@ subtitles for your entire video library:
 - **Match & extract subtitle archives** (zip/rar/7z) with episode matching and conflict preservation
 - **Sync subtitle timing with FFsubsync** — multi-segment alignment, intro/outro skip,
   low-quality protection, validated offset shown in the UI
+- **Fully automatic mode** — one switch on the home screen: the backend policy layer
+  resolves safe decisions with explainable Persian-track scoring (density, duration
+  coverage, cue health) and sends only genuinely uncertain cases to an honest
+  "Needs review" state; bounded sync retries pick the best validated candidate by
+  quality evidence (agreement first, never just the smallest offset), and every batch
+  writes a JSON report under the persistent data directory
 - **Place `<name>.fa.synced.srt` next to each video** — strict no-overwrite policy
 - **First-run setup wizard** auto-installs all prerequisites (ffmpeg, Python, ffsubsync —
   version-pinned, SHA256-verified, per-user, no admin required)

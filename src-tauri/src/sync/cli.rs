@@ -85,6 +85,18 @@ pub(crate) fn sync_strategies(config: &SyncConfig, attempt: u32) -> Vec<SyncStra
     strategies
 }
 
+/// نردبان حالت خودکار — به‌ترتیب اعتماد: مرجع کامل (هم‌ترازی زیرنویس‌به‌زیرنویس
+/// — پایدارترین)، مرجع صوتی کامل (شاهد مستقل از خود زیرنویس)، نمونه‌برداری صوت
+/// (پرنویزترین). اجرای انتخاب-بهترین روی خروجی‌های validated این نردبان انجام
+/// می‌شود؛ ترتیب فقط اولویتِ پیش‌فرض است نه حکم نهایی.
+pub(crate) fn sync_strategies_auto(config: &SyncConfig) -> Vec<SyncStrategy> {
+    let mut strategies = vec![SyncStrategy::FullReference, SyncStrategy::AudioOnly];
+    if config.multi_segment {
+        strategies.push(SyncStrategy::MultiSegmentAudio);
+    }
+    strategies
+}
+
 /// آرگومان‌های دقیق ffs — هر آرگومان جدا، بدون هیچ shell.
 ///
 /// قرارداد تأییدشدهٔ ffsubsync 0.5.1:
@@ -532,6 +544,8 @@ mod tests {
             config,
             workspace_root: None,
             attempt: None,
+            select_best: false,
+            max_strategies: None,
         }
     }
 

@@ -18,7 +18,9 @@
 mod cli;
 pub mod types;
 
-pub use types::{SyncConfig, SyncOutcome, SyncProgress, SyncRequest, SyncStage, SyncStatus};
+pub use types::{
+    SyncAttemptRecord, SyncConfig, SyncOutcome, SyncProgress, SyncRequest, SyncStage, SyncStatus,
+};
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -359,9 +361,24 @@ pub(crate) fn execute_in_workspace(
         return SyncOutcome::bare(SyncStatus::Cancelled, "عملیات پیش از اجرا لغو شد.");
     }
 
-    let strategies = cli::sync_strategies(&request.config, request.attempt.unwrap_or(0));
+    let strategies = {
+        // حالت خودکار: نردبان اعتماد + سقف تلاش؛ حالت تعاملی: رفتار فعلی
+        let base = if request.select_best {
+            cli::sync_strategies_auto(&request.config)
+        } else {
+            cli::sync_strategies(&request.config, request.attempt.unwrap_or(0))
+        };
+        match request.max_strategies {
+            Some(cap) if cap > 0 => base.into_iter().take(cap).collect(),
+            _ => base,
+        }
+    };
     let mut attempts: Vec<String> = Vec::new();
+    let mut attempt_records: Vec<SyncAttemptRecord> = Vec::new();
     let mut last_failure: Option<SyncOutcome> = None;
+    // کاندیداهای validated برای انتخاب-بهترین (فقط حالت خودکار) — همه تلاش‌ها
+    // اجرا می‌شوند و برنده در پایان با شواهد کیفیت انتخاب می‌شود.
+    let mut valid_candidates: Vec<ValidCandidate> = Vec::new();
 
     for (idx, strategy) in strategies.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -412,8 +429,31 @@ pub(crate) fn execute_in_workspace(
                     message: "اعتبارسنجی خروجی سینک‌شده…".into(),
                 });
                 match validate_candidate(&pass_output, &diagnostic_tail, input_ext) {
-                    Ok(mut outcome) => {
-                        // کاندیدای تأییدشده به مسیر خروجی قراردادی منتقل می‌شود
+                    Ok(outcome) => {
+                        attempt_records.push(SyncAttemptRecord {
+                            strategy: strategy.label().to_string(),
+                            status: SyncStatus::Synced,
+                            offset_seconds: Some(offset_seconds),
+                            accepted: false,
+                        });
+                        if request.select_best {
+                            // حالت خودکار: همهٔ کاندیداهای معتبر جمع می‌شوند تا
+                            // برنده با شواهد کیفیت انتخاب شود — نه اولین موفق
+                            attempts.push(format!(
+                                "تلاش {} [{}]: موفق (آفست {offset_seconds:.3}s).",
+                                idx + 1,
+                                strategy.label()
+                            ));
+                            valid_candidates.push(ValidCandidate {
+                                strategy: *strategy,
+                                offset_seconds,
+                                pass_path: pass_output.clone(),
+                                diagnostic: outcome.diagnostic,
+                                warnings: outcome.warnings,
+                            });
+                            continue;
+                        }
+                        // حالت تعاملی (رفتار فعلی): اولین تلاش معتبر برنده است
                         if let Err(e) = std::fs::copy(&pass_output, &output) {
                             return SyncOutcome::bare(
                                 SyncStatus::Failed,
@@ -421,11 +461,16 @@ pub(crate) fn execute_in_workspace(
                             );
                         }
                         let _ = std::fs::remove_file(&pass_output);
+                        let mut outcome = outcome;
                         outcome.output_path = Some(output.clone());
                         // آفستِ validated در طبقه‌بندی حمل شده — همیشه Some برای Synced
                         outcome.offset_seconds = Some(offset_seconds);
                         // استراتژی برنده برای شفافیت حلقهٔ تنظیم دوباره در UI
                         outcome.strategy = Some(strategy.label().to_string());
+                        if let Some(record) = attempt_records.last_mut() {
+                            record.accepted = true;
+                        }
+                        outcome.attempts = attempt_records;
                         if !attempts.is_empty() {
                             attempts.push(format!("تلاش {} [{}]: موفق.", idx + 1, strategy.label()));
                             let summary = attempts.join(" ");
@@ -444,8 +489,15 @@ pub(crate) fn execute_in_workspace(
                             idx + 1,
                             strategy.label()
                         ));
+                        attempt_records.push(SyncAttemptRecord {
+                            strategy: strategy.label().to_string(),
+                            status: SyncStatus::OutputValidationFailed,
+                            offset_seconds: None,
+                            accepted: false,
+                        });
                         failed.summary =
                             Some(cli::bounded_tail(&attempts.join(" "), SUMMARY_MAX_CHARS));
+                        failed.attempts = attempt_records.clone();
                         last_failure = Some(failed);
                         // تلاش بعدی ممکن است استراتژیِ متفاوت خروجی معتبر بدهد
                     }
@@ -455,20 +507,72 @@ pub(crate) fn execute_in_workspace(
                 let _ = std::fs::remove_file(&pass_output);
                 let (status, note) = classify_failure(classification, &run.logs);
                 attempts.push(format!("تلاش {} [{}]: {note}", idx + 1, strategy.label()));
+                attempt_records.push(SyncAttemptRecord {
+                    strategy: strategy.label().to_string(),
+                    status,
+                    offset_seconds: None,
+                    accepted: false,
+                });
                 let mut failed = SyncOutcome::bare(
                     status,
                     format!("زیرنویس هم‌ترازیِ مورد اعتماد پیدا نکرد. {diagnostic_tail}"),
                 );
                 failed.summary = Some(cli::bounded_tail(&attempts.join(" "), SUMMARY_MAX_CHARS));
+                failed.attempts = attempt_records.clone();
                 last_failure = Some(failed);
             }
         }
     }
 
-    // هیچ استراتژی‌ای کاندیدای معتبر نداد — وضعیت آخرین تلاش + خلاصهٔ همهٔ تلاش‌ها
+    // حالت خودکار: انتخاب بهترین کاندیدای validated با شواهد کیفیت
+    if request.select_best {
+        if valid_candidates.is_empty() {
+            let Some(mut final_outcome) = last_failure else {
+                return SyncOutcome::bare(SyncStatus::Failed, "هیچ تلاشی برای سینک ثبت نشد.");
+            };
+            final_outcome.attempts = attempt_records;
+            let summary = attempts.join(" ");
+            final_outcome.summary = Some(cli::bounded_tail(&summary, SUMMARY_MAX_CHARS));
+            final_outcome.diagnostic = cli::bounded_tail(
+                &format!("{summary} {}", final_outcome.diagnostic),
+                DIAGNOSTIC_TAIL_CHARS,
+            );
+            return final_outcome;
+        }
+        let winner_idx = choose_best_candidate(&valid_candidates);
+        let winner = &valid_candidates[winner_idx];
+        if let Err(e) = std::fs::copy(&winner.pass_path, &output) {
+            return SyncOutcome::bare(
+                SyncStatus::Failed,
+                format!("انتقال کاندیدای سینک‌شده به مسیر خروجی: {e}"),
+            );
+        }
+        for candidate in &valid_candidates {
+            let _ = std::fs::remove_file(&candidate.pass_path);
+        }
+        for (i, record) in attempt_records.iter_mut().enumerate() {
+            record.accepted = i == winner_idx;
+        }
+        let mut outcome = SyncOutcome::bare(SyncStatus::Synced, winner.diagnostic.clone());
+        outcome.output_path = Some(output.clone());
+        outcome.offset_seconds = Some(winner.offset_seconds);
+        outcome.strategy = Some(winner.strategy.label().to_string());
+        outcome.warnings = winner.warnings.clone();
+        outcome.attempts = attempt_records;
+        let summary = attempts.join(" ");
+        outcome.summary = Some(cli::bounded_tail(&summary, SUMMARY_MAX_CHARS));
+        outcome.diagnostic = cli::bounded_tail(
+            &format!("{summary} {}", outcome.diagnostic),
+            DIAGNOSTIC_TAIL_CHARS,
+        );
+        return outcome;
+    }
+
+    // حالت تعاملی: هیچ استراتژی‌ای کاندیدای معتبر نداد — وضعیت آخرین تلاش
     let Some(mut final_outcome) = last_failure else {
         return SyncOutcome::bare(SyncStatus::Failed, "هیچ تلاشی برای سینک ثبت نشد.");
     };
+    final_outcome.attempts = attempt_records;
     let summary = attempts.join(" ");
     final_outcome.summary = Some(cli::bounded_tail(&summary, SUMMARY_MAX_CHARS));
     final_outcome.diagnostic = cli::bounded_tail(
@@ -476,6 +580,64 @@ pub(crate) fn execute_in_workspace(
         DIAGNOSTIC_TAIL_CHARS,
     );
     final_outcome
+}
+
+/// یک کاندیدای validated در حالت انتخاب-بهترین — تا پایان نردبان نگه داشته
+/// می‌شود و برنده به مسیر قراردادی منتقل می‌شود.
+struct ValidCandidate {
+    strategy: cli::SyncStrategy,
+    offset_seconds: f64,
+    pass_path: std::path::PathBuf,
+    diagnostic: String,
+    warnings: Vec<String>,
+}
+
+/// فاصلهٔ توافق دو تلاش مستقل (ثانیه) — آفست‌های هم‌فاصله‌تر از این، دو شاهدِ
+/// هم‌نظرند؛ توافق قوی‌ترین شواهد کیفیت در دسترسِ خروجی 0.5.1 است.
+const AGREEMENT_TOLERANCE_SECONDS: f64 = 0.5;
+
+/// tier اعتماد استراتژی — FullReference/AudioOnly شواهد مستقل و پایدارند؛
+/// MultiSegmentAudio (نمونه‌برداری صوت) پرنویزترین است (شواهد CHANGELOG 0.2.8).
+fn strategy_tier(strategy: &cli::SyncStrategy) -> u8 {
+    match strategy {
+        cli::SyncStrategy::MultiSegmentAudio => 2,
+        _ => 1,
+    }
+}
+
+/// انتخاب بهترین کاندیدای validated — اولویت:
+/// ۱) توافق بین دو تلاش مستقل (|Δآفست| ≤ ۰٫۵s) — قوی‌ترین شاهد؛ بین جفتِ
+///    هم‌نظر، tier بهتر و بعد ترتیب نردبان.
+/// ۲) بدون توافق: tier بهتر، سپس |آفست| کوچک‌تر **فقط به‌عنوان ضعیف‌ترین
+///    سیگنال** و سپس ترتیب نردبان — «کوچک‌ترین آفست» به‌تنهایی هرگز برنده نیست.
+fn choose_best_candidate(candidates: &[ValidCandidate]) -> usize {
+    for i in 0..candidates.len() {
+        for j in (i + 1)..candidates.len() {
+            if (candidates[i].offset_seconds - candidates[j].offset_seconds).abs()
+                <= AGREEMENT_TOLERANCE_SECONDS
+            {
+                let (ti, tj) = (
+                    strategy_tier(&candidates[i].strategy),
+                    strategy_tier(&candidates[j].strategy),
+                );
+                return if ti <= tj { i } else { j };
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by(|&a, &b| {
+        strategy_tier(&candidates[a].strategy)
+            .cmp(&strategy_tier(&candidates[b].strategy))
+            .then_with(|| {
+                candidates[a]
+                    .offset_seconds
+                    .abs()
+                    .partial_cmp(&candidates[b].offset_seconds.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.cmp(&b))
+    });
+    order[0]
 }
 
 /// اعتبارسنجی کاندیدای سینک‌شدهٔ یک تلاش — ساختار + محتوای فارسی.
@@ -595,7 +757,7 @@ mod tests {
     /// (شبیه‌سازی: مرجع کامل جواب می‌دهد، نمونه‌برداری نه)؛ `fullref-lq` برعکس؛
     /// `all-lq` همیشه رد می‌کند. بقیه مودها سناریوهای fail-closed همیشگی‌اند.
     #[cfg(windows)]
-    const FAKE_FFS_SCRIPT: &str = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset MODE=\r\nif exist \"%~dp0.fake_ffs_mode\" set /p MODE=<\"%~dp0.fake_ffs_mode\"\r\nset OUT=\r\nset IN=\r\nset PREV=\r\nset MSS=\r\nfor %%A in (%*) do (\r\n  if \"!PREV!\"==\"-i\" set \"IN=%%~A\"\r\n  if \"!PREV!\"==\"-o\" set \"OUT=%%~A\"\r\n  if \"%%A\"==\"--multi-segment-sync\" set \"MSS=1\"\r\n  set \"PREV=%%A\"\r\n)\r\nif \"%MODE%\"==\"success\" goto success\r\nif \"%MODE%\"==\"fullref-ok\" goto fullref-ok\r\nif \"%MODE%\"==\"fullref-lq\" goto fullref-lq\r\nif \"%MODE%\"==\"all-lq\" goto all-lq\r\nif \"%MODE%\"==\"convert\" goto convert\r\nif \"%MODE%\"==\"latinfix\" goto latinfix\r\nif \"%MODE%\"==\"lowquality\" goto lowquality\r\nif \"%MODE%\"==\"nomarker\" goto nomarker\r\nif \"%MODE%\"==\"fail\" goto fail\r\nif \"%MODE%\"==\"nooutput\" goto nooutput\r\nif \"%MODE%\"==\"invalid\" goto invalid\r\nif \"%MODE%\"==\"slow\" goto slow\r\nexit /b 9\r\n\r\n:success\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.234 1>&2\r\nexit /b 0\r\n\r\n:fullref-ok\r\nif \"%MSS%\"==\"1\" goto all-lq\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 565358.000 1>&2\r\necho offset seconds: 0.000 1>&2\r\nexit /b 0\r\n\r\n:fullref-lq\r\nif \"%MSS%\"==\"1\" goto success_small\r\necho score: 210216.901 1>&2\r\necho offset seconds: 36.110 1>&2\r\necho low-quality alignment (^|offset^| 36.1s ^> 30.0s); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:success_small\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.500 1>&2\r\nexit /b 0\r\n\r\n:all-lq\r\necho score: 210216.901 1>&2\r\necho offset seconds: 36.110 1>&2\r\necho low-quality alignment (^|offset^| 36.1s ^> 30.0s); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:convert\r\nif not exist \"%~dp0fixture.srt\" exit /b 8\r\ncopy /y \"%~dp0fixture.srt\" \"%OUT%\" >nul\r\necho offset seconds: 0.500 1>&2\r\nexit /b 0\r\n\r\n:latinfix\r\nif not exist \"%~dp0fixture_latin.srt\" exit /b 8\r\ncopy /y \"%~dp0fixture_latin.srt\" \"%OUT%\" >nul\r\necho offset seconds: 2.000 1>&2\r\nexit /b 0\r\n\r\n:lowquality\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho low-quality alignment (score too low); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:nomarker\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho sync finished 1>&2\r\nexit /b 0\r\n\r\n:fail\r\necho ffmpeg crashed badly 1>&2\r\nexit /b 3\r\n\r\n:nooutput\r\necho offset seconds: 1.500 1>&2\r\nexit /b 0\r\n\r\n:invalid\r\necho english only>\"%OUT%\"\r\necho offset seconds: 2.000 1>&2\r\nexit /b 0\r\n\r\n:slow\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho offset seconds: 1.234 1>&2\r\nping -n 31 127.0.0.1 >nul\r\nexit /b 0\r\n";
+    const FAKE_FFS_SCRIPT: &str = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset MODE=\r\nif exist \"%~dp0.fake_ffs_mode\" set /p MODE=<\"%~dp0.fake_ffs_mode\"\r\nset OUT=\r\nset IN=\r\nset PREV=\r\nset MSS=\r\nfor %%A in (%*) do (\r\n  if \"!PREV!\"==\"-i\" set \"IN=%%~A\"\r\n  if \"!PREV!\"==\"-o\" set \"OUT=%%~A\"\r\n  if \"%%A\"==\"--multi-segment-sync\" set \"MSS=1\"\r\n  set \"PREV=%%A\"\r\n)\r\nif \"%MODE%\"==\"success\" goto success\r\nif \"%MODE%\"==\"fullref-ok\" goto fullref-ok\r\nif \"%MODE%\"==\"fullref-lq\" goto fullref-lq\r\nif \"%MODE%\"==\"all-lq\" goto all-lq\r\nif \"%MODE%\"==\"convert\" goto convert\r\nif \"%MODE%\"==\"latinfix\" goto latinfix\r\nif \"%MODE%\"==\"lowquality\" goto lowquality\r\nif \"%MODE%\"==\"nomarker\" goto nomarker\r\nif \"%MODE%\"==\"fail\" goto fail\r\nif \"%MODE%\"==\"nooutput\" goto nooutput\r\nif \"%MODE%\"==\"invalid\" goto invalid\r\nif \"%MODE%\"==\"slow\" goto slow\r\nif \"%MODE%\"==\"varying\" goto varying\r\nif \"%MODE%\"==\"tier\" goto tier\r\nif \"%MODE%\"==\"agree\" goto agree\r\nexit /b 9\r\n\r\n:success\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.234 1>&2\r\nexit /b 0\r\n\r\n:fullref-ok\r\nif \"%MSS%\"==\"1\" goto all-lq\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 565358.000 1>&2\r\necho offset seconds: 0.000 1>&2\r\nexit /b 0\r\n\r\n:fullref-lq\r\nif \"%MSS%\"==\"1\" goto success_small\r\necho score: 210216.901 1>&2\r\necho offset seconds: 36.110 1>&2\r\necho low-quality alignment (^|offset^| 36.1s ^> 30.0s); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:success_small\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho score: 4.20 1>&2\r\necho offset seconds: 1.500 1>&2\r\nexit /b 0\r\n\r\n:all-lq\r\necho score: 210216.901 1>&2\r\necho offset seconds: 36.110 1>&2\r\necho low-quality alignment (^|offset^| 36.1s ^> 30.0s); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:convert\r\nif not exist \"%~dp0fixture.srt\" exit /b 8\r\ncopy /y \"%~dp0fixture.srt\" \"%OUT%\" >nul\r\necho offset seconds: 0.500 1>&2\r\nexit /b 0\r\n\r\n:latinfix\r\nif not exist \"%~dp0fixture_latin.srt\" exit /b 8\r\ncopy /y \"%~dp0fixture_latin.srt\" \"%OUT%\" >nul\r\necho offset seconds: 2.000 1>&2\r\nexit /b 0\r\n\r\n:lowquality\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho low-quality alignment (score too low); leaving subtitles unmodified 1>&2\r\necho writing original (unsynced) output to \"%OUT%\" 1>&2\r\nexit /b 0\r\n\r\n:nomarker\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho sync finished 1>&2\r\nexit /b 0\r\n\r\n:fail\r\necho ffmpeg crashed badly 1>&2\r\nexit /b 3\r\n\r\n:nooutput\r\necho offset seconds: 1.500 1>&2\r\nexit /b 0\r\n\r\n:invalid\r\necho english only>\"%OUT%\"\r\necho offset seconds: 2.000 1>&2\r\nexit /b 0\r\n\r\n:slow\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\necho offset seconds: 1.234 1>&2\r\nping -n 31 127.0.0.1 >nul\r\nexit /b 0\r\n\r\n:varying\r\nset /a N=0\r\nif exist \"%~dp0.invokes\" set /p N=<\"%~dp0.invokes\"\r\nset /a N+=1\r\n>\"%~dp0.invokes\" echo %N%\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\nif \"%N%\"==\"1\" echo offset seconds: 2.000 1>&2\r\nif \"%N%\"==\"2\" echo offset seconds: 1.000 1>&2\r\nif \"%N%\"==\"3\" echo offset seconds: 1.400 1>&2\r\nexit /b 0\r\n\r\n:agree\r\nset /a N=0\r\nif exist \"%~dp0.invokes\" set /p N=<\"%~dp0.invokes\"\r\nset /a N+=1\r\n>\"%~dp0.invokes\" echo %N%\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\nif \"%N%\"==\"1\" echo offset seconds: 1.000 1>&2\r\nif \"%N%\"==\"2\" echo offset seconds: 1.200 1>&2\r\nif \"%N%\"==\"3\" echo offset seconds: 0.300 1>&2\r\nexit /b 0\r\n\r\n:tier\r\nset /a N=0\r\nif exist \"%~dp0.invokes\" set /p N=<\"%~dp0.invokes\"\r\nset /a N+=1\r\n>\"%~dp0.invokes\" echo %N%\r\ncopy /y \"%IN%\" \"%OUT%\" >nul\r\nif \"%N%\"==\"1\" echo offset seconds: 6.000 1>&2\r\nif \"%N%\"==\"2\" echo offset seconds: 2.000 1>&2\r\nif \"%N%\"==\"3\" echo offset seconds: 2.600 1>&2\r\nexit /b 0\r\n";
 
     #[cfg(windows)]
     fn write_fake_ffs(dir: &Path, tag: &str, mode: &str) -> PathBuf {
@@ -620,6 +782,8 @@ mod tests {
             config: sync_config(),
             workspace_root,
             attempt: None,
+            select_best: false,
+            max_strategies: None,
         }
     }
 
@@ -719,6 +883,8 @@ mod tests {
                 config: sync_config(),
                 workspace_root: None,
                 attempt: None,
+                select_best: false,
+                max_strategies: None,
             },
             &AtomicBool::new(false),
             &mut |_| {},
@@ -1141,6 +1307,8 @@ mod tests {
             config: sync_config(),
             workspace_root: None,
             attempt: None,
+            select_best: false,
+            max_strategies: None,
         };
         let outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
@@ -1251,6 +1419,8 @@ mod tests {
             config: sync_config(),
             workspace_root: None,
             attempt: None,
+            select_best: false,
+            max_strategies: None,
         };
         let mut outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
@@ -1299,6 +1469,8 @@ mod tests {
             config: sync_config(),
             workspace_root: None,
             attempt: None,
+            select_best: false,
+            max_strategies: None,
         };
         let mut outcome = run_sync(&request, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
@@ -1313,6 +1485,155 @@ mod tests {
         // زیرنویس اصلی دست‌نخورده (کپیِ شیفت‌شده در tmp ورودی بود)
         assert_eq!(video_fingerprint(&video), video_hash, "ویدیو تغییر کرده!");
         assert_eq!(stream_sha256(&sub), sub_hash, "زیرنویس اصلی تغییر کرده!");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------
+    // حالت خودکار — انتخاب بهترین کاندیدای validated با شواهد کیفیت
+    // -----------------------------------------------------------------
+
+    #[cfg(windows)]
+    fn best_of_request(
+        video: &Path,
+        subtitle: &Path,
+        ffs: &Path,
+        workspace_root: Option<PathBuf>,
+        max_strategies: Option<usize>,
+    ) -> SyncRequest {
+        SyncRequest {
+            video_path: video.to_path_buf(),
+            subtitle_path: subtitle.to_path_buf(),
+            ffsubsync_path: ffs.to_path_buf(),
+            ffmpeg_path: None,
+            config: sync_config(),
+            workspace_root,
+            attempt: None,
+            select_best: true,
+            max_strategies,
+        }
+    }
+
+    /// توافق بین FullReference و AudioOnly (آفست ۱٫۰ و ۱٫۲) باید برندهٔ
+    /// اولی را انتخاب کند — حتی وقتی تلاش سوم آفست کوچک‌تری می‌دهد.
+    #[cfg(windows)]
+    #[test]
+    fn select_best_prefers_agreement_pair() {
+        let tmp = unique_temp_dir("best-agree");
+        let tools = tmp.join("tools");
+        let fake = write_fake_ffs(&tools, "agree", "agree");
+        let video = make_video(&tmp, "Video.S01E01.mkv");
+        let sub = make_fa_srt(&tmp, "Video.S01E01.fa.srt");
+        let mut outcome = run_sync(
+            &best_of_request(&video, &sub, &fake, Some(tmp.join("ws")), None),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
+        // جفتِ توافق (۱٫۰ / ۱٫۲) → برنده FullReference با آفست ۱٫۰ —
+        // «کوچک‌ترین آفست مطلق» (۱٫۲ از AudioOnly هم توافق دارد) تعیین‌کننده نیست
+        assert_eq!(
+            outcome.strategy.as_deref(),
+            Some("مرجع کامل (Track داخلی/VAD کامل صوت)")
+        );
+        assert!((outcome.offset_seconds.unwrap() - 1.0).abs() < 1e-9);
+        // رکورد تلاش‌ها: سه تلاش، فقط برنده accepted
+        let records = &outcome.attempts;
+        assert_eq!(records.len(), 3, "{records:?}");
+        assert!(records[0].accepted && !records[1].accepted && !records[2].accepted);
+        assert_eq!(records[0].status, SyncStatus::Synced);
+        assert!(records.iter().all(|r| r.offset_seconds.is_some()));
+        let invokes: u32 = std::fs::read_to_string(tools.join(".invokes"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(invokes, 3, "هر سه تلاش باید اجرا شده باشند");
+        discard_workspace(&mut outcome);
+        assert_no_workspace_left(&tmp.join("ws"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// بدون توافق: هم‌tier → آفست کوچک‌تر فقط به‌عنوان ضعیف‌ترین سیگنال؛
+    /// MultiSegment (tier پایین‌تر) هرگز بر tier بالاتر برنده نمی‌شود.
+    #[cfg(windows)]
+    #[test]
+    fn select_best_without_agreement_uses_tier_then_offset() {
+        let tmp = unique_temp_dir("best-tier");
+        let tools = tmp.join("tools");
+        let fake = write_fake_ffs(&tools, "tier", "tier");
+        let video = make_video(&tmp, "Video.S01E02.mkv");
+        let sub = make_fa_srt(&tmp, "Video.S01E02.fa.srt");
+        let mut outcome = run_sync(
+            &best_of_request(&video, &sub, &fake, Some(tmp.join("ws")), None),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
+        // آفست‌ها: FR=6.0 / AO=2.0 / MS=2.6 — بدون توافق؛ هم‌tier بودن FR/AO
+        // → آفست کوچک‌تر AO برنده است؛ MS هم‌آفستِ نزدیک AO ندارد (Δ۰٫۶>۰٫۵)
+        assert_eq!(
+            outcome.strategy.as_deref(),
+            Some("مرجع صوتی کامل"),
+            "{}",
+            outcome.summary.as_deref().unwrap_or("-")
+        );
+        assert!((outcome.offset_seconds.unwrap() - 2.0).abs() < 1e-9);
+        discard_workspace(&mut outcome);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// سقف تلاش خودکار — بیشتر از max_strategies اجرا نمی‌شود.
+    #[cfg(windows)]
+    #[test]
+    fn select_best_enforces_retry_limit() {
+        let tmp = unique_temp_dir("best-cap");
+        let tools = tmp.join("tools");
+        let fake = write_fake_ffs(&tools, "cap", "varying");
+        let video = make_video(&tmp, "Video.S01E03.mkv");
+        let sub = make_fa_srt(&tmp, "Video.S01E03.fa.srt");
+        let mut outcome = run_sync(
+            &best_of_request(&video, &sub, &fake, Some(tmp.join("ws")), Some(2)),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
+        let invokes: u32 = std::fs::read_to_string(tools.join(".invokes"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(invokes, 2, "سقف تلاش باید اجرای سوم را قطع کند");
+        assert_eq!(outcome.attempts.len(), 2);
+        discard_workspace(&mut outcome);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// حالت تعاملی رفتار فعلی را حفظ می‌کند: اولین تلاش معتبر فوری برمی‌گردد
+    /// (تلاش‌های بعدی هرگز اجرا نمی‌شوند) — رکورد تلاش‌ها فقط additive است.
+    #[cfg(windows)]
+    #[test]
+    fn interactive_mode_keeps_first_valid_wins() {
+        let tmp = unique_temp_dir("interactive-first");
+        let tools = tmp.join("tools");
+        let fake = write_fake_ffs(&tools, "first", "varying");
+        let video = make_video(&tmp, "Video.S01E04.mkv");
+        let sub = make_fa_srt(&tmp, "Video.S01E04.fa.srt");
+        let mut outcome = run_sync(
+            &request_for(&video, &sub, &fake, Some(tmp.join("ws"))),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.status, SyncStatus::Synced, "{}", outcome.diagnostic);
+        assert!((outcome.offset_seconds.unwrap() - 2.0).abs() < 1e-9);
+        let invokes: u32 = std::fs::read_to_string(tools.join(".invokes"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(invokes, 1, "اولین موفق باید فوری برگردد");
+        assert_eq!(outcome.attempts.len(), 1);
+        assert!(outcome.attempts[0].accepted);
+        discard_workspace(&mut outcome);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

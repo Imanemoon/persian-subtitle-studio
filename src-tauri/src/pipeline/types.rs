@@ -95,6 +95,12 @@ pub enum ItemOutcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// سیاست خودکار (حالت Auto) نتوانست با اطمینان کافی تصمیم بگیرد —
+    /// ورودی دست‌نخورده ماند؛ `reason` می‌گوید دقیقاً چه چیزی نامطمئن بود.
+    /// هرگز حدسِ کم‌اطمینان به‌جای این وضعیت نمی‌نشیند.
+    NeedsReview {
+        reason: String,
+    },
     /// برای دانلود به API key نیاز دارد (فقط ویدیوهای واقعاً نیازمند دانلود)
     NeedsApiKey,
     /// مخزن کلید (Credential Manager) خطا داد — جدا از «کلید نیست»
@@ -145,6 +151,23 @@ pub struct ItemArtifacts {
     /// انتخاب آرشیو (از Ready پلن یا resolve تصمیم کاربر) برای مرحلهٔ اجرا
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_selection: Option<PreSelectionArtifact>,
+    /// تصمیم خودکار سیاست در حالت Auto — چه انتخابی و با چه دلایلی (شفافیت کامل)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_decision: Option<AutoDecisionRecord>,
+    /// رکورد همهٔ تلاش‌های سینک — هر استراتژی با وضعیت و آفستش (شفافیت حلقهٔ سینک)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sync_attempts: Vec<crate::sync::SyncAttemptRecord>,
+}
+
+/// رکورد یک تصمیم خودکار سیاست — برای UI و گزارش batch؛ هیچ secretای ندارد.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoDecisionRecord {
+    pub kind: DecisionKind,
+    /// برچسب انتخاب (Track label / مسیر sidecar / عضو آرشیو)
+    pub chosen: String,
+    /// دلایل انسانی قابل‌نمایش — چرا این کاندیدا
+    pub reasons: Vec<String>,
 }
 
 /// انتخاب آرشیو نهایی هر ویدیو — از پلن Ready یا تصمیم کاربر.
@@ -191,6 +214,8 @@ pub struct PipelineCounts {
     pub softsubbed: u64,
     pub hardsubbed: u64,
     pub unchanged_low_quality: u64,
+    /// مواردی که سیاست خودکار تصمیم‌نگرفت — نیازمند بررسی کاربر
+    pub needs_review: u64,
     pub already_synced: u64,
     pub conflicts: u64,
     pub needs_api_key: u64,

@@ -224,6 +224,8 @@ fn run_real_pipeline(
         let io = PipelineIo {
             key_provider: &*key_fn,
             staging_base: None,
+            report_dir: None,
+            auto_mode: false,
         };
         let cleanup = WorkerCleanup::new(&state_for_worker, run_id, guard);
         run_worker(&state_for_worker, &control, cleanup, input, &sink, &io);
