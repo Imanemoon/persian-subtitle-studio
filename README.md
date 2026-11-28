@@ -65,8 +65,9 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 ### pipeline یک‌پارچه با شفافیت کامل
 - ۱۲ مرحله با موانع (barrier) — در حالت تعاملی، هرجا ابهام باشد برنامه می‌ایستد و با دیالوگ از شما می‌پرسد
 - هر پیشرفت، شمارش و نتیجه از دادهٔ واقعی بک‌اند می‌آید — **هیچ درصد یا موفقیتی ساختگی نیست**
-- لغو امن در هر لحظه، بازیابی وضعیت پس از بستن/reload برنامه، تعارض‌ها و خطاها
-  با دلیل صادقانه
+- لغو امن در هر لحظه؛ وضعیت run پس از reload صفحه تا وقتی برنامه در حال اجراست بازسازی
+  می‌شود — پس از بستن برنامه، اجرای نیمه‌تمام از سر گرفته نمی‌شود (گزارش JSON فقط
+  گزارش است، نه resume)؛ تعارض‌ها و خطاها با دلیل صادقانه
 
 ### پردازش کامل خودکار (حالت جدید)
 - سوییچ «تعاملی / پردازش کامل خودکار» روی صفحهٔ خانه — پیش‌فرض همان رفتار تعاملی است
@@ -180,7 +181,8 @@ subtitles for your entire video library:
 - **Honest progress everywhere** — every number and status comes from the backend; fake
   percentages don't exist in this codebase
 - **Safe by design** — atomic operations, workspace confinement, no-overwrite placement,
-  cancel anything at any time, state recovery after restart
+  cancel anything at any time; run state reconnects on UI reload while the app is
+  running — a closed run is not resumed (the JSON batch report is a record, not a resume)
 
 It is the modern GUI replacement for the manual
 *PowerShell + FFmpeg + SubSource CLI + 7-Zip + FFsubsync* pipeline.
