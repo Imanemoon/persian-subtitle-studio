@@ -91,6 +91,8 @@ pub struct BurnRequest<'a> {
     pub cancel: &'a AtomicBool,
     /// درصد زنده (0..=99) — None یعنی هنوز تخمین واقعی‌ای نیست.
     pub progress_slot: Option<Arc<Mutex<Option<u32>>>>,
+    /// تایپوگرافی از snapshot شروع hardsub — خاموش = فیلتر فعلی بدون تغییر.
+    pub typography: &'a crate::settings::HardsubTypography,
 }
 
 /// هستهٔ هاردساب برای یک ویدیو — workspace → آماده‌سازی sub.srt → ffmpeg →
@@ -362,7 +364,10 @@ fn run_burn_ffmpeg(
         command.arg(arg);
     }
     command.arg("-vf");
-    command.arg("subtitles=sub.srt"); // نسبی + cwd=workspace → بدون escape
+    // نسبی + cwd=workspace → بدون escape مسیر؛ typography خاموش = رشتهٔ فعلی
+    command.arg(crate::hardsub::typography::build_subtitles_filter(
+        request.typography,
+    ));
     if matches!(
         request
             .output
@@ -639,6 +644,7 @@ mod tests {
         subtitle: PathBuf,
         output: PathBuf,
         ffprobe: PathBuf,
+        typography: crate::settings::HardsubTypography,
     }
 
     impl Drop for Fixture {
@@ -660,6 +666,7 @@ mod tests {
         let ffmpeg = dir.join("fake-ffmpeg.cmd");
         fs::write(&ffmpeg, ffmpeg_body).unwrap();
         Fixture {
+            typography: crate::settings::HardsubTypography::default(),
             dir,
             video,
             subtitle,
@@ -687,6 +694,7 @@ mod tests {
             timeout_override: timeout,
             cancel,
             progress_slot: slot,
+            typography: &fx.typography,
         }
     }
 
@@ -851,6 +859,7 @@ mod tests {
                 timeout_override: Some(Duration::from_secs(60)),
                 cancel: &t_cancel,
                 progress_slot: None,
+                typography: &Default::default(),
             };
             burn(&req)
         });

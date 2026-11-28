@@ -204,6 +204,11 @@ pub fn run() {
             commands::subtitle::cancel_subtitle_ops,
             commands::subtitle::validate_subtitle_file,
             commands::subtitle::extract_synced_subtitle,
+            commands::subtitle_local::analyze_subtitle_encoding,
+            commands::subtitle_local::convert_subtitle_to_utf8,
+            commands::subtitle_local::load_subtitle_for_edit,
+            commands::subtitle_local::validate_subtitle_cues,
+            commands::subtitle_local::save_subtitle_edited,
         ])
         .run(tauri::generate_context!())
         .expect("خطا در اجرای SubSync Studio");

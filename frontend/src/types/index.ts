@@ -190,6 +190,63 @@ export interface HardsubSettings {
   workers: number;
 }
 
+/** تایپوگرافی هاردساب — قرینه HardsubTypography بک‌اند.
+ * رنگ‌ها با فرمت ASS &H[AA]BBGGRR (hex، ترتیب BGR). */
+export interface HardsubTypography {
+  enabled: boolean;
+  fontName: string;
+  fontPath: string | null;
+  fontSize: number;
+  primaryColor: string;
+  outlineColor: string;
+  outline: number;
+  shadow: number;
+  marginV: number;
+}
+
+/** گزارش تحلیل encoding زیرنویس لوکال — قرینه SubtitleEncodingReport */
+export type SubtitleEncodingKind =
+  | "utf8"
+  | "utf8Bom"
+  | "utf16Le"
+  | "utf16Be"
+  | "windows1256"
+  | "unsupported";
+
+export interface SubtitleEncodingReport {
+  kind: SubtitleEncodingKind;
+  label: string;
+  confident: boolean;
+  convertible: boolean;
+  persianChars: number;
+  detail?: string;
+}
+
+/** cue ویرایش‌پذیر — قرینه SubtitleCue بک‌اند؛ متن با \n خط‌بندی */
+export interface SubtitleCue {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+export interface EditorLoadResult {
+  path: string;
+  cues: SubtitleCue[];
+  warnings: string[];
+}
+
+export interface EditorSaveOutcome {
+  outputPath: string;
+  cueCount: number;
+  warnings: string[];
+}
+
+export interface EncodingConvertOutcome {
+  outputPath: string;
+  fromLabel: string;
+  persianChars: number;
+}
+
 export type ExistingFileBehavior = "neverOverwrite";
 
 /** حالت اتوماسیون pipeline — قرینه settings::AutomationMode بک‌اند */
@@ -216,6 +273,7 @@ export interface ProcessingProfile {
   processing: ProcessingSettings;
   automation: AutomationSettings;
   naming: NamingSettings;
+  hardsubTypography: HardsubTypography;
 }
 
 /** پیش‌نمایش قالب نام — قرینه NamingPreview بک‌اند */
@@ -233,6 +291,7 @@ export interface Settings {
   notifications: NotificationSettings;
   existingFileBehavior: ExistingFileBehavior;
   automation: AutomationSettings;
+  hardsubTypography: HardsubTypography;
   naming: NamingSettings;
   profiles: ProcessingProfile[];
   activeProfileId: string | null;
@@ -241,7 +300,7 @@ export interface Settings {
   setupCompleted: boolean;
 }
 
-export type PageId = "home" | "setup" | "settings";
+export type PageId = "home" | "setup" | "settings" | "editor";
 
 /** انتخاب کاربر در صفحهٔ خانه — پوشه یا چند فایل، هر دو با هم نه */
 export type HomeSelection =

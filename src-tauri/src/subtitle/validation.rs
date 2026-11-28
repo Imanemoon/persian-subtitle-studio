@@ -15,7 +15,7 @@ use crate::models::SubtitleValidation;
 use super::encoding::{decode_bytes, has_persian_text, persian_char_count};
 
 // خط تایم‌کد معتبر — ساعت اختیاری (WebVTT)، جداکنندهٔ میلی‌ثانیه , یا .
-static CUE_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static CUE_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?m)^\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3}\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3}",
     )

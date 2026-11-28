@@ -113,6 +113,36 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 - تعارض با فایل موجود از مسیر no-overwrite موجود می‌گذرد: هر دو فایل حفظ
   می‌شوند و هیچ‌چیز بازنویسی نمی‌شود؛ پیش‌نمایش قطعی نام در تنظیمات با نمونهٔ نماینده
 
+### ویرایشگر زیرنویس (فاز ۳)
+- از هدر برنامه: بازکردن فایل SRT، ویرایش متن/شروع/پایان هر cue، افزودن/حذف
+  cue، جستجو در متن، و ذخیره در فایل جدید `<name>.edited.srt` — فایل اصلی
+  هرگز بازنویسی نمی‌شود
+- **فقط SRT**؛ متن یونیکد و RTL و خط‌بندی چندخطی حفظ می‌شود؛ شماره‌گذاری
+  هنگام ذخیره به ۱..n نرمال می‌شود
+- اعتبارسنجی fail-closed: مدت صفر/منفی و ترتیب واژگون ذخیره را رد می‌کنند؛
+  هم‌پوشانی و متن خالی هشدارند — هیچ محتوایی بی‌صدا حذف نمی‌شود
+- فایل cp1256/ANSI فارسی در ویرایشگر باز نمی‌شود — ابتدا از «تبدیل encoding»
+  (همان صفحه) به UTF-8 تبدیل کنید؛ خروجی فایل جدید است و اصل حفظ می‌شود
+- encoding پشتیبانی‌شده برای تشخیص: UTF-8، UTF-8 BOM، UTF-16 LE/BE و
+  Windows-1256 فقط با حداقل ۱۰ حرف فارسی (همان گیت مسیر دانلود)؛ بایت‌های
+  مبهم هرگز به فارسی تفسیر نمی‌شوند و با دلیل صادقانه رد می‌شوند
+
+### تایپوگرافی هاردساب (فاز ۳)
+- در تنظیمات: فونت سفارشی (نام خانواده + فایل فونت ttf/otf/ttc)، اندازه، رنگ
+  متن/خط دور با فرمت ASS `&H[AA]BBGGRR`، ضخامت خط دور، سایه و حاشیهٔ عمودی
+- خاموش (پیش‌فرض) = دقیقاً رفتار فعلی؛ روشن = force_style با مقادیر اعتبارسنجی‌شده
+- با انتخاب **فایل فونت**، مسیر پوشه‌اش به ffmpeg داده می‌شود و نتیجهٔ فونت
+  قطعی است؛ بدون فایل، libass از فونت‌های نصب سیستم جستجو می‌کند و اگر
+  خانواده نباشد **بی‌صدا به پیش‌فرض برمی‌گردد** (از خروجی ffmpeg قابل‌تشخیص
+  نیست — صادقانه مستند شده؛ نتیجهٔ قطعی فقط با فایل فونت)
+- RTL و اتصال حروف فارسی توسط libass داخل ffmpeg (HarfBuzz+FriBidi)
+  انجام می‌شود — هیچ معکوس‌سازی دستی متنی وجود ندارد؛ متن خام پاس می‌شود.
+  کیفیت رندر به build فونت‌های ffmpeg بستگی دارد و ما در اینجا ادعای
+  فراتر از آن نمی‌کنیم
+- نام فونت با کاراکترهای خطرناک (کوتیشن/کاما/بک‌اسلش/…) در save رد می‌شود
+  تا فیلتر ffmpeg هرگز خراب نشود؛ fallback انکودر GPU→CPU دست‌نخورده است
+- تایپوگرافی داخل پروفایل‌ها هم هست و با snapshot شروع هر hardsub قفل می‌شود
+
 ## 📥 نصب
 
 ۱. آخرین نصاب را از [**Releases**](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
@@ -217,6 +247,22 @@ subtitles for your entire video library:
   name, templates are validated on save, the renderer strips path separators and
   Windows-reserved names, output always stays inside the video's own folder, and
   collisions go through the existing no-overwrite policy
+- **Subtitle editor** — SRT editing with cue text/timestamp edits, add/delete, search
+  and live backend validation (invalid durations and out-of-order starts block save;
+  overlaps and empty text are honest warnings). Save always goes to a new
+  `<name>.edited.srt` file — the original is never touched. cp1256/ANSI files must be
+  converted to UTF-8 first (built-in one-click conversion on the same page, writing a
+  new `.utf8.srt` file alongside the untouched original)
+- **Local encoding detection & conversion** — confident detection of UTF-8 / UTF-8 BOM /
+  UTF-16 LE/BE and Windows-1256 (gated on ≥10 Persian characters, the same gate as the
+  download path); ambiguous byte sequences are reported honestly and never reinterpreted
+  as Persian. Conversion re-encodes bytes only (cue structure and timestamps preserved
+  byte-for-byte), writes atomically to a new `.utf8.srt` file and never overwrites
+- **HardSub typography** — configurable font family (with font file for a deterministic
+  result), size, ASS `&H[AA]BBGGRR` colors, outline, shadow and vertical margin, applied
+  through libass `force_style` with strict save-time validation (dangerous font-name
+  characters rejected so the ffmpeg filter can never break). RTL/bidi/shaping is done by
+  libass inside ffmpeg — no manual text reversal. Off by default: exact previous behavior
 - **Place `<name>.fa.synced.srt` next to each video** — strict no-overwrite policy
 - **First-run setup wizard** auto-installs all prerequisites (ffmpeg, Python, ffsubsync —
   version-pinned, SHA256-verified, per-user, no admin required)

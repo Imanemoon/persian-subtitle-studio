@@ -10,6 +10,7 @@ pub mod settings;
 pub mod setup;
 pub mod subsource;
 pub mod subtitle;
+pub mod subtitle_local;
 pub mod tools;
 
 pub mod archive;

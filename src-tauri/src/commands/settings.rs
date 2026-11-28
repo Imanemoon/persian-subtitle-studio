@@ -28,6 +28,7 @@ pub fn save_settings(
         }
     }
 
+    clean.validate_hardsub_typographies()?;
     let paths = app.state::<AppPaths>();
     crate::settings::save(&paths.config_dir, &clean)?;
     *state.settings.lock().unwrap() = clean.clone();

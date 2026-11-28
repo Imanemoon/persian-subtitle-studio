@@ -281,6 +281,7 @@ fn real_hardsub_sidecar_burns_and_preserves_source() {
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
+        typography: &Default::default(),
     });
     let outcome = result.unwrap_or_else(|error| panic!("burn باید موفق شود: {error:?}"));
     assert_eq!(outcome.output_path, output);
@@ -340,6 +341,7 @@ fn real_hardsub_embedded_track_extraction_and_burn() {
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
+        typography: &Default::default(),
     });
     result.unwrap_or_else(|error| panic!("burn باید موفق شود: {error:?}"));
 
@@ -378,6 +380,7 @@ fn real_hardsub_existing_output_conflicts_without_overwrite() {
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: None,
+        typography: &Default::default(),
     });
     assert!(
         matches!(result, Err(burn::BurnError::Conflict)),
@@ -442,6 +445,7 @@ fn real_archive_video() {
         timeout_override: None,
         cancel: &no_cancel,
         progress_slot: Some(Arc::new(Mutex::new(None))),
+        typography: &Default::default(),
     });
     let outcome = result.unwrap_or_else(|error| panic!("burn باید موفق شود: {error:?}"));
     assert_eq!(outcome.output_path, output);

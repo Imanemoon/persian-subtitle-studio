@@ -13,6 +13,7 @@ pub mod burn;
 pub mod encoder;
 pub mod plan;
 pub mod types;
+pub mod typography;
 
 #[cfg(test)]
 mod real_world;
@@ -235,12 +236,13 @@ pub(crate) struct EnginePaths {
     pub ffprobe: PathBuf,
 }
 
-/// پیکربندی موتور از تنظیمات کاربر.
-#[derive(Clone, Copy)]
+/// پیکربندی موتور از تنظیمات کاربر — snapshot شروع run؛ خواندن زنده ممنوع.
+#[derive(Clone)]
 pub(crate) struct EngineConfig {
     pub encoder: encoder::VideoEncoder,
     pub quality: crate::settings::HardsubQuality,
     pub workers: usize,
+    pub typography: crate::settings::HardsubTypography,
 }
 
 /// ورود worker — گارد را از handoff می‌گیرد؛ خالی بودن handoff = fail-closed.
@@ -337,10 +339,12 @@ fn run_engine(
     let workers = config.workers.min(plan.items.len()).max(1);
     let mut handles = Vec::with_capacity(workers);
     for worker_index in 0..workers {
+        // EngineConfig دیگر Copy نیست (typography مالکیت‌دار) — هر worker clone می‌گیرد
         let queue = Arc::clone(&queue);
         let control = Arc::clone(control);
         let paths = paths.clone();
         let items = plan.items.clone();
+        let config = config.clone();
         let worker_cancel = Arc::clone(&cancel);
         let spawned = std::thread::Builder::new()
             .name(format!("hardsub-w{worker_index}"))
@@ -359,7 +363,7 @@ fn run_engine(
                 let Some(plan_item) = items.get(index) else {
                     continue;
                 };
-                process_item(&control, &paths, config, plan_item, index, &worker_cancel);
+                process_item(&control, &paths, &config, plan_item, index, &worker_cancel);
             });
         match spawned {
             Ok(handle) => handles.push(handle),
@@ -424,7 +428,7 @@ fn run_engine(
 fn process_item(
     control: &Arc<HardsubControl>,
     paths: &EnginePaths,
-    config: EngineConfig,
+    config: &EngineConfig,
     plan_item: &HardsubPlanItem,
     index: usize,
     cancel: &AtomicBool,
@@ -481,6 +485,7 @@ fn process_item(
             timeout_override: None,
             cancel,
             progress_slot: Some(Arc::clone(&slot)),
+            typography: &config.typography,
         };
         burn::burn(&request)
     };
