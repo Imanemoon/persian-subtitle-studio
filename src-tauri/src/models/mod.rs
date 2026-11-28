@@ -110,6 +110,16 @@ pub struct ExtractionOutcome {
     pub persian_confirmed: bool,
 }
 
+/// نتیجهٔ پیش‌نمایش قالب نام — فقط نمایش؛ هیچ مسیری اینجا ساخته نمی‌شود.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NamingPreview {
+    /// نام کامل فایل نهایی — پایهٔ رندرشده + پسوند قراردادی
+    pub file_name: String,
+    /// قالب برای این نمونه متادیتای کافی نداشت و به پیش‌فرض `{name}` برگشت
+    pub fell_back: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleValidation {

@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Bell, Check, Film, FolderOpen, KeyRound, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X, Zap } from "lucide-react";
+import { Bell, Check, FileText, Film, FolderOpen, KeyRound, Layers, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X, Zap } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
-import type { AutomationMode, HardsubSettings, Settings, ToolPathOverrides } from "../types";
+import type {
+  AutomationMode,
+  HardsubSettings,
+  NamingPreview,
+  ProcessingProfile,
+  Settings,
+  ToolPathOverrides,
+} from "../types";
 
 const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }[] = [
   { key: "ffmpeg", label: "FFmpeg", hint: "استخراج و بررسی رسانه" },
@@ -13,6 +20,13 @@ const TOOL_FIELDS: { key: keyof ToolPathOverrides; label: string; hint: string }
   { key: "sevenZip", label: "7-Zip", hint: "استخراج ZIP/RAR (فاز ۳)" },
   { key: "ffsubsync", label: "FFsubsync (ffs.exe)", hint: "همگام‌سازی (فاز ۴)" },
 ];
+
+/** راهنمای پلاسهولدرها — به‌صورت رشتهٔ ثابت تا براکت‌ها در JSX متن تعبیر نشوند */
+const PLACEHOLDER_HELP =
+  "پلاسهولدرهای مجاز: {name} نام ویدیو — {show} نام نمایشی سریال — {season} فصل " +
+  "(دورقمی) — {episode} قسمت (دورقمی) — {parent} نام پوشه. پسوند «.fa.synced.srt» " +
+  "همیشه حفظ می‌شود؛ اگر متادیتای یک پلاسهولدر برای ویدیویی نباشد (مثلاً قسمت برای فیلم)، " +
+  "خروجی به‌صورت قطعی به نام خود ویدیو برمی‌گردد.";
 
 /** نتیجهٔ بازخوانی وضعیت کلید — همان چیزی که واقعاً دیده شد، نه صرفاً «درخواست موفق بود».
  * خواندنِ موفقِ متناقض هم stored/missing برمی‌گرداند، نه unknown. */
@@ -113,6 +127,161 @@ export function SettingsPage() {
       setSaving(false);
     }
   };
+
+  // ---- پروفایل‌ها — همهٔ کنش‌ها از مرز backend می‌گذرند (اعتبارسنجی و id آنجا است) ----
+
+  const [profileBusy, setProfileBusy] = useState<string | null>(null);
+  const [profileMessage, setProfileMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  /** نام برای «ایجاد از مقادیر فعلی» و «تغییر نام» — یک input مشترک ساده */
+  const [profileNameInput, setProfileNameInput] = useState("");
+
+  const applyProfileMutation = async (profiles: ProcessingProfile[]) => {
+    setProfileBusy("save");
+    setProfileMessage(null);
+    try {
+      const saved = await api.saveProfiles(profiles);
+      await reloadSettings();
+      setDraft(structuredClone(saved));
+      setProfileNameInput("");
+      return saved;
+    } catch (e) {
+      setProfileMessage({ tone: "danger", text: `ذخیرهٔ پروفایل‌ها ناموفق بود: ${String(e)}` });
+      return null;
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  const activeProfile = draft.profiles.find((p) => p.id === draft.activeProfileId) ?? null;
+
+  /** پروفایل انتخاب‌شده برای مدیریت — پیش‌فرض همان پروفایل فعال */
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const selectedProfile =
+    draft.profiles.find((p) => p.id === selectedProfileId) ??
+    draft.profiles.find((p) => p.id === draft.activeProfileId) ??
+    null;
+
+  /** ایجاد پروفایل از مقادیر مؤثر فعلی — id خالی؛ backend توکن می‌سازد */
+  const createProfileFromCurrent = async () => {
+    const name = profileNameInput.trim();
+    if (!name) {
+      setProfileMessage({ tone: "danger", text: "برای پروفایل جدید یک نام بنویسید." });
+      return;
+    }
+    await applyProfileMutation([
+      ...draft.profiles,
+      {
+        id: "",
+        name,
+        builtIn: false,
+        processing: structuredClone(draft.processing),
+        automation: structuredClone(draft.automation),
+        naming: structuredClone(draft.naming),
+      },
+    ]);
+    setProfileMessage({ tone: "success", text: `پروفایل «${name}» از مقادیر فعلی ساخته شد.` });
+  };
+
+  const duplicateActiveProfile = async () => {
+    if (!activeProfile) return;
+    const name = profileNameInput.trim() || `${activeProfile.name} (کپی)`;
+    await applyProfileMutation([
+      ...draft.profiles,
+      {
+        ...structuredClone(activeProfile),
+        id: "",
+        name,
+        builtIn: false,
+      },
+    ]);
+    setProfileMessage({ tone: "success", text: `پروفایل «${name}» ساخته شد.` });
+  };
+
+  const renameProfile = async () => {
+    if (!selectedProfile) return;
+    const name = profileNameInput.trim();
+    if (!name) {
+      setProfileMessage({ tone: "danger", text: "برای تغییر نام، نام جدید را بنویسید." });
+      return;
+    }
+    if (selectedProfile.builtIn) {
+      setProfileMessage({ tone: "danger", text: "پروفایل پیش‌فرض قابل تغییر نام نیست." });
+      return;
+    }
+    await applyProfileMutation(
+      draft.profiles.map((p) => (p.id === selectedProfile.id ? { ...p, name } : p)),
+    );
+    setProfileMessage({ tone: "success", text: `نام پروفایل به «${name}» تغییر کرد.` });
+  };
+
+  const deleteSelectedProfile = async () => {
+    if (!selectedProfile) return;
+    if (selectedProfile.builtIn) {
+      setProfileMessage({ tone: "danger", text: "پروفایل پیش‌فرض قابل حذف نیست — همیشه یک پیکربندی قابل استفاده باید بماند." });
+      return;
+    }
+    const ok = await ask(
+      `پروفایل «${selectedProfile.name}» حذف شود؟\n\nمقادیر مؤثر فعلی تغییر نمی‌کنند؛ فقط ورودی پروفایل حذف می‌شود.`,
+      { kind: "warning" },
+    );
+    if (!ok) return;
+    await applyProfileMutation(draft.profiles.filter((p) => p.id !== selectedProfile.id));
+    setProfileMessage({ tone: "success", text: "پروفایل حذف شد." });
+  };
+
+  /** اعمال پروفایل انتخاب‌شده در dropdown — مقادیر مؤثر را همان‌جا کپی می‌کند */
+  const applySelectedProfile = async () => {
+    if (!selectedProfile) return;
+    setProfileBusy("apply");
+    setProfileMessage(null);
+    try {
+      const saved = await api.applyProfile(selectedProfile.id);
+      await reloadSettings();
+      setDraft(structuredClone(saved));
+      setProfileMessage({
+        tone: "success",
+        text: `پروفایل «${selectedProfile.name}» روی مقادیر فعلی اعمال شد.`,
+      });
+    } catch (e) {
+      setProfileMessage({ tone: "danger", text: `اعمال پروفایل ناموفق بود: ${String(e)}` });
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  // ---- پیش‌نمایش قالب نام — رندر قطعی از backend، هرگز از فرانت ----
+
+  const [namingPreview, setNamingPreview] = useState<NamingPreview | null>(null);
+  const [namingPreviewError, setNamingPreviewError] = useState<string | null>(null);
+  const PREVIEW_SAMPLE = {
+    videoName: "Show.S01E05.1080p.mkv",
+    show: "Show",
+    season: 1,
+    episode: 5,
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const template = draft.naming.syncedSidecarBase;
+    api
+      .previewSidecarName({ template, ...PREVIEW_SAMPLE })
+      .then((preview) => {
+        if (!cancelled) {
+          setNamingPreview(preview);
+          setNamingPreviewError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setNamingPreview(null);
+          setNamingPreviewError(String(e));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // پیش‌نمایش فقط به قالب وابسته است — نمونه ثابت و نماینده است
+  }, [draft.naming.syncedSidecarBase]);
 
   const toolStatus = (key: keyof ToolPathOverrides) => {
     const id = key === "sevenZip" ? "sevenZip" : key;
@@ -573,6 +742,103 @@ export function SettingsPage() {
       </Card>
 
       <Card className="p-5">
+        <SectionTitle icon={Layers} title="پروفایل‌های پردازش" />
+        <div className="space-y-3">
+          <p className="text-xs leading-6 text-ink-3">
+            هر پروفایل مجموعهٔ «پردازش و سینک + اتوماسیون + نام‌گذاری خروجی» را نگه
+            می‌دارد و با «اعمال» روی مقادیر فعلی کپی می‌شود. تنظیمات سراسری
+            (ابزارها، پوشه‌ها، اعلان‌ها، کلید API و…) خارج از پروفایل‌اند.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="profile-select" className="w-56 shrink-0 text-sm text-ink-2">
+              پروفایل — انتخاب برای مدیریت
+            </label>
+            <select
+              id="profile-select"
+              value={selectedProfile?.id ?? ""}
+              onChange={(e) => setSelectedProfileId(e.target.value)}
+              className="h-10 min-w-52 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            >
+              {draft.profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.id === draft.activeProfileId ? " — فعال" : ""}
+                  {p.builtIn ? " (ساختی)" : ""}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="primary"
+              loading={profileBusy === "apply"}
+              onClick={applySelectedProfile}
+              disabled={profileBusy !== null || !selectedProfile}
+            >
+              اعمال روی مقادیر فعلی
+            </Button>
+          </div>
+          {activeProfile && (
+            <p className="text-xs leading-6 text-ink-3">
+              پروفایل فعال:{" "}
+              <span className="font-semibold text-ink-1">{activeProfile.name}</span>
+              {" "}— ویرایش کارت‌های «پردازش و سینک»، «اتوماسیون» و «نام‌گذاری» مقادیر
+              مؤثر را عوض می‌کند و پروفایل را بازنویسی نمی‌کند؛ برای به‌روزرسانی
+              پروفایل از مقادیر فعلی، آن را با «ایجاد» یا «تکثیر» دوباره ذخیره کنید.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={profileNameInput}
+              onChange={(e) => setProfileNameInput(e.target.value)}
+              placeholder="نام برای پروفایل جدید / نام جدید برای پروفایل انتخاب‌شده"
+              className="h-10 min-w-56 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+            />
+            <Button
+              variant="primary"
+              loading={profileBusy === "save"}
+              onClick={createProfileFromCurrent}
+              disabled={profileBusy !== null}
+            >
+              ایجاد از مقادیر فعلی
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={duplicateActiveProfile}
+              disabled={profileBusy !== null || !activeProfile}
+            >
+              تکثیر فعال
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={renameProfile}
+              disabled={profileBusy !== null || !selectedProfile || selectedProfile.builtIn}
+            >
+              تغییر نام
+            </Button>
+            <Button
+              variant="danger"
+              onClick={deleteSelectedProfile}
+              disabled={
+                profileBusy !== null || !selectedProfile || selectedProfile.builtIn
+              }
+            >
+              حذف
+            </Button>
+          </div>
+          {profileMessage && (
+            <p
+              className={`rounded-lg border px-3 py-2 text-xs leading-5 ${
+                profileMessage.tone === "success"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                  : "border-red-500/30 bg-red-500/10 text-red-400"
+              }`}
+            >
+              {profileMessage.text}
+            </p>
+          )}
+        </div>
+      </Card>
+
+      <Card className="p-5">
         <SectionTitle icon={Zap} title="اتوماسیون" />
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
@@ -622,6 +888,58 @@ export function SettingsPage() {
             هر دو حالت پابرجاست و گزارش JSON هر اجرا در پوشهٔ دادهٔ برنامه (data/runs) ذخیره
             می‌شود.
           </p>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={FileText} title="نام‌گذاری خروجی" />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="naming-template" className="w-56 shrink-0 text-sm text-ink-2">
+              قالب پایهٔ نام خروجی سینک‌شده
+            </label>
+            <input
+              id="naming-template"
+              dir="ltr"
+              value={draft.naming.syncedSidecarBase}
+              onChange={(e) =>
+                patch({
+                  naming: { ...draft.naming, syncedSidecarBase: e.target.value },
+                })
+              }
+              className="h-10 min-w-64 flex-1 rounded-lg border border-line bg-surface-2 px-3 font-mono text-sm outline-none focus:border-accent"
+            />
+            <Button
+              variant="ghost"
+              onClick={() =>
+                patch({
+                  naming: { ...draft.naming, syncedSidecarBase: "{name}" },
+                })
+              }
+            >
+              بازگشت به پیش‌فرض
+            </Button>
+          </div>
+          <p className="text-xs leading-6 text-ink-3">{PLACEHOLDER_HELP}</p>
+          {namingPreviewError ? (
+            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
+              {namingPreviewError}
+            </p>
+          ) : namingPreview ? (
+            <div className="rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs">
+              <span className="text-ink-3">
+                پیش‌نمایش برای نمونهٔ نماینده (Show.S01E05.1080p.mkv):
+              </span>{" "}
+              <span dir="ltr" className="font-mono text-ink-1">
+                {namingPreview.fileName}
+              </span>
+              {namingPreview.fellBack && (
+                <span className="text-amber-400">
+                  {" "}— متادیتای نمونه برای این قالب کافی نبود؛ fallback پیش‌فرض
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
       </Card>
 

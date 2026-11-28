@@ -188,4 +188,9 @@ export interface PipelineSummary {
   keyStoreError?: string;
   durationMs: number;
   ephemeral: boolean;
+  /** پروفایل فعال در شروع run — از snapshot S0 (قرینه بک‌اند) */
+  profileId?: string;
+  profileName?: string;
+  /** قالب نام مؤثر در شروع run */
+  namingTemplate?: string;
 }

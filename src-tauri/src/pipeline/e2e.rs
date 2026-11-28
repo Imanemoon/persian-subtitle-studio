@@ -2208,3 +2208,154 @@ fn auto_mode_equal_sidecars_become_needs_review() {
     }
     assert_eq!(run.summary.counts.needs_review, 1);
 }
+
+// ---------------------------------------------------------------------------
+// فاز ۲ — پروفایل‌ها و قالب نام خروجی
+// ---------------------------------------------------------------------------
+
+/// قالب سفارشی برای تست‌های نام‌گذاری — متادیتای اپیزود را مصرف می‌کند.
+const CUSTOM_TEMPLATE: &str = "{show} S{season}E{episode}";
+
+/// اجرای pipeline در حالت sidecar با تنظیمات پروفایل/نام‌گذاری داده‌شده.
+fn run_sidecar_named(h: &Harness, video: &Path, template: &str) -> Run {
+    {
+        let mut settings = h.state.settings.lock().unwrap();
+        settings.processing.subtitle_output_mode = crate::settings::SubtitleOutputMode::Sidecar;
+        settings.naming.synced_sidecar_base = template.into();
+    }
+    run_pipeline_core(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        None,
+        KeyChoice::Missing,
+        None,
+        false,
+        None,
+    )
+}
+
+/// قالب سفارشی با متادیتای اپیزود → خروجی sidecar با نام رندرشده از قالب؛
+/// پروفایل فعال و قالب مؤثر در خلاصهٔ run ثبت می‌شوند.
+#[test]
+fn sidecar_mode_renders_custom_naming_template_for_episodes() {
+    let h = Harness::new("naming-custom-episode");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E05.1080p.mkv");
+    h.probe_json(&video, JSON_NONE);
+    h.sidecar(&video, ".fa.srt", SRT_FA_A);
+
+    let run = run_sidecar_named(&h, &video, CUSTOM_TEMPLATE);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::Synced { output_path } => {
+            let name = output_path.rsplit(['\\', '/']).next().unwrap_or_default();
+            assert_eq!(name, "Show S01E05.fa.synced.srt", "output={output_path}");
+        }
+        other => panic!("انتظار Synced، دریافت: {other:?}"),
+    }
+    let custom_target = video.parent().unwrap().join("Show S01E05.fa.synced.srt");
+    assert!(
+        custom_target.is_file(),
+        "فایل با نام قالبی باید جانمایی شده باشد"
+    );
+    // رکورد پروفایل/قالب در خلاصه — از snapshot S0
+    assert_eq!(run.summary.profile_id.as_deref(), Some("builtin-default"));
+    assert_eq!(run.summary.profile_name.as_deref(), Some("پیش‌فرض"));
+    assert_eq!(run.summary.naming_template, CUSTOM_TEMPLATE);
+    assert_eq!(run.summary.counts.synced, 1);
+}
+
+/// فیلم بدون متادیتای فصل/قسمت → قالب اپیزوددار قابل رندر نیست و
+/// قطعی به پیش‌فرض هم‌نام ویدیو برمی‌گردد — هیچ براکت خامی در نام نمی‌نشیند.
+#[test]
+fn movie_without_episode_metadata_falls_back_to_default_name() {
+    let h = Harness::new("naming-movie-fallback");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Movie.2023.1080p.mkv");
+    h.probe_json(&video, JSON_NONE);
+    h.sidecar(&video, ".fa.srt", SRT_FA_A);
+
+    let run = run_sidecar_named(&h, &video, CUSTOM_TEMPLATE);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::Synced { output_path } => {
+            // fallback قطعی = هم‌نام ویدیو (stem کامل) — نه براکت خام، نه نام قالبی ناقص
+            assert!(
+                output_path.ends_with("Movie.2023.1080p.fa.synced.srt"),
+                "fallback باید هم‌نام ویدیو باشد: {output_path}"
+            );
+            assert!(
+                !output_path.contains('{') && !output_path.contains('}'),
+                "هیچ براکت خامی در نام نهایی مجاز نیست: {output_path}"
+            );
+        }
+        other => panic!("انتظار Synced، دریافت: {other:?}"),
+    }
+}
+
+/// فایل موجود در مسیر قالبی → تعارض با حفظ هر دو فایل (policy no-overwrite
+/// روی نام‌های قالبی هم دقیقاً مثل نام پیش‌فرض برقرار است).
+#[test]
+fn custom_named_output_collision_preserves_existing_file() {
+    let h = Harness::new("naming-custom-conflict");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E05.mkv");
+    h.probe_json(&video, JSON_ONE_FA);
+    // فایل نامعتبر در مقصد قالبی — قبل از run
+    let conflict_target = video.parent().unwrap().join("Show S01E05.fa.synced.srt");
+    fs::write(&conflict_target, GARBAGE).unwrap();
+    let conflict_before = fs::read(&conflict_target).unwrap();
+
+    let run = run_sidecar_named(&h, &video, CUSTOM_TEMPLATE);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::OutputConflict { preserved_path } => {
+            assert!(
+                preserved_path.ends_with("Show S01E05.fa.synced.srt"),
+                "preserved={preserved_path}"
+            );
+        }
+        other => panic!("انتظار OutputConflict، دریافت: {other:?}"),
+    }
+    assert_eq!(
+        fs::read(&conflict_target).unwrap(),
+        conflict_before,
+        "فایل موجود باید بیت‌به‌بیت حفظ شده باشد"
+    );
+    assert_eq!(run.summary.counts.conflicts, 1);
+    assert!(
+        !placed_path(&video).exists(),
+        "نام پیش‌فرض نباید ساخته شود — تعارض فقط روی نام قالبی است"
+    );
+}
+
+/// حالت تعاملی با قالب پیش‌فرض: نام خروجی همان رفتار قبلی است — رگرسیون.
+#[test]
+fn default_template_keeps_legacy_sidecar_name() {
+    let h = Harness::new("naming-default-legacy");
+    h.set_ffs("success");
+    h.set_ffmpeg_mode("success");
+    let video = h.video("Show.S01E05.mkv");
+    h.probe_json(&video, JSON_NONE);
+    h.sidecar(&video, ".fa.srt", SRT_FA_A);
+
+    let run = run_sidecar_named(&h, &video, crate::output_naming::DEFAULT_BASE_TEMPLATE);
+
+    assert_eq!(run.summary.status, PipelineStatus::Completed);
+    match run.outcome(&video) {
+        ItemOutcome::Synced { output_path } => {
+            assert!(
+                output_path.ends_with("Show.S01E05.fa.synced.srt"),
+                "{output_path}"
+            );
+        }
+        other => panic!("انتظار Synced، دریافت: {other:?}"),
+    }
+    assert!(placed_path(&video).is_file());
+}

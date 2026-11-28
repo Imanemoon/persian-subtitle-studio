@@ -169,6 +169,9 @@ fn summary_from_control(
         key_store_error: g.key_store_error.clone(),
         duration_ms: control.started.elapsed().as_millis() as u64,
         ephemeral: true,
+        profile_id: g.profile_id.clone(),
+        profile_name: g.profile_name.clone(),
+        naming_template: g.naming_template.clone(),
     }
     .with_message(message.into())
 }
@@ -234,6 +237,19 @@ pub(crate) fn run_pipeline_body(
     // حالت اتوماسیون — Interactive رفتار فعلی، Auto سیاست بک‌اند را فعال می‌کند
     let auto_mode = settings.automation.mode == crate::settings::AutomationMode::Auto;
     let max_sync_attempts = settings.automation.max_sync_attempts.max(1) as usize;
+    // snapshot پروفایل فعال + قالب نام — فقط از همین clone خوانده می‌شود؛
+    // تغییر تنظیمات وسط run روی این اجرا اثر ندارد
+    let naming = settings.naming.clone();
+    let profile_name = settings
+        .active_profile_id
+        .as_ref()
+        .and_then(|id| settings.profiles.iter().find(|p| &p.id == id))
+        .map(|p| p.name.clone());
+    control.set_profile_snapshot(
+        settings.active_profile_id.clone(),
+        profile_name,
+        naming.synced_sidecar_base.clone(),
+    );
     let _tools = resolve_all_tools(state);
     ensure_running()?;
 
@@ -1452,7 +1468,8 @@ pub(crate) fn run_pipeline_body(
     let mut sync_outcomes: HashMap<usize, crate::sync::SyncOutcome> = HashMap::new();
     match (&ffs_res, &ffmpeg_res) {
         (Ok(ffs_exe), Ok(ffmpeg_exe)) if !jobs.is_empty() => {
-            let config = crate::sync::SyncConfig::from(&state.settings.lock().unwrap().processing);
+            // snapshot S0 — نه خواندن زندهٔ تنظیمات وسط run (سازگاری پروفایل)
+            let config = crate::sync::SyncConfig::from(&settings.processing);
             // شمارهٔ تلاش هر ویدیو (تنظیم دوباره‌ها) — نردبان استراتژی سینک می‌چرخد
             let attempts = state
                 .sync_attempts
@@ -1680,10 +1697,20 @@ pub(crate) fn run_pipeline_body(
                     continue;
                 }
 
-                let target = video.parent().unwrap_or(Path::new(".")).join(format!(
-                    "{}.fa.synced.srt",
-                    video.file_stem().unwrap_or_default().to_string_lossy()
-                ));
+                // نام خروجی از قالب مؤثر run (snapshot S0) — همیشه زیر پوشهٔ
+                // خود ویدیو با پسوند قراردادی حفظ‌شده؛ تعارض مثل سابق
+                // از مسیر no-overwrite (create_new) با حفظ هر دو فایل می‌گذرد
+                let target = {
+                    let entry = crate::commands::media::get_entry(state, &rt.video_path);
+                    let ctx = entry
+                        .as_ref()
+                        .map(crate::output_naming::OutputNameContext::from_entry);
+                    crate::output_naming::synced_sidecar_target(
+                        &video,
+                        ctx.as_ref(),
+                        &naming.synced_sidecar_base,
+                    )
+                };
                 match crate::archive::placement::place_subtitle(&candidate, &target) {
                     Ok(_) => {
                         // workspace فقط پس از جانمایی موفق حذف می‌شود
@@ -1771,6 +1798,9 @@ pub(crate) fn run_pipeline_body(
             key_store_error: g.key_store_error.clone(),
             duration_ms,
             ephemeral: true,
+            profile_id: g.profile_id.clone(),
+            profile_name: g.profile_name.clone(),
+            naming_template: g.naming_template.clone(),
         }
     };
     super::emit_to(

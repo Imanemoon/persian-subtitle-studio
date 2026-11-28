@@ -202,6 +202,28 @@ export interface AutomationSettings {
   maxSyncAttempts: number;
 }
 
+/** تنظیمات نام‌گذاری خروجی — قرینه NamingSettings بک‌اند.
+ * قالب فقط بخش پایهٔ نام را می‌سازد؛ پسوند .fa.synced.srt همیشه حفظ می‌شود. */
+export interface NamingSettings {
+  syncedSidecarBase: string;
+}
+
+/** پروفایل پردازش — قرینه ProcessingProfile بک‌اند؛ id قطعی و backend-owned است */
+export interface ProcessingProfile {
+  id: string;
+  name: string;
+  builtIn: boolean;
+  processing: ProcessingSettings;
+  automation: AutomationSettings;
+  naming: NamingSettings;
+}
+
+/** پیش‌نمایش قالب نام — قرینه NamingPreview بک‌اند */
+export interface NamingPreview {
+  fileName: string;
+  fellBack: boolean;
+}
+
 export interface Settings {
   rootFolder: string | null;
   excludedFolders: string[];
@@ -211,6 +233,9 @@ export interface Settings {
   notifications: NotificationSettings;
   existingFileBehavior: ExistingFileBehavior;
   automation: AutomationSettings;
+  naming: NamingSettings;
+  profiles: ProcessingProfile[];
+  activeProfileId: string | null;
   logsDir: string | null;
   /** معاونت راه‌اندازی یک‌بار طی شده یا پشت زده شده */
   setupCompleted: boolean;

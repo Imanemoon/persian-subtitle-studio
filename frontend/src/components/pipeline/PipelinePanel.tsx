@@ -698,6 +698,15 @@ export function PipelinePanel({
                 </div>
                 <div className="text-xs text-ink-3">
                   {formatDuration(summary.durationMs)}
+                  {summary.profileName && (
+                    <>
+                      {" — پروفایل: "}
+                      {summary.profileName}
+                      {summary.namingTemplate &&
+                        summary.namingTemplate !== "{name}" &&
+                        ` — قالب نام: ${summary.namingTemplate}`}
+                    </>
+                  )}
                 </div>
               </div>
             </div>

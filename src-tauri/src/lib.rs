@@ -6,6 +6,7 @@ pub mod logging;
 pub mod media;
 pub mod models;
 pub mod notify;
+pub mod output_naming;
 pub mod pipeline;
 pub mod scanner;
 pub mod settings;
@@ -156,6 +157,9 @@ pub fn run() {
             commands::scan::is_scanning,
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::save_profiles,
+            commands::settings::apply_profile,
+            commands::settings::preview_sidecar_name,
             commands::pipeline::start_pipeline,
             commands::pipeline::resolve_pipeline_decision,
             commands::pipeline::cancel_pipeline,

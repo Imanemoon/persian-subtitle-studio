@@ -241,6 +241,17 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   };
 
+  // پروفایل فعال — تغییرش فقط «اعمال» backend را صدا می‌زند (مقادیر مؤثر آنجا کپی می‌شوند)
+  const selectProfile = async (id: string) => {
+    setNotice(null);
+    try {
+      await api.applyProfile(id);
+      await reloadSettings();
+    } catch (e) {
+      setNotice(`اعمال پروفایل ناموفق بود: ${errorText(e)}`);
+    }
+  };
+
   const startTitle = canStart
     ? undefined
     : busy
@@ -406,6 +417,24 @@ export function Home({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 : "حالت تعاملی: هر جا ابهام باشد، پردازش متوقف و تصمیم از شما پرسیده می‌شود."}
             </p>
           </div>
+
+          {/* پروفایل فعال — فقط وقتی بیش از یک پروفایل هست؛ اعمال از backend می‌گذرد */}
+          {settings && settings.profiles.length > 1 && (
+            <div className="mt-4 flex items-center justify-center gap-2 text-xs text-ink-3">
+              <span>پروفایل:</span>
+              <select
+                value={settings.activeProfileId ?? ""}
+                onChange={(e) => void selectProfile(e.target.value)}
+                className="h-8 rounded-lg border border-white/10 bg-surface-1/70 px-2 text-xs text-ink-1 outline-none"
+              >
+                {settings.profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* کنش اصلی — pipeline فقط با فایل‌های واقعی شروع می‌شود */}
           <button

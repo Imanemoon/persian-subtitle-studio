@@ -54,6 +54,11 @@ pub(crate) struct ControlState {
     pub staged_paths: Vec<String>,
     pub warnings: Vec<String>,
     pub key_store_error: Option<String>,
+    /// snapshot پروفایل فعال + قالب نام — یک‌بار در S0 از settings گرفته می‌شود؛
+    /// تغییر تنظیمات وسط run روی این run اثر ندارد (سازگاری snapshot).
+    pub profile_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub naming_template: String,
 }
 
 pub(crate) struct PendingDecisionState {
@@ -100,6 +105,9 @@ impl PipelineControl {
                 staged_paths: Vec::new(),
                 warnings: Vec::new(),
                 key_store_error: None,
+                profile_id: None,
+                profile_name: None,
+                naming_template: String::new(),
             }),
             gate: Condvar::new(),
         }
@@ -208,6 +216,19 @@ impl PipelineControl {
 
     pub(crate) fn set_key_store_error(&self, reason: Option<String>) {
         self.lock_inner().key_store_error = reason;
+    }
+
+    /// ثبت snapshot پروفایل فعال + قالب نام — یک‌بار در S0؛ منبع خلاصه/گزارش.
+    pub(crate) fn set_profile_snapshot(
+        &self,
+        profile_id: Option<String>,
+        profile_name: Option<String>,
+        naming_template: String,
+    ) {
+        let mut g = self.lock_inner();
+        g.profile_id = profile_id;
+        g.profile_name = profile_name;
+        g.naming_template = naming_template;
     }
 
     /// جایگزینی/افزودن snapshot آیتم بر اساس مسیر ویدیو.
