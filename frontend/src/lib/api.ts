@@ -149,6 +149,9 @@ export const api = {
   /** باز کردن پوشهٔ محل ذخیره در Explorer با انتخاب فایل */
   revealInStorage: (videoPath: string) =>
     invoke<void>("reveal_in_explorer", { path: videoPath }),
+  /** استخراج زیرنویس سینک‌شدهٔ نهایی به <base>.fa.srt — جایگزین زیرنویس لوکال */
+  extractSyncedSubtitle: (videoPath: string) =>
+    invoke<string>("extract_synced_subtitle", { path: videoPath }),
 
   /** انتخاب یک فایل زیرنویس (srt/ass/ssa/vtt) با دیالوگ بومی */
   pickSubtitle: async (): Promise<string | null> => {

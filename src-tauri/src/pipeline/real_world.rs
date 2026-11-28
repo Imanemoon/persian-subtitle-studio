@@ -1151,3 +1151,102 @@ fn real_fail_cancel_during_mux_preserves_source() {
     );
     assert_no_softsub_leftover(&video);
 }
+
+/// آزمون حلقهٔ کامل کاربر (v0.3.2) — رسانهٔ واقعی سنگین + ابزارهای واقعی:
+/// pipeline با SoftSub → استخراج زیرنویس سینک‌شده (همان core دکمهٔ UI) →
+/// تنظیم دوباره (شمارندهٔ تلاش) → pipeline مجدد → استراتژی باید به مرجع صوتی
+/// کامل بچرخد و آفست صوتی واقعی اعمال شود؛ همه در workspace ایزوله.
+#[test]
+#[ignore = "اجرای دستی real-world روی رسانهٔ سنگین — SUBSYNC_REAL_SAMPLE_EVIL و ابزارهای واقعی لازم است"]
+fn real_full_loop_sync_verify_extract_redo() {
+    let h = RealHarness::new("real-loop", SubtitleOutputMode::SoftSub, false);
+    let video = h.copy_external(&sample("EVIL"), "Movie.mkv");
+    let before = h.video_hash(&video);
+
+    // ---- تلاش اول (attempt خالی): استراتژی مرجع کامل — مرجع Track داخلی ----
+    let run1 = run_real_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        Some(first_option_resolver(&h.state)),
+    );
+    assert_eq!(run1.summary.status, PipelineStatus::Completed);
+    match run1.outcome_of(&video) {
+        ItemOutcome::SoftSubbed { video_path } => {
+            assert_eq!(Path::new(video_path), video.as_path());
+        }
+        other => panic!("تلاش اول انتظار SoftSubbed بود، دریافت: {other:?}"),
+    }
+    let item1 = run1
+        .summary
+        .items
+        .iter()
+        .find(|i| i.video_path == video.to_string_lossy())
+        .expect("آیتم تلاش اول");
+    let strategy1 = item1
+        .artifacts
+        .sync_strategy
+        .clone()
+        .expect("استراتژی تلاش اول باید ثبت شود");
+    assert!(strategy1.contains("مرجع کامل"), "{strategy1}");
+    assert_ne!(
+        h.video_hash(&video),
+        before,
+        "SoftSub باید ویدیو را remux کرده باشد"
+    );
+
+    // ---- استخراج زیرنویس سینک‌شده — همان core دکمهٔ «استخراج زیرنویس» ----
+    let message =
+        crate::commands::subtitle::extract_synced_subtitle_core(&h.state, &video.to_string_lossy())
+            .expect("استخراج زیرنویس باید موفق باشد");
+    assert!(message.contains("استخراج"), "{message}");
+    let fa = video.with_file_name("Movie.fa.srt");
+    assert!(fa.is_file(), "fa.srt باید ساخته شود: {}", fa.display());
+    let validation = crate::subtitle::validation::validate_file(&fa);
+    assert!(
+        validation.valid && validation.has_persian,
+        "fa.srt استخراج‌شده باید فارسی معتبر باشد"
+    );
+
+    // ---- تنظیم دوباره (تلاش ۱): نردبان باید AudioOnly را اول بیاورد ----
+    {
+        let mut attempts = h.state.sync_attempts.lock().unwrap();
+        *attempts
+            .entry(video.to_string_lossy().into_owned())
+            .or_insert(0) += 1;
+    }
+    let run2 = run_real_pipeline(
+        Arc::clone(&h.state),
+        vec![video.to_string_lossy().into_owned()],
+        Some(first_option_resolver(&h.state)),
+    );
+    assert_eq!(run2.summary.status, PipelineStatus::Completed);
+    match run2.outcome_of(&video) {
+        ItemOutcome::SoftSubbed { .. } => {}
+        other => panic!("تنظیم دوباره انتظار SoftSubbed بود، دریافت: {other:?}"),
+    }
+    let item2 = run2
+        .summary
+        .items
+        .iter()
+        .find(|i| i.video_path == video.to_string_lossy())
+        .expect("آیتم تلاش دوم");
+    let strategy2 = item2
+        .artifacts
+        .sync_strategy
+        .clone()
+        .expect("استراتژی تلاش دوم باید ثبت شود");
+    assert!(
+        strategy2.contains("مرجع صوتی"),
+        "تلاش ۱ باید با مرجع صوتی کامل سینک کند: {strategy2}"
+    );
+    let offset2 = item2
+        .artifacts
+        .offset_seconds
+        .expect("آفست تلاش صوتی باید ثبت شود");
+    // آفست صوتی روی رسانهٔ واقعی پایدار نیست (VAD شلوغ) — قرارداد: داخل گیت
+    // کیفیت باشد؛ قضاوت نهایی نتیجه با «پخش ویدیو» توسط کاربر است
+    assert!(
+        offset2.abs() <= 30.0,
+        "آفست صوتی باید داخل گیت کیفیت باشد: {offset2}"
+    );
+}

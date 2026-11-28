@@ -424,6 +424,8 @@ pub(crate) fn execute_in_workspace(
                         outcome.output_path = Some(output.clone());
                         // آفستِ validated در طبقه‌بندی حمل شده — همیشه Some برای Synced
                         outcome.offset_seconds = Some(offset_seconds);
+                        // استراتژی برنده برای شفافیت حلقهٔ تنظیم دوباره در UI
+                        outcome.strategy = Some(strategy.label().to_string());
                         if !attempts.is_empty() {
                             attempts.push(format!("تلاش {} [{}]: موفق.", idx + 1, strategy.label()));
                             let summary = attempts.join(" ");

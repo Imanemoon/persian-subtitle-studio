@@ -674,3 +674,108 @@ pub fn validate_subtitle_file(path: String) -> Result<SubtitleValidation, String
     }
     Ok(crate::subtitle::validation::validate_file(p))
 }
+
+// ---------------------------------------------------------------------------
+// استخراج زیرنویسِ سینک‌شدهٔ نهایی — دکمهٔ «استخراج زیرنویس» کنار «پخش ویدیو»
+// ---------------------------------------------------------------------------
+
+/// هستهٔ استخراج زیرنویسِ سینک‌شده — مستقل از Tauri.
+///
+/// اولویت: اگر `<base>.fa.synced.srt` کنار ویدیو هست، همان به `<base>.fa.srt`
+/// جایگزین می‌شود؛ وگرنه Track متنی فارسی داخلی ویدیو استخراج و مقصد موجود
+/// با خروجی معتبر جایگزین می‌شود (اکشن صریح کاربر).
+pub fn extract_synced_subtitle_core(state: &AppState, video_path: &str) -> Result<String, String> {
+    let video = PathBuf::from(video_path.trim());
+    if !video.is_file() {
+        return Err("فایل ویدیو روی دیسک پیدا نشد.".into());
+    }
+    let stem = video
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .ok_or_else(|| "نام ویدیو نامعتبر است.".to_string())?;
+    let dir = video
+        .parent()
+        .ok_or_else(|| "ویدیو پوشه والد ندارد.".to_string())?;
+    let fa_target = dir.join(format!("{stem}.fa.srt"));
+    let synced = dir.join(format!("{stem}.fa.synced.srt"));
+
+    // حالت sidecar: خروجی سینک‌شده از قبل فایل است — جایگزینی مستقیم
+    if synced.is_file() {
+        std::fs::copy(&synced, &fa_target).map_err(|e| {
+            format!(
+                "کپی زیرنویس سینک‌شده به «{}» ناموفق بود: {e}",
+                fa_target.display()
+            )
+        })?;
+        crate::logging::info(
+            "subtitle",
+            &format!(
+                "استخراج زیرنویس سینک‌شده از فایل synced: {}",
+                fa_target.display()
+            ),
+        );
+        return Ok(format!(
+            "زیرنویس سینک‌شده به «{}» جایگزین شد.",
+            fa_target.display()
+        ));
+    }
+
+    // حالت SoftSub: Track متنی فارسی داخلی پیدا و استخراج می‌شود
+    let ffmpeg = super::media::resolve_tool(state, "ffmpeg")?;
+    let ffprobe = super::media::resolve_tool(state, "ffprobe")?;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let streams = crate::media::ffprobe::probe_subtitle_streams(&ffprobe, &video, &cancel)
+        .map_err(|e| format!("بررسی Trackهای داخلی ناموفق بود: {}", e.message()))?;
+    let chosen = streams
+        .iter()
+        .find(|s| s.kind == SubtitleKind::Text && (s.persian_candidate || s.persian_confirmed))
+        .or_else(|| streams.iter().find(|s| s.kind == SubtitleKind::Text))
+        .ok_or(
+            "هیچ Track زیرنویس متنی داخل ویدیو پیدا نشد — زیرنویس SoftSub یا sidecar لازم است.",
+        )?;
+    let (target, validation) = crate::subtitle::extraction::extract_fa_srt_overwrite(
+        &ffmpeg,
+        &video,
+        chosen.stream_index,
+        &cancel,
+    )
+    .map_err(|e| e.message())?;
+    if !validation.has_persian {
+        crate::logging::warn(
+            "subtitle",
+            "استخراج زیرنویس: محتوای استخراج‌شده فارسی تأیید نشد — فایل جایگزین شد",
+        );
+    }
+    crate::logging::info(
+        "subtitle",
+        &format!(
+            "استخراج زیرنویس سینک‌شده: {} ({} cue، فارسی: {})",
+            target.display(),
+            validation.cue_count,
+            if validation.has_persian {
+                "تأیید شد"
+            } else {
+                "تأیید نشد"
+            }
+        ),
+    );
+    Ok(format!(
+        "زیرنویس فارسی استخراج و «{}» جایگزین شد ({} cue).",
+        target.display(),
+        validation.cue_count
+    ))
+}
+
+/// دکمهٔ «استخراج زیرنویس» — زیرنویس سینک‌شدهٔ نهایی را `<base>.fa.srt` می‌کند
+/// و جایگزین زیرنویس لوکال فعلی می‌شود.
+#[tauri::command]
+pub async fn extract_synced_subtitle(app: AppHandle, path: String) -> Result<String, String> {
+    let path2 = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let st = state.inner();
+        extract_synced_subtitle_core(st, &path2)
+    })
+    .await
+    .map_err(|e| format!("خطای Thread: {e}"))?
+}

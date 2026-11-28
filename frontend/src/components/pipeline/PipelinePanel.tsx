@@ -102,6 +102,40 @@ export function PipelinePanel({
   // ---- تنظیم دوباره زیرنویس ----
   const [redoBusy, setRedoBusy] = useState<Set<string>>(new Set());
   const [redoError, setRedoError] = useState<string | null>(null);
+  // ---- استخراج زیرنویس سینک‌شده (تکی و گروهی) ----
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [extractMessage, setExtractMessage] = useState<string | null>(null);
+  const extractSubtitle = async (videoPath: string) => {
+    setExtractBusy(true);
+    setExtractMessage(null);
+    try {
+      setExtractMessage(await api.extractSyncedSubtitle(videoPath));
+    } catch (e) {
+      setExtractMessage(`استخراج ناموفق: ${errorText(e)}`);
+    } finally {
+      setExtractBusy(false);
+    }
+  };
+  const extractAllSubtitles = async () => {
+    setExtractBusy(true);
+    setExtractMessage(null);
+    let ok = 0;
+    const failed: string[] = [];
+    for (const p of eligiblePaths) {
+      try {
+        await api.extractSyncedSubtitle(p);
+        ok += 1;
+      } catch {
+        failed.push(fileBaseName(p));
+      }
+    }
+    setExtractBusy(false);
+    setExtractMessage(
+      failed.length > 0
+        ? `استخراج شد: ${faNum(ok)} — ناموفق: ${failed.join("، ")}`
+        : `${faNum(ok)} زیرنویس استخراج و به <base>.fa.srt جایگزین شد.`,
+    );
+  };
   // ---- ETA اجرا: شروع run + تیک یک‌ثانیه‌ای برای به‌روزرسانی تقریب ----
   const runStartedAt = useRef<number | null>(null);
   const [, setEtaTick] = useState(0);
@@ -221,7 +255,7 @@ export function PipelinePanel({
     runActive && snapshot?.stageProgress && snapshot.stageProgress.total > 0
       ? Math.min(1, snapshot.stageProgress.completed / snapshot.stageProgress.total)
       : 0;
-  const finishedAll = total > 0 && completed >= total;
+  const finishedAll = total > 0 && completed >= total && !runActive;
   const overall = finishedAll
     ? 1
     : stage && stageIndex >= 0
@@ -710,30 +744,66 @@ export function PipelinePanel({
                 <RotateCcw className="size-3.5" />
                 تنظیم دوباره
               </Button>
+              <Button
+                disabled={extractBusy}
+                loading={extractBusy}
+                onClick={() => void extractSubtitle(playablePath)}
+                title="زیرنویس سینک‌شدهٔ نهایی را <base>.fa.srt کنار ویدیو می‌کند و جایگزین زیرنویس فعلی می‌شود"
+              >
+                <Captions className="size-3.5" />
+                استخراج زیرنویس
+              </Button>
               <span className="text-[11px] leading-5 text-ink-3">
                 سینک درست نیست؟ تنظیم دوباره این بار با روش دیگری سینک می‌کند.
               </span>
+              {extractMessage && (
+                <p className="w-full text-[11px] leading-5 text-ink-2">
+                  {extractMessage}
+                </p>
+              )}
             </div>
           )}
 
           <NeedsReview summary={summary} />
 
-          {/* هاردساب گروهی همهٔ موارد موفق — پس از پایان سینک */}
+          {/* هاردساب گروهی + استخراج گروهی زیرنویس‌ها — پس از پایان سینک */}
           {!runActive && eligibleCount > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs leading-5 text-ink-3">
-                زیرنویس را داخل تصویر حک کن — خروجی فایل جدید کنار ویدیو، بدون
-                تغییر فایل اصلی.
-              </p>
-              <Button
-                variant="primary"
-                disabled={planLoading}
-                loading={planLoading}
-                onClick={() => void requestHardsub(eligiblePaths)}
-              >
-                <Film className="size-3.5" />
-                هاردساب همهٔ موارد موفق ({faNum(eligibleCount)})
-              </Button>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs leading-5 text-ink-3">
+                  زیرنویس را داخل تصویر حک کن — خروجی فایل جدید کنار ویدیو، بدون
+                  تغییر فایل اصلی.
+                </p>
+                <Button
+                  variant="primary"
+                  disabled={planLoading}
+                  loading={planLoading}
+                  onClick={() => void requestHardsub(eligiblePaths)}
+                >
+                  <Film className="size-3.5" />
+                  هاردساب همهٔ موارد موفق ({faNum(eligibleCount)})
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs leading-5 text-ink-3">
+                  زیرنویس سینک‌شدهٔ نهایی هر ویدیو را به‌صورت{" "}
+                  {"<base>.fa.srt"} کنارش استخراج کن — جایگزین زیرنویس لوکال
+                  فعلی همان ویدیو.
+                </p>
+                <Button
+                  disabled={extractBusy}
+                  loading={extractBusy}
+                  onClick={() => void extractAllSubtitles()}
+                >
+                  <Captions className="size-3.5" />
+                  استخراج زیرنویس‌ها ({faNum(eligibleCount)})
+                </Button>
+              </div>
+              {extractMessage && (
+                <p className="text-[11px] leading-5 text-ink-2">
+                  {extractMessage}
+                </p>
+              )}
             </div>
           )}
 
@@ -898,6 +968,7 @@ function ItemRow({
     Boolean(detail) ||
     Boolean(reason) ||
     item.offsetSeconds != null ||
+    item.syncStrategy != null ||
     item.placedPath != null ||
     (item.sidecarConflicts?.length ?? 0) > 0;
   const hardsubbable = hardsubEligible(item);
@@ -1013,6 +1084,7 @@ function ItemRow({
             آفست: {formatOffset(item.offsetSeconds)}
           </div>
         )}
+        {item.syncStrategy && <div>روش سینک: {item.syncStrategy}</div>}
         {item.sidecarConflicts?.map((conflict, index) => (
           <div key={index}>
             تعارض حفظ‌شده: {fileBaseName(conflict.path)} — {conflict.reason}
@@ -1108,4 +1180,10 @@ function formatEta(seconds: number): string {
   if (m < 60) return `${faNum(m)} دقیقه`;
   const h = Math.floor(m / 60);
   return `${faNum(h)} ساعت و ${faNum(m % 60)} دقیقه`;
+}
+
+function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return String(error);
 }

@@ -65,6 +65,8 @@ export interface ItemArtifacts {
   validSidecarPaths?: string[];
   sidecarConflicts?: SidecarConflict[];
   offsetSeconds?: number;
+  /** روش سینک برنده (مرجع صوتی/مرجع کامل/نمونه‌برداری) — شفافیت تنظیم دوباره */
+  syncStrategy?: string;
   preSelection?: { archiveFileName: string; memberPath: string };
 }
 

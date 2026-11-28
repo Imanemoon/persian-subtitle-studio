@@ -1407,6 +1407,7 @@ pub(crate) fn run_pipeline_body(
                                 video_path: rt.video_path.clone(),
                             });
                             rt.artifacts.offset_seconds = completed_outcome.offset_seconds;
+                            rt.artifacts.sync_strategy = completed_outcome.strategy.clone();
                             counts.softsubbed += 1;
                             rt.stage_status = StageStatus::Done;
                             refresh_entry_siblings(state, &rt.video_path, sink);
@@ -1457,6 +1458,7 @@ pub(crate) fn run_pipeline_body(
                         });
                         rt.artifacts.placed_path = Some(target.to_string_lossy().into_owned());
                         rt.artifacts.offset_seconds = placed_outcome.offset_seconds;
+                        rt.artifacts.sync_strategy = placed_outcome.strategy.clone();
                         counts.synced += 1;
                         refresh_entry_siblings(state, &rt.video_path, sink);
                     }
