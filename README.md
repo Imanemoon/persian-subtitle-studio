@@ -84,6 +84,35 @@ SubSync Studio یک برنامهٔ دسکتاپ ویندوزی است که کل 
 - **گزارش JSON هر اجرا** در `%ProgramData%\SubSync Studio\data\runs` — نتیجهٔ هر
   فایل، دلایل تصمیم‌های خودکار و تلاش‌های سینک؛ اتمیک و بدون بازنویسی
 
+### پروفایل‌های پردازش
+- هر پروفایل مجموعهٔ «پردازش و سینک + اتوماسیون + نام‌گذاری خروجی» را نگه می‌دارد و
+  با یک کلیک روی مقادیر فعلی **اعمال** می‌شود — ایجاد، تکثیر، تغییر نام و حذف از
+  تنظیمات؛ انتخاب سریع پروفایل فعال روی صفحهٔ خانه
+- شناسهٔ پروفایل قطعی و backend-owned است (نام هرگز شناسه نیست)؛ پروفایل
+  پیش‌فرض «پیش‌فرض» ساختی است و قابل حذف نیست — برنامه همیشه یک پیکربندی
+  قابل استفاده دارد
+- تنظیمات سراسری (ابزارها، پوشه‌ها، اعلان‌ها، کلید API و…) خارج از پروفایل‌اند؛
+  هیچ تنظیم امنیتی داخل پروفایل تکرار نمی‌شود
+- مهاجرت خودکار: کاربران نسخه‌های قبلی یک پروفایل پیش‌فرض از مقادیر مؤثر خودشان
+  می‌گیرند — هیچ رفتاری بدون اجازه عوض نمی‌شود
+- هر run پروفایل فعال را در شروع، به‌صورت snapshot، ثبت می‌کند؛ تغییر تنظیمات
+  وسط اجرا روی run جاری اثر ندارد و در گزارش JSON هم ثبت می‌شود
+
+### قالب نام خروجی
+- قالب فقط **بخش پایهٔ نام** خروجی sidecar سینک‌شده را می‌سازد؛ پسوند قراردادی
+  `.fa.synced.srt` همیشه حفظ می‌شود تا تشخیص فارسی در اجراهای بعدی کار کند
+- پلاسهولدرهای مجاز: `{name}` نام ویدیو، `{show}` نام نمایشی سریال، `{season}`
+  فصل (دورقمی)، `{episode}` قسمت (دورقمی)، `{parent}` نام پوشه — عمداً محدود
+  به متادیتایی که اسکن واقعاً دارد؛ خروجی SoftSub در-جاست و قالب نمی‌گیرد
+- اگر متادیتای یک پلاسهولدر برای ویدیویی نباشد (مثلاً `{episode}` برای فیلم)،
+  خروجی **قطعی** به نام خود ویدیو برمی‌گردد — هیچ براکت خامی در نام نمی‌نشیند
+- قالب‌ها در زمان ذخیره اعتبارسنجی می‌شوند (پلاسهولدر ناشناخته/براکت باز/
+  کاراکتر ممنوع ویندوز → خطای صریح) و رندر نهایی هم لایهٔ دفاعی دارد:
+  جداکنندهٔ مسیر و کاراکترهای ممنوع حذف، نام رزرو ویندوز پیشوند امن می‌گیرد،
+  طول محدود می‌شود — خروجی همیشه داخل همان پوشهٔ ویدیو است
+- تعارض با فایل موجود از مسیر no-overwrite موجود می‌گذرد: هر دو فایل حفظ
+  می‌شوند و هیچ‌چیز بازنویسی نمی‌شود؛ پیش‌نمایش قطعی نام در تنظیمات با نمونهٔ نماینده
+
 ## 📥 نصب
 
 ۱. آخرین نصاب را از [**Releases**](https://github.com/Imanemoon/persian-subtitle-studio/releases/latest)
@@ -175,6 +204,19 @@ subtitles for your entire video library:
   "Needs review" state; bounded sync retries pick the best validated candidate by
   quality evidence (agreement first, never just the smallest offset), and every batch
   writes a JSON report under the persistent data directory
+- **Processing profiles** — reusable named sets of processing/automation/naming
+  choices with backend-owned stable IDs; create, duplicate, rename, apply and delete
+  from Settings, quick-switch on Home. A built-in default profile can never be
+  deleted, existing users are migrated with a snapshot of their own effective values,
+  and each run captures a profile snapshot at start (mid-run setting changes never
+  affect a running job — also recorded in the batch report)
+- **Output naming templates** — intentionally limited placeholders (`{name}`, `{show}`,
+  `{season}`, `{episode}`, `{parent}`) that only build the base name of the synced
+  sidecar output; the `.fa.synced.srt` suffix is always preserved so Persian detection
+  keeps working on re-runs. Missing metadata deterministically falls back to the video
+  name, templates are validated on save, the renderer strips path separators and
+  Windows-reserved names, output always stays inside the video's own folder, and
+  collisions go through the existing no-overwrite policy
 - **Place `<name>.fa.synced.srt` next to each video** — strict no-overwrite policy
 - **First-run setup wizard** auto-installs all prerequisites (ffmpeg, Python, ffsubsync —
   version-pinned, SHA256-verified, per-user, no admin required)

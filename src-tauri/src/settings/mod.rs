@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod profile_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ToolPathOverrides {
@@ -146,6 +149,83 @@ impl Default for AutomationSettings {
     }
 }
 
+/// تنظیمات نام‌گذاری خروجی‌ها.
+///
+/// قالب فقط **بخش پایهٔ نام** خروجی sidecar سینک‌شده را می‌سازد؛ پسوند
+/// قراردادی `.fa.synced.srt` همیشه حفظ می‌شود تا تشخیص فارسی/سینک‌شده در
+/// اجراهای بعدی (`inspect_persian_sidecars` + `is_synced_name`) کار کند.
+/// پلاسهولدرهای مجاز، رفتار متادیتای گم‌شده و قواعد امنیتی در
+/// `output_naming.rs` مستندند. SoftSub در-جاست و قالب نام نمی‌گیرد.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NamingSettings {
+    /// قالب پایهٔ نام خروجی sidecar سینک‌شده — پیش‌فرض `{name}` (هم‌نام ویدیو).
+    pub synced_sidecar_base: String,
+}
+
+impl Default for NamingSettings {
+    fn default() -> Self {
+        Self {
+            synced_sidecar_base: crate::output_naming::DEFAULT_BASE_TEMPLATE.into(),
+        }
+    }
+}
+
+/// شناسهٔ قطعی پروفایل پیش‌فرض ساختی — هرگز تغییر نمی‌کند و نام نیست.
+pub const BUILTIN_DEFAULT_PROFILE_ID: &str = "builtin-default";
+
+/// پروفایل پردازش — مجموعهٔ نام‌گذاری‌شده از انتخاب‌های pipeline.
+///
+/// کدام تنظیمات داخل پروفایل‌اند و کدام سراسری:
+/// - **داخل پروفایل**: `processing` (استراتژی/workerها/محل خروجی زیرنویس)،
+///   `automation` (حالت تعاملی/خودکار + سقف تلاش) و `naming` (قالب نام خروجی) —
+///   دقیقاً همان‌هایی که pipeline در شروع هر run از snapshot می‌خواند.
+/// - **همیشه سراسری**: پوشهٔ ریشه، پوشه‌های مستثنا، مسیر ابزارها، هاردساب،
+///   اعلان‌ها، تنظیمات SubSource، رفتار بازنویسی و مسیر لاگ — هیچ تنظیم
+///   امنیتی/زیرساختی داخل پروفایل تکرار نمی‌شود.
+///
+/// `id` backend-owned و پایدار است؛ نام فقط برای نمایش است و در save یکتا می‌شود.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProcessingProfile {
+    pub id: String,
+    pub name: String,
+    /// پروفایل پیش‌فرض ساختی — فقط backend این فلگ را ست می‌کند و حذفش رد می‌شود.
+    pub built_in: bool,
+    pub processing: ProcessingSettings,
+    pub automation: AutomationSettings,
+    pub naming: NamingSettings,
+}
+
+impl ProcessingProfile {
+    /// پروفایل پیش‌فرض ساختی — از مقادیر مؤثر فعلی snapshot می‌گیرد تا
+    /// مهاجرت کاربر موجود هیچ رفتاری را عوض نکند.
+    pub fn builtin_default(
+        processing: ProcessingSettings,
+        automation: AutomationSettings,
+        naming: NamingSettings,
+    ) -> Self {
+        ProcessingProfile {
+            id: BUILTIN_DEFAULT_PROFILE_ID.into(),
+            name: "پیش‌فرض".into(),
+            built_in: true,
+            processing,
+            automation,
+            naming,
+        }
+    }
+}
+
+impl Default for ProcessingProfile {
+    fn default() -> Self {
+        ProcessingProfile::builtin_default(
+            ProcessingSettings::default(),
+            AutomationSettings::default(),
+            NamingSettings::default(),
+        )
+    }
+}
+
 /// تنظیمات SubSource API و دانلود
 ///
 /// API key عمداً در این ساختار قرار ندارد؛ فقط در Credential Manager سیستم
@@ -208,6 +288,16 @@ pub struct Settings {
     pub existing_file_behavior: ExistingFileBehavior,
     /// اتوماسیون pipeline — حالت تعاملی/خودکار + سقف تلاش سینک خودکار.
     pub automation: AutomationSettings,
+    /// نام‌گذاری خروجی‌ها — مقادیر مؤثر (اعمال‌شده از پروفایل فعال یا آزاد).
+    pub naming: NamingSettings,
+    /// پروفایل‌های پردازش — پروفایل پیش‌فرض ساختی همیشه در فهرست هست
+    /// (مهاجرت یک‌بارهٔ load برای تنظیمات قدیمی، بدون تغییر رفتار).
+    #[serde(default)]
+    pub profiles: Vec<ProcessingProfile>,
+    /// پروفایل فعال — مقادیر مؤثر processing/automation/naming هنگام «اعمال»
+    /// از آن کپی شده‌اند؛ None = مقادیر آزاد بدون پروفایل.
+    #[serde(default)]
+    pub active_profile_id: Option<String>,
     /// اگر خالی باشد از پوشه لاگ پیش‌فرض سیستم استفاده می‌شود.
     pub logs_dir: Option<String>,
     /// معاونت راه‌اندازی (نصب خودکار پیش‌نیازها) یک‌بار دیده شده/پشت زده شده است —
@@ -228,6 +318,9 @@ impl Default for Settings {
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             automation: AutomationSettings::default(),
+            naming: NamingSettings::default(),
+            profiles: vec![ProcessingProfile::default()],
+            active_profile_id: Some(BUILTIN_DEFAULT_PROFILE_ID.into()),
             logs_dir: None,
             setup_completed: false,
         }
@@ -263,8 +356,147 @@ impl Settings {
         self.tool_paths.subsource = clean(&self.tool_paths.subsource);
         self.tool_paths.seven_zip = clean(&self.tool_paths.seven_zip);
         self.tool_paths.ffsubsync = clean(&self.tool_paths.ffsubsync);
+        self.naming.synced_sidecar_base =
+            crate::output_naming::sanitize_template_lenient(&self.naming.synced_sidecar_base);
+        self.sanitize_profiles();
         self
     }
+
+    /// پروفایل‌ها: clamp مقادیر تو در تو، پاک‌سازی نام، بازگردانی پروفایل
+    /// پیش‌فرض ساختی، و بی‌اعتبرکردن انتخاب فعالِ بدون پروفایل — قطعی و idempotent.
+    fn sanitize_profiles(&mut self) {
+        for profile in &mut self.profiles {
+            profile.name = profile.name.trim().to_string();
+            profile.processing.sync_workers = profile.processing.sync_workers.clamp(1, 16);
+            profile.processing.segment_count = profile.processing.segment_count.clamp(1, 12);
+            profile.automation.max_sync_attempts = profile.automation.max_sync_attempts.clamp(1, 4);
+            profile.naming.synced_sidecar_base = crate::output_naming::sanitize_template_lenient(
+                &profile.naming.synced_sidecar_base,
+            );
+        }
+        // پروفایل پیش‌فرض ساختی هرگز نباید از فهرست غایب باشد — در save حذفش
+        // رد می‌شود؛ اینجا گارانتی آخرِ بارگذاری/پیش‌فرض است
+        if self.profiles.is_empty() {
+            // مهاجرت کاربر قدیمی: snapshot از مقادیر مؤثر فعلی — هیچ رفتاری
+            // عوض نمی‌شود؛ فعال‌شدن فقط نمایشی است
+            let builtin = ProcessingProfile::builtin_default(
+                self.processing.clone(),
+                self.automation.clone(),
+                self.naming.clone(),
+            );
+            self.profiles.push(builtin);
+            self.active_profile_id = Some(BUILTIN_DEFAULT_PROFILE_ID.into());
+        } else if !self
+            .profiles
+            .iter()
+            .any(|p| p.id == BUILTIN_DEFAULT_PROFILE_ID)
+        {
+            // مسیر خرابی/دست‌کاری — بازگردانی با پیش‌فرض‌ها؛ انتخاب فعال فعلی
+            // دست‌نخورده می‌ماند (ممکن است به پروفایل دیگری اشاره کند)
+            let builtin = ProcessingProfile::builtin_default(
+                ProcessingSettings::default(),
+                AutomationSettings::default(),
+                NamingSettings::default(),
+            );
+            self.profiles.push(builtin);
+        }
+        // انتخاب فعال بدون پروفایل معتبر = مقادیر آزاد (رفتار فعلی حفظ می‌شود)
+        if let Some(id) = &self.active_profile_id {
+            if !self.profiles.iter().any(|p| &p.id == id) {
+                self.active_profile_id = None;
+            }
+        }
+    }
+
+    /// اعمال پروفایل روی مقادیر مؤثر — `None` یعنی فقط جداسازی انتخاب (مقادیر
+    /// فعلی دست‌نخورده می‌مانند). شناسهٔ نامعتبر → Err صریح، نه سکوت.
+    pub fn apply_profile_core(&mut self, profile_id: Option<&str>) -> Result<(), String> {
+        match profile_id {
+            None => {
+                self.active_profile_id = None;
+                Ok(())
+            }
+            Some(id) => {
+                let profile = self
+                    .profiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("پروفایل با شناسه «{id}» یافت نشد — فهرست را دوباره بگیرید.")
+                    })?;
+                self.processing = profile.processing;
+                self.automation = profile.automation;
+                self.naming = profile.naming;
+                self.active_profile_id = Some(profile.id);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// شناسهٔ قطعی برای پروفایل جدید — توکن یکتا؛ نام هرگز شناسه نیست.
+pub fn new_profile_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("profile-{:x}-{:x}", nanos, counter)
+}
+
+/// نرمال‌سازی/اعتبارسنجی فهرست پروفایل‌های ورودی از فرانت:
+/// نام trim + یکتا (بدون حساسیت به بزرگی/کوچکی)، شناسه تکراری ممنوع،
+/// شناسهٔ خالی = پروفایل جدید (backend توکن می‌سازد)، فلگ built_in فقط برای
+/// پروفایل پیش‌فرض ساختی معنا دارد (ورودی فرانت نادیده گرفته می‌شود)،
+/// قالب‌های نام باید valid باشند (خطا به کاربر برمی‌گردد، نه sanitize بی‌صدا).
+pub fn normalize_profiles(
+    profiles: Vec<ProcessingProfile>,
+) -> Result<Vec<ProcessingProfile>, String> {
+    let mut normalized: Vec<ProcessingProfile> = Vec::with_capacity(profiles.len());
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    for mut profile in profiles {
+        profile.name = profile.name.trim().to_string();
+        if profile.name.is_empty() {
+            return Err("نام پروفایل نمی‌تواند خالی باشد.".into());
+        }
+        if profile.name.chars().count() > 60 {
+            return Err("نام پروفایل بیش از حد طولانی است (حداکثر ۶۰ کاراکتر).".into());
+        }
+        // قالب نام — خطای واقعی به کاربر، نه sanitize بی‌صدا
+        crate::output_naming::validate_template(&profile.naming.synced_sidecar_base)?;
+        // فلگ ساختی فقط با شناسهٔ رسمی معنا دارد — ورودی فرانت هرگز نمی‌تواند
+        // خودش پروفایل «ساختی» بسازد یا پیش‌فرض را غیرساختی کند
+        profile.built_in = profile.id == BUILTIN_DEFAULT_PROFILE_ID;
+        if profile.id.is_empty() {
+            profile.id = new_profile_id();
+        } else if !ids.insert(profile.id.clone()) {
+            return Err(format!(
+                "شناسهٔ پروفایل تکراری است ({}) — هر پروفایل شناسهٔ یکتا لازم دارد.",
+                profile.id
+            ));
+        }
+        let name_key = profile.name.to_lowercase();
+        if !names.insert(name_key) {
+            return Err(format!(
+                "نام پروفایل «{}» تکراری است — نام هر پروفایل یکتا باید باشد.",
+                profile.name
+            ));
+        }
+        normalized.push(profile);
+    }
+    // پروفایل پیش‌فرض ساختی قابل حذف نیست — گارانتی پیکربندی قابل استفاده
+    if !normalized
+        .iter()
+        .any(|p| p.id == BUILTIN_DEFAULT_PROFILE_ID)
+    {
+        return Err(
+            "پروفایل پیش‌فرض «پیش‌فرض» قابل حذف نیست — برنامه همیشه باید یک پیکربندی قابل استفاده داشته باشد.".into(),
+        );
+    }
+    Ok(normalized)
 }
 
 pub fn config_file_path(config_dir: &Path) -> PathBuf {

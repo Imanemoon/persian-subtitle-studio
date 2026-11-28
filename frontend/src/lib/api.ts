@@ -4,6 +4,8 @@ import type {
   ExtractionPlan,
   ExtractionPlanItem,
   LogEntry,
+  NamingPreview,
+  ProcessingProfile,
   ScanSummary,
   Settings,
   SubtitleValidation,
@@ -43,6 +45,20 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
     invoke<Settings>("save_settings", { settings }),
+
+  // ---- پروفایل‌های پردازش — اعتبارسنجی و شناسه‌گذاری backend-owned است؛
+  // فرانت هرگز خودش id یا مسیر خروجی نمی‌سازد ----
+  saveProfiles: (profiles: ProcessingProfile[]) =>
+    invoke<Settings>("save_profiles", { profiles }),
+  applyProfile: (profileId: string | null) =>
+    invoke<Settings>("apply_profile", { profileId }),
+  previewSidecarName: (input: {
+    template: string;
+    videoName: string;
+    show: string | null;
+    season: number | null;
+    episode: number | null;
+  }) => invoke<NamingPreview>("preview_sidecar_name", input),
 
   // ---- مدیریت امن SubSource API key — فقط Credential Manager؛
   // مقدار واقعی کلید هرگز به فرانت برگردانده نمی‌شود، فقط وضعیت boolean ----

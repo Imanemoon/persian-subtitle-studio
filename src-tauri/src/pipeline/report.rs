@@ -135,6 +135,9 @@ mod tests {
             key_store_error: None,
             duration_ms: 1234,
             ephemeral: true,
+            profile_id: Some("builtin-default".into()),
+            profile_name: Some("پیش‌فرض".into()),
+            naming_template: "{name}".into(),
         }
     }
 

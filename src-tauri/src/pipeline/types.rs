@@ -336,6 +336,15 @@ pub struct PipelineSummary {
     pub duration_ms: u64,
     /// همهٔ منابع درون‌حافظه‌ای (provenance/workspace) با پایان process از بین می‌روند
     pub ephemeral: bool,
+    /// شناسهٔ پروفایل فعال در شروع run — از snapshot استخراج شده، نه خواندن زنده
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    /// نام نمایشی پروفایل فعال — برای گزارش و UI
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    /// قالب نام خروجی مؤثر در شروع run — برای شفافیت گزارش
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub naming_template: String,
 }
 
 /// رویدادهای pipeline — mapping مستقیم به رویدادهای Tauri در command layer.
