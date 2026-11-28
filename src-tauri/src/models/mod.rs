@@ -120,6 +120,44 @@ pub struct NamingPreview {
     pub fell_back: bool,
 }
 
+/// یک cue ویرایش‌پذیر — زمان‌ها بر حسب میلی‌ثانیه؛ متن با \n خط‌بندی.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleCue {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+}
+
+/// نتیجهٔ بازکردن زیرنویس برای ویرایش — فقط SRT در این فاز.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLoadResult {
+    pub path: String,
+    pub cues: Vec<SubtitleCue>,
+    /// هشدارهای parse غیرکشنده
+    pub warnings: Vec<String>,
+}
+
+/// نتیجهٔ ذخیرهٔ ویرایش — مقصد جدید، اصل دست‌نخورده.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorSaveOutcome {
+    pub output_path: String,
+    pub cue_count: usize,
+    /// هشدارهای اعتبارسنجی (هم‌پوشانی/متن خالی) — ذخیره انجام شده
+    pub warnings: Vec<String>,
+}
+
+/// نتیجهٔ تبدیل encoding — فایل اصلی دست‌نخورده، خروجی جدید.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodingConvertOutcome {
+    pub output_path: String,
+    pub from_label: String,
+    pub persian_chars: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleValidation {

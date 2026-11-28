@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Bell, Check, FileText, Film, FolderOpen, KeyRound, Layers, Plus, Save, Settings as SettingsIcon, Trash2, Wrench, X, Zap } from "lucide-react";
+import { Bell, Check, FileText, Film, FolderOpen, KeyRound, Layers, Plus, Save, Settings as SettingsIcon, Trash2, Type, Wrench, X, Zap } from "lucide-react";
 import { useAppData } from "../hooks/useAppData";
 import { Badge, Button, Card, SectionTitle, Toggle } from "../components/ui";
 import { api } from "../lib/api";
@@ -177,6 +177,7 @@ export function SettingsPage() {
         processing: structuredClone(draft.processing),
         automation: structuredClone(draft.automation),
         naming: structuredClone(draft.naming),
+        hardsubTypography: structuredClone(draft.hardsubTypography),
       },
     ]);
     setProfileMessage({ tone: "success", text: `پروفایل «${name}» از مقادیر فعلی ساخته شد.` });
@@ -1054,6 +1055,183 @@ export function SettingsPage() {
             انکودر GPU چند برابر CPU سرعت دارد؛ در حالت خودکار با یک انکود آزمایشی
             کوتاه بهترین گزینه انتخاب و در دیالوگ هاردساب نمایش داده می‌شود.
           </p>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <SectionTitle icon={Type} title="تایپوگرافی هاردساب" />
+        <div className="space-y-3">
+          <Toggle
+            checked={draft.hardsubTypography.enabled}
+            onChange={(v) =>
+              patch({ hardsubTypography: { ...draft.hardsubTypography, enabled: v } })
+            }
+            label="فونت و رنگ سفارشی برای زیرنویس حک‌شده"
+            hint="خاموش = پیش‌فرض libass (رفتار فعلی) — روشن = force_style با مقادیر زیر"
+          />
+          {draft.hardsubTypography.enabled && (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-56 shrink-0 text-sm text-ink-2">نام خانوادهٔ فونت</span>
+                <input
+                  dir="ltr"
+                  value={draft.hardsubTypography.fontName}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        fontName: e.target.value,
+                      },
+                    })
+                  }
+                  placeholder="مثلاً Vazirmatn"
+                  className="h-10 min-w-56 flex-1 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-56 shrink-0 text-sm text-ink-2">فایل فونت (پیشنهادی)</span>
+                <span
+                  dir="ltr"
+                  className="min-w-40 flex-1 truncate rounded-lg border border-line bg-surface-2 px-3 py-2 font-mono text-xs text-ink-2"
+                  title={draft.hardsubTypography.fontPath ?? ""}
+                >
+                  {draft.hardsubTypography.fontPath ?? "— بدون فایل: جستجو از فونت‌های نصب سیستم"}
+                </span>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    const picked = await api.pickFont();
+                    if (picked) {
+                      patch({ hardsubTypography: { ...draft.hardsubTypography, fontPath: picked } });
+                    }
+                  }}
+                >
+                  انتخاب فایل فونت…
+                </Button>
+                <Button
+                  variant="danger"
+                  className="h-10 px-3"
+                  onClick={() =>
+                    patch({ hardsubTypography: { ...draft.hardsubTypography, fontPath: null } })
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+              <p className="text-xs leading-6 text-ink-3">
+                با انتخاب فایل فونت، مسیر پوشهٔ آن به ffmpeg داده می‌شود و نتیجهٔ
+                فونت قطعی است. بدون فایل، libass از فونت‌های نصب سیستم جستجو
+                می‌کند و اگر خانواده پیدا نشود بی‌صدا به فونت پیش‌فرض برمی‌گردد
+                (از خروجی ffmpeg قابل‌تشخیص نیست) — برای نتیجهٔ قطعی، فایل فونت
+                را انتخاب کنید.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-56 shrink-0 text-sm text-ink-2">اندازهٔ فونت (۱۰–۹۶)</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={96}
+                  value={draft.hardsubTypography.fontSize}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        fontSize: Number(e.target.value) || 28,
+                      },
+                    })
+                  }
+                  className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+                />
+                <span className="w-40 shrink-0 text-sm text-ink-2">حاشیهٔ عمودی (۰–۴۰۰)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={400}
+                  value={draft.hardsubTypography.marginV}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        marginV: Number(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-56 shrink-0 text-sm text-ink-2">رنگ متن (&HAA_BBGGRR)</span>
+                <input
+                  dir="ltr"
+                  value={draft.hardsubTypography.primaryColor}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        primaryColor: e.target.value.trim(),
+                      },
+                    })
+                  }
+                  className="h-10 w-36 rounded-lg border border-line bg-surface-2 px-3 font-mono text-sm outline-none focus:border-accent"
+                />
+                <span className="w-40 shrink-0 text-sm text-ink-2">رنگ خط دور</span>
+                <input
+                  dir="ltr"
+                  value={draft.hardsubTypography.outlineColor}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        outlineColor: e.target.value.trim(),
+                      },
+                    })
+                  }
+                  className="h-10 w-36 rounded-lg border border-line bg-surface-2 px-3 font-mono text-sm outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-56 shrink-0 text-sm text-ink-2">ضخامت خط دور (۰–۱۰)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={draft.hardsubTypography.outline}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        outline: Number(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+                />
+                <span className="w-40 shrink-0 text-sm text-ink-2">سایه (۰–۱۰)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={draft.hardsubTypography.shadow}
+                  onChange={(e) =>
+                    patch({
+                      hardsubTypography: {
+                        ...draft.hardsubTypography,
+                        shadow: Number(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="h-10 w-24 rounded-lg border border-line bg-surface-2 px-3 text-sm outline-none focus:border-accent"
+                />
+              </div>
+              <p className="text-xs leading-6 text-ink-3">
+                رنگ‌ها با فرمت ASS یعنی <span dir="ltr" className="font-mono">&amp;H[AA]BBGGRR</span>{" "}
+                (hex، ترتیب آبی-سبز-قرمز؛ مثلاً سفید = <span dir="ltr" className="font-mono">&amp;H00FFFFFF</span>).
+                RTL و اتصال حروف فارسی توسط libass داخل ffmpeg انجام می‌شود — هیچ
+                معکوس‌سازی دستی متنی وجود ندارد. این بخش در «ایجاد پروفایل از
+                مقادیر فعلی» هم همراه سایر مقادیر ذخیره می‌شود.
+              </p>
+            </>
+          )}
         </div>
       </Card>
     </div>

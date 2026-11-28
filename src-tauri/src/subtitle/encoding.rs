@@ -2,9 +2,11 @@
 //!
 //! رنج‌های اصلی فارسی: U+0600–06FF، U+FB50–FDFF، U+FE70–FEFF
 
+use serde::{Deserialize, Serialize};
+
 /// حداقل حروف فارسی برای پذیرش تبدیل cp1256 — فایل بدون فارسی نباید
 /// بازنویسی شود (heuristic ضعیف‌تر از محتوای واقعی نیست).
-const MIN_PERSIAN_CHARS_FOR_CONVERSION: usize = 10;
+pub(crate) const MIN_PERSIAN_CHARS_FOR_CONVERSION: usize = 10;
 
 /// بایت‌ها را با تشخیص BOM/Encoding به متن تبدیل می‌کند.
 /// خروجی: (نام Encoding، متن)
@@ -111,6 +113,261 @@ pub fn persian_char_count(text: &str) -> usize {
 
 pub fn has_persian_text(text: &str) -> bool {
     persian_char_count(text) > 0
+}
+
+// ---------------------------------------------------------------------
+// تحلیل و تبدیل encoding فایل‌های زیرنویس لوکال
+// ---------------------------------------------------------------------
+
+/// نوع encoding تشخیص‌داده‌شده — wire: camelCase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleEncodingKind {
+    /// UTF-8 بدون BOM
+    Utf8,
+    /// UTF-8 با BOM
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    /// Windows-1256 با شواهد فارسی کافی — تبدیل امن
+    Windows1256,
+    /// نامطمئن/پشتیبانی‌نشده — هرگز تبدیل نمی‌شود
+    Unsupported,
+}
+
+/// گزارش تحلیل encoding یک فایل زیرنویس — تشخیص قابل‌اعتماد از حدس جدا است.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleEncodingReport {
+    pub kind: SubtitleEncodingKind,
+    /// برچسب فارسی برای نمایش
+    pub label: String,
+    /// آیا تشخیص قابل‌اعتماد است؟ (false = بایت‌های مبهم — هرگز تبدیل نمی‌شود)
+    pub confident: bool,
+    /// آیا تبدیل امن به UTF-8 ممکن است؟ (Utf8/Utf8Bom: false — نیازی نیست)
+    pub convertible: bool,
+    pub persian_chars: usize,
+    /// دلیل عدم قطعیت/عدم پشتیبانی — برای نمایش صادقانه
+    pub detail: Option<String>,
+}
+
+/// تحلیل بایت‌های فایل زیرنویس — بدون هیچ تبدیل یا نوشتن.
+///
+/// قواعد تشخیص (هم‌راستا با convert_windows1256_if_needed):
+/// - BOM قطعی است (UTF-8 BOM / UTF-16 LE/BE).
+/// - UTF-8 strict معتبر → قطعی (حتی بدون فارسی — تشخیص encoding است نه زبان).
+/// - در غیر این صورت فقط یک مسیر: decode_windows1256 با گیت حداقل
+///   ۱۰ حرف فارسی (همان گیت مسیر دانلود) — زیر گیت = نامطمئن و
+///   پشتیبانی‌نشده؛ بایت‌های دلخواه هرگز به فارسی تفسیر نمی‌شوند.
+pub fn analyze_subtitle_bytes(bytes: &[u8]) -> SubtitleEncodingReport {
+    let build = |kind: SubtitleEncodingKind,
+                 label: &str,
+                 confident: bool,
+                 convertible: bool,
+                 persian: usize,
+                 detail: Option<&str>| SubtitleEncodingReport {
+        kind,
+        label: label.into(),
+        confident,
+        convertible,
+        persian_chars: persian,
+        detail: detail.map(|d| d.into()),
+    };
+    if bytes.is_empty() {
+        return build(
+            SubtitleEncodingKind::Unsupported,
+            "فایل خالی است",
+            false,
+            false,
+            0,
+            Some("فایل خالی است — تحلیل encoding ممکن نیست."),
+        );
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let text = decode_bytes(bytes).1;
+        return build(
+            SubtitleEncodingKind::Utf8Bom,
+            "UTF-8 با BOM",
+            true,
+            false,
+            persian_char_count(&text),
+            None,
+        );
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let text = decode_utf16(&bytes[2..], true);
+        return build(
+            SubtitleEncodingKind::Utf16Le,
+            "UTF-16 LE",
+            true,
+            true,
+            persian_char_count(&text),
+            None,
+        );
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let text = decode_utf16(&bytes[2..], false);
+        return build(
+            SubtitleEncodingKind::Utf16Be,
+            "UTF-16 BE",
+            true,
+            true,
+            persian_char_count(&text),
+            None,
+        );
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        let text = decode_bytes(bytes).1;
+        return build(
+            SubtitleEncodingKind::Utf8,
+            "UTF-8",
+            true,
+            false,
+            persian_char_count(&text),
+            None,
+        );
+    }
+    // فقط یک گسست باقی می‌ماند: Windows-1256 با گیت فارسی مسیر دانلود
+    let decoded = decode_windows1256(bytes);
+    let persian = persian_char_count(&decoded);
+    if persian >= MIN_PERSIAN_CHARS_FOR_CONVERSION {
+        build(
+            SubtitleEncodingKind::Windows1256,
+            "Windows-1256 (ANSI فارسی)",
+            true,
+            true,
+            persian,
+            None,
+        )
+    } else {
+        build(
+            SubtitleEncodingKind::Unsupported,
+            "نامشخص — پشتیبانی نمی‌شود",
+            false,
+            false,
+            persian,
+            Some(
+                "بایت‌ها نه UTF-8 معتبرند و تفسیر Windows-1256 هم متن فارسی معناداری نمی‌دهد — تبدیل انجام نمی‌شود تا متن سالم خراب نشود.",
+            ),
+        )
+    }
+}
+
+/// تبدیل بایت‌های تشخیص‌داده‌شده به متن UTF-8 — بدون BOM (هم‌راستا با
+/// `--output-encoding utf-8` مسیر سینک). ساختار cue/زمان‌ها بایت‌به‌بایت
+/// حفظ می‌شود چون فقط re-encode است، نه reparse.
+pub fn convert_to_utf8_text(bytes: &[u8], kind: SubtitleEncodingKind) -> Result<String, String> {
+    match kind {
+        SubtitleEncodingKind::Utf16Le | SubtitleEncodingKind::Utf16Be => Ok(decode_utf16(
+            &bytes[2..],
+            kind == SubtitleEncodingKind::Utf16Le,
+        )),
+        SubtitleEncodingKind::Windows1256 => Ok(decode_windows1256(bytes)),
+        SubtitleEncodingKind::Utf8 | SubtitleEncodingKind::Utf8Bom => {
+            // UTF-8 بدون BOM می‌نویسیم — هم‌راستا با خروجی سینک
+            Ok(decode_bytes(bytes).1)
+        }
+        SubtitleEncodingKind::Unsupported => Err(
+            "این encoding تشخیص قابل‌اعتماد ندارد و تبدیل نمی‌شود — متن سالم ممکن است خراب شود."
+                .into(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod local_encoding_tests {
+    use super::*;
+
+    /// cp1256 بایت‌های «سلام دنیا» — با جدول CP1256_HIGH سازگار
+    fn cp1256_persian_bytes() -> Vec<u8> {
+        let text = convert_windows1256_if_needed(&[0xC7, 0xE1, 0xC7, 0xE5]).map(|_| ());
+        let _ = text;
+        // مستقیم: چند بایت cp1256 که به حروف فارسی می‌روند (س/ل/ا/م)
+        vec![0xD3, 0xE1, 0xC7, 0xE3] // س ل ا م
+    }
+
+    #[test]
+    fn utf8_without_bom_is_confident_not_convertible() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"1\r\n00:00:01,000 --> 00:00:04,000\r\n");
+        bytes.extend_from_slice("سلام".as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+        let r = analyze_subtitle_bytes(&bytes);
+        assert_eq!(r.kind, SubtitleEncodingKind::Utf8);
+        assert!(r.confident);
+        assert!(!r.convertible, "UTF-8 نیازی به تبدیل ندارد");
+        assert!(r.persian_chars >= 4);
+    }
+
+    #[test]
+    fn utf8_bom_and_utf16_variants_are_confident() {
+        let mut bom_bytes = vec![0xEF, 0xBB, 0xBF];
+        bom_bytes.extend_from_slice("سلام".as_bytes());
+        let bom = analyze_subtitle_bytes(&bom_bytes);
+        assert_eq!(bom.kind, SubtitleEncodingKind::Utf8Bom);
+        assert!(bom.confident);
+
+        let mut le = vec![0xFF, 0xFE];
+        le.extend("سلام".encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let r = analyze_subtitle_bytes(&le);
+        assert_eq!(r.kind, SubtitleEncodingKind::Utf16Le);
+        assert!(r.confident && r.convertible);
+        assert!(r.persian_chars >= 4);
+
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("سلام".encode_utf16().flat_map(|u| u.to_be_bytes()));
+        let r = analyze_subtitle_bytes(&be);
+        assert_eq!(r.kind, SubtitleEncodingKind::Utf16Be);
+        assert!(r.confident && r.convertible);
+    }
+
+    #[test]
+    fn cp1256_with_enough_persian_is_confident_and_convertible() {
+        // س ل ا م + د ن ی ا — هشت حرف؛ با تکرار جمله به گیت ۱۰ می‌رسیم
+        let mut bytes = cp1256_persian_bytes();
+        bytes.extend_from_slice(&[0x20, 0xC7, 0xE1, 0xC7, 0xE5, 0x20, 0xC7, 0xE1, 0xC7, 0xE5]);
+        let r = analyze_subtitle_bytes(&bytes);
+        assert_eq!(r.kind, SubtitleEncodingKind::Windows1256);
+        assert!(r.confident && r.convertible);
+        assert!(r.persian_chars >= 10);
+        // تبدیل باید همان متن فارسی را بدهد
+        let text = convert_to_utf8_text(&bytes, r.kind).unwrap();
+        assert!(text.contains("سلام"));
+    }
+
+    #[test]
+    fn ambiguous_bytes_are_unsupported_not_guessed() {
+        // بایت‌های cp1256 سازگار با کمتر از ۱۰ حرف فارسی — نامطمئن
+        let bytes = cp1256_persian_bytes(); // فقط ۴ حرف
+        let r = analyze_subtitle_bytes(&bytes);
+        assert_eq!(r.kind, SubtitleEncodingKind::Unsupported);
+        assert!(!r.confident && !r.convertible);
+        assert!(r.detail.is_some());
+        // تبدیل هم رد می‌شود — بایت دلخواه به فارسی تفسیر نمی‌شود
+        assert!(convert_to_utf8_text(&bytes, r.kind).is_err());
+    }
+
+    #[test]
+    fn empty_bytes_are_unsupported() {
+        let r = analyze_subtitle_bytes(b"");
+        assert_eq!(r.kind, SubtitleEncodingKind::Unsupported);
+    }
+
+    #[test]
+    fn utf16_conversion_preserves_persian_and_structure() {
+        let srt = "1
+00:00:01,000 --> 00:00:04,000
+سلام دنیا
+";
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(srt.encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let text = convert_to_utf8_text(&bytes, SubtitleEncodingKind::Utf16Le).unwrap();
+        assert!(text.contains("00:00:01,000 --> 00:00:04,000"), "زمان‌ها حفظ");
+        assert!(text.contains("سلام دنیا"), "فارسی حفظ");
+        // ساختار با validator فعلی سالم می‌ماند
+        let v = crate::subtitle::validation::validate_bytes_for_extension(text.as_bytes(), "srt");
+        assert!(v.valid && v.has_persian);
+    }
 }
 
 #[cfg(test)]

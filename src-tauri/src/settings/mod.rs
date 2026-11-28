@@ -91,6 +91,132 @@ impl Default for HardsubSettings {
     }
 }
 
+/// تایپوگرافی هاردساب — فونت/اندازه/رنگ/حاشیه برای فیلتر `subtitles` libass.
+///
+/// - `enabled = false` (پیش‌فرض): دقیقاً رفتار فعلی — `subtitles=sub.srt`
+///   بدون هیچ force_style؛ رندر به پیش‌فرض libass واگذار می‌شود.
+/// - `enabled = true`: force_style از مقادیر زیر ساخته می‌شود؛ رنگ‌ها با
+///   فرمت ASS `&H[AA]BBGGRR` (hex، ترتیب BGR) — اعتبارسنجی در مرز backend.
+/// - RTL/shaping خودِ libass (HarfBuzz+FriBidi داخل ffmpeg) انجام می‌دهد —
+///   هیچ معکوس‌سازی دستی متنی وجود ندارد؛ متن خام پاس می‌شود.
+/// - `font_path` اختیاری: با ست‌کردن فایل فونت (ttf/otf/ttc)، `fontsdir`
+///   فیلتر به پدر همان فایل اشاره می‌کند → نتیجهٔ قطعی؛ بدون آن libass از
+///   فونت‌های نصب سیستم جستجو می‌کند و اگر نبود پیش‌فرض رندر می‌شود
+///   (از خروجی ffmpeg قابل‌تشخیص نیست — صادقانه مستند شده).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HardsubTypography {
+    pub enabled: bool,
+    /// نام خانوادهٔ فونت (مثلاً Vazirmatn) — خالی = خانوادهٔ پیش‌فرض libass
+    pub font_name: String,
+    /// مسیر فایل فونت — fontsdir از پدرش ساخته می‌شود؛ خالی = جستجوی سیستم
+    pub font_path: Option<String>,
+    pub font_size: u32,
+    /// رنگ اصلی متن — &H[AA]BBGGRR
+    pub primary_color: String,
+    /// رنگ خط دور — &H[AA]BBGGRR
+    pub outline_color: String,
+    pub outline: u32,
+    pub shadow: u32,
+    /// فاصلهٔ عمودی از پایین تصویر (px)
+    pub margin_v: u32,
+}
+
+impl Default for HardsubTypography {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            font_name: String::new(),
+            font_path: None,
+            font_size: 28,
+            primary_color: "&H00FFFFFF".into(),
+            outline_color: "&H00000000".into(),
+            outline: 2,
+            shadow: 0,
+            margin_v: 30,
+        }
+    }
+}
+
+impl HardsubTypography {
+    /// clamp محدودهٔ عددها + پاک‌سازی فونت‌پث — بارگذاری/پیش‌فرض.
+    /// خطاهای معنایی (رنگ بدشکل/کاراکتر ممنوع فونت) در save با
+    /// `validate_hardsub_typography` صریحاً رد می‌شوند.
+    pub(crate) fn sanitized_in_place(&mut self) {
+        if !self.enabled {
+            return; // خاموش = بی‌اثر؛ مقادیر حفظ می‌شوند برای بازگشت
+        }
+        self.font_size = self.font_size.clamp(10, 96);
+        self.outline = self.outline.clamp(0, 10);
+        self.shadow = self.shadow.clamp(0, 10);
+        self.margin_v = self.margin_v.clamp(0, 400);
+        self.font_name = self.font_name.trim().to_string();
+        self.font_path = self
+            .font_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if !crate::hardsub::typography::is_valid_color(&self.primary_color) {
+            self.primary_color = "&H00FFFFFF".into();
+        }
+        if !crate::hardsub::typography::is_valid_color(&self.outline_color) {
+            self.outline_color = "&H00000000".into();
+        }
+    }
+}
+
+/// اعتبارسنجی سخت تایپوگرافی در مرز ذخیره‌سازی — خطاها به کاربر برمی‌گردند.
+pub fn validate_hardsub_typography(t: &HardsubTypography) -> Result<(), String> {
+    if !t.enabled {
+        return Ok(());
+    }
+    if t.font_name.chars().count() > 64 {
+        return Err("نام فونت بیش از حد طولانی است (حداکثر ۶۴ کاراکتر).".into());
+    }
+    for c in t.font_name.chars() {
+        if matches!(
+            c,
+            '\'' | '"' | ',' | ':' | ';' | '\\' | '/' | '%' | '`' | '=' | '\0' | '\n' | '\r'
+        ) || c.is_control()
+        {
+            return Err(format!(
+                "کاراکتر «{c}» در نام فونت مجاز نیست — فیلتر FFmpeg از آن خراب می‌شود."
+            ));
+        }
+    }
+    if let Some(path) = &t.font_path {
+        let p = std::path::Path::new(path);
+        if !p.is_file() {
+            return Err(format!(
+                "فایل فونت «{path}» پیدا نشد — مسیر را دوباره انتخاب کنید."
+            ));
+        }
+        let ext = p
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
+            return Err(format!(
+                "پسوند فایل فونت باید ttf/otf/ttc باشد (فعلی: {ext})."
+            ));
+        }
+    }
+    if !crate::hardsub::typography::is_valid_color(&t.primary_color) {
+        return Err(format!(
+            "رنگ متن بدشکل است: «{}» — فرمت صحیح &HAA_BBGGRR مثل &H00FFFFFF است (hex، ترتیب BGR).",
+            t.primary_color
+        ));
+    }
+    if !crate::hardsub::typography::is_valid_color(&t.outline_color) {
+        return Err(format!(
+            "رنگ خط دور بدشکل است: «{}» — فرمت صحیح &HAA_BBGGRR مثل &H00000000 است.",
+            t.outline_color
+        ));
+    }
+    Ok(())
+}
+
 /// تنظیمات اعلان‌های سیستمی پایان تسک‌های طولانی.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -195,6 +321,8 @@ pub struct ProcessingProfile {
     pub processing: ProcessingSettings,
     pub automation: AutomationSettings,
     pub naming: NamingSettings,
+    /// تایپوگرافی هاردساب — انتخاب پردازشِ خروجی سخت‌زیرنویس.
+    pub hardsub_typography: HardsubTypography,
 }
 
 impl ProcessingProfile {
@@ -204,6 +332,7 @@ impl ProcessingProfile {
         processing: ProcessingSettings,
         automation: AutomationSettings,
         naming: NamingSettings,
+        hardsub_typography: HardsubTypography,
     ) -> Self {
         ProcessingProfile {
             id: BUILTIN_DEFAULT_PROFILE_ID.into(),
@@ -212,6 +341,7 @@ impl ProcessingProfile {
             processing,
             automation,
             naming,
+            hardsub_typography,
         }
     }
 }
@@ -222,6 +352,7 @@ impl Default for ProcessingProfile {
             ProcessingSettings::default(),
             AutomationSettings::default(),
             NamingSettings::default(),
+            HardsubTypography::default(),
         )
     }
 }
@@ -288,6 +419,8 @@ pub struct Settings {
     pub existing_file_behavior: ExistingFileBehavior,
     /// اتوماسیون pipeline — حالت تعاملی/خودکار + سقف تلاش سینک خودکار.
     pub automation: AutomationSettings,
+    /// تایپوگرافی هاردساب — مقادیر مؤثر (اعمال‌شده از پروفایل فعال یا آزاد).
+    pub hardsub_typography: HardsubTypography,
     /// نام‌گذاری خروجی‌ها — مقادیر مؤثر (اعمال‌شده از پروفایل فعال یا آزاد).
     pub naming: NamingSettings,
     /// پروفایل‌های پردازش — پروفایل پیش‌فرض ساختی همیشه در فهرست هست
@@ -318,6 +451,7 @@ impl Default for Settings {
             subsource: SubSourceSettings::default(),
             existing_file_behavior: ExistingFileBehavior::default(),
             automation: AutomationSettings::default(),
+            hardsub_typography: HardsubTypography::default(),
             naming: NamingSettings::default(),
             profiles: vec![ProcessingProfile::default()],
             active_profile_id: Some(BUILTIN_DEFAULT_PROFILE_ID.into()),
@@ -358,8 +492,19 @@ impl Settings {
         self.tool_paths.ffsubsync = clean(&self.tool_paths.ffsubsync);
         self.naming.synced_sidecar_base =
             crate::output_naming::sanitize_template_lenient(&self.naming.synced_sidecar_base);
+        self.hardsub_typography.sanitized_in_place();
         self.sanitize_profiles();
         self
+    }
+
+    /// اعتبارسنجی سخت همهٔ تایپوگرافی‌ها (مؤثر + پروفایل‌ها) — در مرز save.
+    pub fn validate_hardsub_typographies(&self) -> Result<(), String> {
+        validate_hardsub_typography(&self.hardsub_typography)?;
+        for profile in &self.profiles {
+            validate_hardsub_typography(&profile.hardsub_typography)
+                .map_err(|e| format!("پروفایل «{}»: {e}", profile.name))?;
+        }
+        Ok(())
     }
 
     /// پروفایل‌ها: clamp مقادیر تو در تو، پاک‌سازی نام، بازگردانی پروفایل
@@ -373,6 +518,7 @@ impl Settings {
             profile.naming.synced_sidecar_base = crate::output_naming::sanitize_template_lenient(
                 &profile.naming.synced_sidecar_base,
             );
+            profile.hardsub_typography.sanitized_in_place();
         }
         // پروفایل پیش‌فرض ساختی هرگز نباید از فهرست غایب باشد — در save حذفش
         // رد می‌شود؛ اینجا گارانتی آخرِ بارگذاری/پیش‌فرض است
@@ -383,6 +529,7 @@ impl Settings {
                 self.processing.clone(),
                 self.automation.clone(),
                 self.naming.clone(),
+                self.hardsub_typography.clone(),
             );
             self.profiles.push(builtin);
             self.active_profile_id = Some(BUILTIN_DEFAULT_PROFILE_ID.into());
@@ -397,6 +544,7 @@ impl Settings {
                 ProcessingSettings::default(),
                 AutomationSettings::default(),
                 NamingSettings::default(),
+                HardsubTypography::default(),
             );
             self.profiles.push(builtin);
         }
@@ -428,6 +576,7 @@ impl Settings {
                 self.processing = profile.processing;
                 self.automation = profile.automation;
                 self.naming = profile.naming;
+                self.hardsub_typography = profile.hardsub_typography;
                 self.active_profile_id = Some(profile.id);
                 Ok(())
             }
@@ -467,6 +616,8 @@ pub fn normalize_profiles(
         }
         // قالب نام — خطای واقعی به کاربر، نه sanitize بی‌صدا
         crate::output_naming::validate_template(&profile.naming.synced_sidecar_base)?;
+        // تایپوگرافی هاردساب — فونت/رنگ/محدوده‌ها
+        validate_hardsub_typography(&profile.hardsub_typography)?;
         // فلگ ساختی فقط با شناسهٔ رسمی معنا دارد — ورودی فرانت هرگز نمی‌تواند
         // خودش پروفایل «ساختی» بسازد یا پیش‌فرض را غیرساختی کند
         profile.built_in = profile.id == BUILTIN_DEFAULT_PROFILE_ID;

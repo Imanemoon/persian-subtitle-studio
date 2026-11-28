@@ -1,8 +1,8 @@
-import { Clapperboard, Settings } from "lucide-react";
+import { Clapperboard, FileText, Settings } from "lucide-react";
 import type { PageId } from "../types";
 
 /**
- * هدر مینیمال — هدف: کمترین شلوغی. لوگو (کلیک = خانه) + آیکن تنظیمات.
+ * هدر مینیمال — لوگو (کلیک = خانه) + ویرایشگر زیرنویس + تنظیمات.
  * ناوبری تسک‌ها از جعبهٔ شناور تسک‌ها انجام می‌شود نه از هدر.
  */
 export function Header({
@@ -23,13 +23,22 @@ export function Header({
         <span className="text-sm font-bold text-ink-1">SubSync Studio</span>
       </button>
 
-      <button
-        title="تنظیمات"
-        onClick={() => onNavigate("settings")}
-        className="flex size-9 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink-1"
-      >
-        <Settings className="size-4.5" />
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          title="ویرایشگر زیرنویس"
+          onClick={() => onNavigate("editor")}
+          className="flex size-9 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink-1"
+        >
+          <FileText className="size-4.5" />
+        </button>
+        <button
+          title="تنظیمات"
+          onClick={() => onNavigate("settings")}
+          className="flex size-9 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink-1"
+        >
+          <Settings className="size-4.5" />
+        </button>
+      </div>
     </header>
   );
 }

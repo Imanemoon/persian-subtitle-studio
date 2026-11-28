@@ -8,6 +8,7 @@ import { SoftsubAddModal } from "./components/pipeline/SoftsubAddModal";
 import { Header } from "./components/Header";
 import { Home } from "./pages/Home";
 import { SettingsPage } from "./pages/SettingsPage";
+import { EditorPage } from "./pages/EditorPage";
 import { SetupPage } from "./pages/SetupPage";
 import { api } from "./lib/api";
 import type { PageId } from "./types";
@@ -76,6 +77,7 @@ function Shell() {
         {page === "setup" && <SetupPage onEnter={() => void enterApp()} />}
         {page === "home" && <Home onNavigate={setPage} />}
         {page === "settings" && <SettingsPage />}
+        {page === "editor" && <EditorPage />}
       </main>
     </div>
   );

@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
+  EditorLoadResult,
+  EditorSaveOutcome,
+  EncodingConvertOutcome,
   ExtractionPlan,
   ExtractionPlanItem,
   LogEntry,
@@ -8,6 +11,8 @@ import type {
   ProcessingProfile,
   ScanSummary,
   Settings,
+  SubtitleCue,
+  SubtitleEncodingReport,
   SubtitleValidation,
   ToolInfo,
   ToolStatus,
@@ -59,6 +64,27 @@ export const api = {
     season: number | null;
     episode: number | null;
   }) => invoke<NamingPreview>("preview_sidecar_name", input),
+
+  // ---- فاز ۳: encoding لوکال، ویرایشگر SRT و فونت هاردساب ----
+  /** انتخاب فایل فونت (ttf/otf/ttc) — مسیر برای fontsdir هاردساب */
+  pickFont: () =>
+    open({
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: "فونت", extensions: ["ttf", "otf", "ttc"] },
+      ],
+    }) as Promise<string | null>,
+  analyzeSubtitleEncoding: (path: string) =>
+    invoke<SubtitleEncodingReport>("analyze_subtitle_encoding", { path }),
+  convertSubtitleToUtf8: (path: string) =>
+    invoke<EncodingConvertOutcome>("convert_subtitle_to_utf8", { path }),
+  loadSubtitleForEdit: (path: string) =>
+    invoke<EditorLoadResult>("load_subtitle_for_edit", { path }),
+  validateSubtitleCues: (cues: SubtitleCue[]) =>
+    invoke<EditorLoadResult>("validate_subtitle_cues", { cues }),
+  saveSubtitleEdits: (path: string, cues: SubtitleCue[]) =>
+    invoke<EditorSaveOutcome>("save_subtitle_edited", { path, cues }),
 
   // ---- مدیریت امن SubSource API key — فقط Credential Manager؛
   // مقدار واقعی کلید هرگز به فرانت برگردانده نمی‌شود، فقط وضعیت boolean ----

@@ -185,6 +185,8 @@ pub fn start_hardsub(
         encoder,
         quality: settings.hardsub.quality,
         workers,
+        // snapshot تایپوگرافی در شروع hardsub — تغییر تنظیمات وسط run اثر ندارد
+        typography: settings.hardsub_typography.clone(),
     };
 
     let h2 = Arc::clone(&handoff);
