@@ -138,6 +138,10 @@ pub struct ItemArtifacts {
     /// آفست گزارش‌شدهٔ سینک
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_seconds: Option<f64>,
+    /// روش سینکِ برنده (مرجع صوتی/مرجع کامل/نمونه‌برداری) — شفافیت حلقهٔ
+    /// تنظیم دوباره: کاربر ببیند هر تلاش با چه روشی سینک شده
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_strategy: Option<String>,
     /// انتخاب آرشیو (از Ready پلن یا resolve تصمیم کاربر) برای مرحلهٔ اجرا
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_selection: Option<PreSelectionArtifact>,

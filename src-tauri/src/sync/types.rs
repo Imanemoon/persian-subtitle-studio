@@ -141,6 +141,10 @@ pub struct SyncOutcome {
     /// وقتی بیش از یک استراتژی اجرا شده پر می‌شود؛ برای نمایش مستقیم به کاربر.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// فقط برای `Synced` — برچسب فارسی استراتژی برنده؛ کاربر باید بداند هر
+    /// «تنظیم دوباره» با چه روشی سینک کرده تا حلقهٔ قضاوت شفاف باشد.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
     /// مالکیت workspace فقط روی `Synced` — opaque، غیر-serialize، از فرانت
     /// قابل ساخت نیست؛ انتقال با `take_workspace` و حذف با `discard`.
     #[serde(skip)]
@@ -156,6 +160,7 @@ impl SyncOutcome {
             warnings: Vec::new(),
             diagnostic: diagnostic.into(),
             summary: None,
+            strategy: None,
             workspace: None,
         }
     }

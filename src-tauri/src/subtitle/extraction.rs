@@ -70,6 +70,28 @@ pub fn extract_fa_srt(
     extract_and_move(ffmpeg, video, stream_index, &target, cancel)
 }
 
+/// استخراج Track به `<base>.fa.srt` با جایگزینی صریح مقصد موجود — فقط برای
+/// اکشن صریح کاربر («استخراج زیرنویس»). ترتیب امن: extraction به temp یکتا →
+/// اعتبارسنجی → فقط بعد از خروجی معتبر، مقصد قدیمی حذف و انتقال اتمیک؛
+/// در همهٔ خطاها temp پاک می‌شود و مقصد قدیمی دست‌نخورده می‌ماند.
+pub fn extract_fa_srt_overwrite(
+    ffmpeg: &Path,
+    video: &Path,
+    stream_index: u32,
+    cancel: &AtomicBool,
+) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
+    let dir = video
+        .parent()
+        .ok_or_else(|| ExtractError::Io("ویدیو پوشه والد ندارد".into()))?;
+    let base = video
+        .file_stem()
+        .ok_or_else(|| ExtractError::Io("نام ویدیو نامعتبر است".into()))?
+        .to_string_lossy()
+        .into_owned();
+    let target = dir.join(format!("{base}.fa.srt"));
+    extract_and_move_replace(ffmpeg, video, stream_index, &target, cancel, true)
+}
+
 /// مسیر فایل بررسی برای یک Track: `<base>.track-<N>.review.srt`
 pub fn review_target(video: &Path, stream_index: u32) -> Option<PathBuf> {
     let base = video.file_stem()?.to_string_lossy().into_owned();
@@ -98,6 +120,19 @@ fn extract_and_move(
     target: &Path,
     cancel: &AtomicBool,
 ) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
+    extract_and_move_replace(ffmpeg, video, stream_index, target, cancel, false)
+}
+
+/// همان هسته با انتخاب بازنویسی — `replace=true` مقصد قدیمی را فقط بعد از
+/// خروجی معتبر حذف می‌کند؛ در خطاها مقصد قدیمی دست‌نخورده می‌ماند.
+fn extract_and_move_replace(
+    ffmpeg: &Path,
+    video: &Path,
+    stream_index: u32,
+    target: &Path,
+    cancel: &AtomicBool,
+    replace: bool,
+) -> Result<(PathBuf, SubtitleValidation), ExtractError> {
     let dir = target
         .parent()
         .ok_or_else(|| ExtractError::Io("مقصد پوشه والد ندارد".into()))?;
@@ -113,10 +148,16 @@ fn extract_and_move(
     let result = extract_to(ffmpeg, video, stream_index, &temp, cancel);
     match result {
         Ok(validation) => {
-            // انتقال اتمیک روی همان درایو — بدون بازنویسی
+            // انتقال اتمیک روی همان درایو — بازنویسی فقط با replace صریح
             if target.exists() {
-                let _ = std::fs::remove_file(&temp);
-                return Err(ExtractError::TargetExists(target.to_path_buf()));
+                if !replace {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(ExtractError::TargetExists(target.to_path_buf()));
+                }
+                std::fs::remove_file(target).map_err(|e| {
+                    let _ = std::fs::remove_file(&temp);
+                    ExtractError::Io(format!("حذف مقصد قدیمی برای جایگزینی: {e}"))
+                })?;
             }
             std::fs::rename(&temp, target).map_err(|e| {
                 let _ = std::fs::remove_file(&temp);
